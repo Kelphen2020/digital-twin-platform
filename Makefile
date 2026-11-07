@@ -13,7 +13,7 @@ QPS ?= 100
 DURATION ?= 5
 ARGS ?=
 
-.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web db-up db-down up down sim sim-status smoke load test fmt
+.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web db-up db-down up down sim sim-status smoke load test fmt status stop
 
 help:
 	@echo "P0 targets:"
@@ -80,3 +80,12 @@ test: test-api build-web
 
 fmt:
 	cd $(API_DIR) && $(GO) fmt ./...
+
+status:
+	@curl -s -o /dev/null -w 'api  :8080 -> %{http_code}\n' $(API_URL)/api/health || true
+	@curl -s -o /dev/null -w 'web  :5173 -> %{http_code}\n' http://127.0.0.1:5173/ || true
+
+stop:
+	-@pkill -f 'digital-twin-platform/services/api/bin/api' 2>/dev/null || true
+	-@pkill -f 'apps/web.*vite' 2>/dev/null || true
+	@echo "stopped api/web (if they were running)"
