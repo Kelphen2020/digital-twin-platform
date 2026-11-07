@@ -12,10 +12,11 @@ import {
   SEVERITY_ORDER,
   formatDateTime,
 } from '../labels'
-import type { Camera, FocusRequest, TwinEvent } from '../types'
+import type { Camera, FocusRequest, TrackPoint, TwinEvent } from '../types'
 import { createCameraMarker, type CameraMarker } from './cameraMarkers'
 import { EVENT_MARKER_TTL_MS, createEventMarker, type EventMarker } from './eventMarkers'
 import { createEnvironment, type SceneEnvironment } from './environment'
+import { createTrackLineLayer, type TrackLineLayer } from './trackLines'
 
 const props = defineProps<{
   cameras: Camera[]
@@ -24,6 +25,8 @@ const props = defineProps<{
   selectedEventId: string | null
   focusRequest: FocusRequest | null
   offline: boolean
+  tracks: TrackPoint[]
+  showTracks: boolean
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +67,7 @@ let controls: OrbitControls | null = null
 let environment: SceneEnvironment | null = null
 let cameraLayer: THREE.Group | null = null
 let eventLayer: THREE.Group | null = null
+let trackLayer: TrackLineLayer | null = null
 let raycaster: THREE.Raycaster | null = null
 let resizeObserver: ResizeObserver | null = null
 let removePointerListeners: (() => void) | null = null
@@ -74,6 +78,8 @@ let fpsWindowStart = 0
 let pointerDownAt: { x: number; y: number } | null = null
 let focusAnimation: FocusAnimation | null = null
 let lastFocusSeq = -1
+let tracksDirty = false
+let lastTrackSyncAt = 0
 
 const cameraMarkers = new Map<string, CameraMarker>()
 const eventMarkers = new Map<string, EventMarker>()
@@ -286,6 +292,16 @@ function animate(now: number): void {
     pruneExpiredEventMarkers(nowMs)
   }
 
+  // 轨迹：显示开关 + 数据/淡出刷新（最多每秒重建一次，避免高频动画开销）
+  if (trackLayer) {
+    trackLayer.group.visible = props.showTracks
+    if (props.showTracks && (tracksDirty || now - lastTrackSyncAt > 1000)) {
+      trackLayer.update(props.tracks, nowMs)
+      tracksDirty = false
+      lastTrackSyncAt = now
+    }
+  }
+
   renderer.render(scene, camera)
 
   // FPS：每 500ms 刷新一次，避免高频触发响应式更新
@@ -312,7 +328,7 @@ function initScene(): void {
   webglRenderer.toneMapping = THREE.ACESFilmicToneMapping
   webglRenderer.toneMappingExposure = 1.05
   webglRenderer.shadowMap.enabled = true
-  webglRenderer.shadowMap.type = THREE.PCFSoftShadowMap
+  webglRenderer.shadowMap.type = THREE.PCFShadowMap
   container.appendChild(webglRenderer.domElement)
   renderer = webglRenderer
 
@@ -344,6 +360,10 @@ function initScene(): void {
   eventLayer = new THREE.Group()
   eventLayer.name = 'event-markers'
   sceneInstance.add(eventLayer)
+
+  trackLayer = createTrackLineLayer()
+  trackLayer.group.visible = props.showTracks
+  sceneInstance.add(trackLayer.group)
 
   raycaster = new THREE.Raycaster()
 
@@ -384,6 +404,9 @@ function disposeScene(): void {
   for (const marker of eventMarkers.values()) marker.dispose()
   eventMarkers.clear()
 
+  trackLayer?.dispose()
+  trackLayer = null
+
   environment?.dispose()
   environment = null
 
@@ -421,6 +444,18 @@ watch(
 watch(
   () => props.selectedEventId,
   () => applyEventSelection(),
+)
+watch(
+  () => props.tracks,
+  () => {
+    tracksDirty = true
+  },
+)
+watch(
+  () => props.showTracks,
+  () => {
+    tracksDirty = true
+  },
 )
 watch(
   () => props.focusRequest,

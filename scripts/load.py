@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrent ingest load injector for the digital-twin P0 API (stdlib only).
+"""Concurrent ingest load injector for the digital-twin API (stdlib only).
 
 Preloads camera codes from ``GET /api/cameras``, then fires detection POSTs at
 a target QPS with a pool of threads and reports achieved throughput plus HTTP
@@ -8,6 +8,11 @@ latency percentiles.  Used to prove P0-4 ("可压测"): the API must absorb
     python3 scripts/load.py --qps 100 --duration 5
 
 and expose consistent counters in ``/metrics`` (docs/P0_SCOPE.md §4.7).
+
+P1.0 adds ``--track-ratio`` (default 0.5): that fraction of detections carries
+a stable ``track_id`` from a small per-camera virtual-track pool, exercising the
+``POST /api/ingest/detections`` -> track-point path (``GET /api/tracks``,
+docs/API_P1.md §3) while the rest stay plain P0 detections.
 
 Each scheduled slot sends exactly one detection, so target QPS is both
 "requests/second" and "detections/second".
@@ -40,6 +45,11 @@ DEFAULT_WORKERS = 10
 HTTP_TIMEOUT = 5.0
 CAMERAS_PATH = "/api/cameras"
 INGEST_PATH = "/api/ingest/detections"
+
+# Per-camera pool of stable track ids used by --track-ratio (P1).  The ids are
+# intentionally short and deterministic so repeated load runs create recognisable
+# trajectories without unbounded track growth.
+TRACKS_PER_CAMERA = 3
 
 # Same weighted class mix as services/simulator/simulator.py (docs/API.md).
 CLASS_WEIGHTS = [
@@ -134,8 +144,12 @@ def load_cameras(client: ApiClient, attempts: int = 3):
 # payload generation
 # ---------------------------------------------------------------------------
 
-def build_payload(rng: random.Random, camera: dict) -> dict:
-    """One ingest request carrying a single synthetic detection."""
+def build_payload(rng: random.Random, camera: dict, track_id=None) -> dict:
+    """One ingest request carrying a single synthetic detection.
+
+    ``track_id`` is included when given (P1) so the backend also writes a track
+    point and broadcasts ``track_point``; plain P0 payloads are unchanged.
+    """
     roll = rng.random()
     cumulative = 0.0
     cls = CLASS_WEIGHTS[-1][0]
@@ -160,17 +174,18 @@ def build_payload(rng: random.Random, camera: dict) -> dict:
         round(min(0.99, x1 + rng.uniform(0.06, 0.22)), 3),
         round(min(0.99, y1 + rng.uniform(0.10, 0.30)), 3),
     ]
+    detection = {
+        "class": cls,
+        "confidence": round(rng.uniform(0.45, 0.99), 3),
+        "bbox": bbox,
+        "world": world,
+    }
+    if track_id is not None:
+        detection["track_id"] = track_id
     return {
         "camera_code": camera.get("code"),
         "ts": utc_now_rfc3339(),
-        "detections": [
-            {
-                "class": cls,
-                "confidence": round(rng.uniform(0.45, 0.99), 3),
-                "bbox": bbox,
-                "world": world,
-            }
-        ],
+        "detections": [detection],
     }
 
 
@@ -198,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="number of injector threads",
     )
     parser.add_argument("--timeout", type=float, default=HTTP_TIMEOUT, help="per-request HTTP timeout, seconds")
+    parser.add_argument(
+        "--track-ratio",
+        type=float,
+        default=0.5,
+        help="fraction of detections carrying a track_id (P1 track path); 0 disables, 1 tracks all",
+    )
     parser.add_argument("--seed", type=int, default=None, help="random seed for reproducible payloads")
     return parser
 
@@ -213,6 +234,9 @@ def main(argv=None) -> int:
     if args.workers < 1:
         log(f"[load] error: --workers must be >= 1 (got {args.workers})")
         return 2
+    if not 0.0 <= args.track_ratio <= 1.0:
+        log(f"[load] error: --track-ratio must be between 0 and 1 (got {args.track_ratio})")
+        return 2
 
     client = ApiClient(args.api_base, timeout=args.timeout)
     try:
@@ -227,12 +251,21 @@ def main(argv=None) -> int:
     target_qps = total / args.duration
     start = time.monotonic()
 
+    # P1: a small fixed pool of stable track ids per camera so repeated
+    # detections form recognisable trajectories instead of one-off points.
+    track_pools = []
+    for camera_index in range(len(cameras)):
+        track_pools.append(
+            ["trk-load-%02d-%d" % (camera_index + 1, slot) for slot in range(TRACKS_PER_CAMERA)]
+        )
+
     lock = threading.Lock()
     state = {
         "next_index": 0,
         "attempted": 0,
         "ok": 0,
         "failed": 0,
+        "tracked": 0,
         "accepted": 0,
         "dropped": 0,
         "events": 0,
@@ -253,14 +286,20 @@ def main(argv=None) -> int:
             delay = scheduled_at - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            camera = rng.choice(cameras)
-            payload = build_payload(rng, camera)
+            camera_index = rng.randrange(len(cameras))
+            camera = cameras[camera_index]
+            track_id = None
+            if args.track_ratio > 0 and rng.random() < args.track_ratio:
+                track_id = rng.choice(track_pools[camera_index])
+            payload = build_payload(rng, camera, track_id)
             status, body, latency_ms, error = client.request_json(
                 "POST", INGEST_PATH, payload
             )
             with lock:
                 state["attempted"] += 1
                 state["latencies"].append(latency_ms)
+                if track_id is not None:
+                    state["tracked"] += 1
                 if error is not None or status != 202:
                     state["failed"] += 1
                     if len(state["errors"]) < 5:
@@ -277,7 +316,8 @@ def main(argv=None) -> int:
 
     log(
         f"[load] api={args.api_base} target_qps={args.qps:g} duration={args.duration:g}s "
-        f"workers={args.workers} cameras={len(cameras)} scheduled={total}"
+        f"workers={args.workers} cameras={len(cameras)} scheduled={total} "
+        f"track_ratio={args.track_ratio:g}"
     )
 
     threads = [
@@ -310,6 +350,10 @@ def main(argv=None) -> int:
     )
     print(f"achieved QPS      : {achieved_qps:.2f} (target {args.qps:g}, threshold {min_qps:g})")
     print(f"accepted/dropped  : {state['accepted']} / {state['dropped']}   events={state['events']}")
+    print(
+        f"tracked           : {state['tracked']}/{state['attempted']} detections with track_id "
+        f"(--track-ratio {args.track_ratio:g})"
+    )
     if latencies:
         print(
             f"http latency (ms) : p50={percentile(latencies, 50):.2f} "

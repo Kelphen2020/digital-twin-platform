@@ -1,6 +1,6 @@
-// Package store defines persistence for the P0 API. The in-memory
-// implementation is used when DATABASE_URL is empty (smoke tests, laptop demo);
-// the PostgreSQL implementation is used by docker compose and production.
+// Package store defines persistence for the API. The in-memory implementation
+// is used when DATABASE_URL is empty (smoke tests, laptop demo); the PostgreSQL
+// implementation is used by docker compose and production.
 package store
 
 import (
@@ -23,28 +23,49 @@ type Store interface {
 	GetCamera(ctx context.Context, id string) (model.Camera, error)
 	GetCameraByCode(ctx context.Context, code string) (model.Camera, error)
 	UpdateCamera(ctx context.Context, id string, patch model.CameraPatch) (model.Camera, error)
+	SetCameraCalibration(ctx context.Context, id string, calibration *model.Calibration) (model.Camera, error)
 	ListEvents(ctx context.Context, filter model.EventFilter) ([]model.Event, error)
+	GetEvent(ctx context.Context, id string) (model.Event, error)
 	CreateEvents(ctx context.Context, events []model.Event) error
 	AckEvent(ctx context.Context, id string) (model.Event, error)
+	CloseEvent(ctx context.Context, id string) (model.Event, error)
+	CreateEventAction(ctx context.Context, action model.EventAction) error
+	ListEventActions(ctx context.Context, eventID string) ([]model.EventAction, error)
+	CreateTrackPoints(ctx context.Context, points []model.TrackPoint) error
+	ListTrackPoints(ctx context.Context, filter model.TrackFilter) ([]model.TrackPoint, error)
+	AddAudit(ctx context.Context, entry model.AuditEntry) error
+	ListAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEntry, error)
+	Stats(ctx context.Context, from, to time.Time) (model.StatsSummary, error)
 	Counts(ctx context.Context) (model.Counts, error)
 }
 
 // Memory is the in-memory Store used without a database.
 type Memory struct {
-	mu      sync.RWMutex
-	cameras map[string]*model.Camera
-	order   []string
-	areas   []model.Area
-	events  []model.Event
-	max     int
+	mu        sync.RWMutex
+	cameras   map[string]*model.Camera
+	order     []string
+	areas     []model.Area
+	events    []model.Event
+	tracks    []model.TrackPoint
+	actions   map[string][]model.EventAction
+	audit     []model.AuditEntry
+	maxEvents int
+	maxTracks int
+	maxAudit  int
 }
 
-// NewMemory creates an empty in-memory store that retains at most maxEvents.
+// NewMemory creates an empty in-memory store.
 func NewMemory(maxEvents int) *Memory {
 	if maxEvents < 100 {
 		maxEvents = 100
 	}
-	return &Memory{cameras: make(map[string]*model.Camera), max: maxEvents}
+	return &Memory{
+		cameras:   make(map[string]*model.Camera),
+		maxEvents: maxEvents,
+		maxTracks: 50000,
+		maxAudit:  5000,
+		actions:   make(map[string][]model.EventAction),
+	}
 }
 
 // Seed loads the demo site. It is idempotent per id.
@@ -112,6 +133,25 @@ func (m *Memory) UpdateCamera(_ context.Context, id string, patch model.CameraPa
 	return *camera, nil
 }
 
+func (m *Memory) SetCameraCalibration(_ context.Context, id string, calibration *model.Calibration) (model.Camera, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	camera, ok := m.cameras[id]
+	if !ok {
+		return model.Camera{}, ErrNotFound
+	}
+	if calibration != nil {
+		now := time.Now().UTC()
+		clone := *calibration
+		clone.SolvedAt = &now
+		camera.Calibration = &clone
+	} else {
+		camera.Calibration = nil
+	}
+	camera.UpdatedAt = time.Now().UTC()
+	return *camera, nil
+}
+
 func (m *Memory) ListEvents(_ context.Context, filter model.EventFilter) ([]model.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -136,26 +176,172 @@ func (m *Memory) ListEvents(_ context.Context, filter model.EventFilter) ([]mode
 	return out, nil
 }
 
-func (m *Memory) CreateEvents(_ context.Context, events []model.Event) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, events...)
-	if len(m.events) > m.max {
-		m.events = append([]model.Event(nil), m.events[len(m.events)-m.max:]...)
-	}
-	return nil
-}
-
-func (m *Memory) AckEvent(_ context.Context, id string) (model.Event, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Memory) GetEvent(_ context.Context, id string) (model.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for i := range m.events {
 		if m.events[i].ID == id {
-			m.events[i].Status = "acked"
 			return m.events[i], nil
 		}
 	}
 	return model.Event{}, ErrNotFound
+}
+
+func (m *Memory) CreateEvents(_ context.Context, events []model.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, events...)
+	if len(m.events) > m.maxEvents {
+		m.events = append([]model.Event(nil), m.events[len(m.events)-m.maxEvents:]...)
+	}
+	return nil
+}
+
+func (m *Memory) AckEvent(ctx context.Context, id string) (model.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.events {
+		if m.events[i].ID != id {
+			continue
+		}
+		m.events[i].Status = "acked"
+		return m.events[i], nil
+	}
+	return model.Event{}, ErrNotFound
+}
+
+func (m *Memory) CloseEvent(ctx context.Context, id string) (model.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.events {
+		if m.events[i].ID != id {
+			continue
+		}
+		now := time.Now().UTC()
+		m.events[i].Status = "closed"
+		m.events[i].ClosedAt = &now
+		return m.events[i], nil
+	}
+	return model.Event{}, ErrNotFound
+}
+
+func (m *Memory) CreateEventAction(_ context.Context, action model.EventAction) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.findEventLocked(action.EventID); !ok {
+		return ErrNotFound
+	}
+	m.actions[action.EventID] = append(m.actions[action.EventID], action)
+	return nil
+}
+
+func (m *Memory) ListEventActions(_ context.Context, eventID string) ([]model.EventAction, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]model.EventAction(nil), m.actions[eventID]...), nil
+}
+
+func (m *Memory) CreateTrackPoints(_ context.Context, points []model.TrackPoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tracks = append(m.tracks, points...)
+	if len(m.tracks) > m.maxTracks {
+		m.tracks = append([]model.TrackPoint(nil), m.tracks[len(m.tracks)-m.maxTracks:]...)
+	}
+	return nil
+}
+
+func (m *Memory) ListTrackPoints(_ context.Context, filter model.TrackFilter) ([]model.TrackPoint, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]model.TrackPoint, 0, limit)
+	for i := len(m.tracks) - 1; i >= 0 && len(out) < limit; i-- {
+		point := m.tracks[i]
+		if filter.CameraID != "" && point.CameraID != filter.CameraID {
+			continue
+		}
+		if filter.Since != nil && point.TS.Before(*filter.Since) {
+			continue
+		}
+		out = append(out, point)
+	}
+	return out, nil
+}
+
+func (m *Memory) AddAudit(_ context.Context, entry model.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audit = append(m.audit, entry)
+	if len(m.audit) > m.maxAudit {
+		m.audit = append([]model.AuditEntry(nil), m.audit[len(m.audit)-m.maxAudit:]...)
+	}
+	return nil
+}
+
+func (m *Memory) ListAudit(_ context.Context, filter model.AuditFilter) ([]model.AuditEntry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]model.AuditEntry, 0, limit)
+	for i := len(m.audit) - 1; i >= 0 && len(out) < limit; i-- {
+		entry := m.audit[i]
+		if filter.Action != "" && entry.Action != filter.Action {
+			continue
+		}
+		if filter.Actor != "" && entry.Actor != filter.Actor {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+func (m *Memory) Stats(_ context.Context, from, to time.Time) (model.StatsSummary, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	summary := model.StatsSummary{
+		From:   from,
+		To:     to,
+		Totals: model.StatsTotals{BySeverity: map[string]int64{}, ByType: map[string]int64{}},
+	}
+	perCamera := map[string]int64{}
+	perHour := map[time.Time]int64{}
+	for _, event := range m.events {
+		if event.OccurredAt.Before(from) || event.OccurredAt.After(to) {
+			continue
+		}
+		summary.Totals.Events++
+		summary.Totals.BySeverity[event.Severity]++
+		summary.Totals.ByType[event.Type]++
+		perCamera[event.CameraID]++
+		perHour[event.OccurredAt.UTC().Truncate(time.Hour)]++
+	}
+	for _, id := range m.order {
+		camera, ok := m.cameras[id]
+		if !ok {
+			continue
+		}
+		count := perCamera[id]
+		if count == 0 {
+			continue
+		}
+		summary.ByCamera = append(summary.ByCamera, model.CameraStat{
+			CameraID: id, Code: camera.Code, Name: camera.Name, Count: count,
+		})
+	}
+	sort.Slice(summary.ByCamera, func(i, j int) bool { return summary.ByCamera[i].Count > summary.ByCamera[j].Count })
+	for hour, count := range perHour {
+		summary.ByHour = append(summary.ByHour, model.HourStat{Hour: hour, Count: count})
+	}
+	sort.Slice(summary.ByHour, func(i, j int) bool { return summary.ByHour[i].Hour.Before(summary.ByHour[j].Hour) })
+	return summary, nil
 }
 
 func (m *Memory) Counts(_ context.Context) (model.Counts, error) {
@@ -168,6 +354,15 @@ func (m *Memory) Counts(_ context.Context) (model.Counts, error) {
 		}
 	}
 	return counts, nil
+}
+
+func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
+	for i := range m.events {
+		if m.events[i].ID == id {
+			return &m.events[i], true
+		}
+	}
+	return nil, false
 }
 
 func applyPatch(camera *model.Camera, patch model.CameraPatch) {

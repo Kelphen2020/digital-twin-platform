@@ -15,6 +15,7 @@ type Config struct {
 	DedupeWindow time.Duration
 	MaxEvents    int
 	Version      string
+	AuthToken    string
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -25,6 +26,7 @@ func Load() Config {
 		DedupeWindow: time.Duration(envInt("DEDUPE_WINDOW_SECONDS", 5)) * time.Second,
 		MaxEvents:    envInt("MAX_EVENTS", 20000),
 		Version:      env("VERSION", "0.1.0"),
+		AuthToken:    env("AUTH_TOKEN", ""),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

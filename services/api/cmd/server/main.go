@@ -33,7 +33,7 @@ func main() {
 	engine := rules.New(cfg.DedupeWindow)
 	hub := realtime.NewHub()
 	meters := metrics.New()
-	server := api.New(database, engine, hub, meters, cfg.Version)
+	server := api.New(database, engine, hub, meters, cfg.Version, cfg.AuthToken)
 
 	go server.RunStats(ctx, 5*time.Second)
 

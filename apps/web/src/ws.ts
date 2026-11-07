@@ -8,22 +8,36 @@ const RECONNECT_MAX_MS = 30_000
  * 解析 WebSocket 地址：
  * - 未配置 VITE_API_BASE：连接当前页面同源 /ws（开发环境由 Vite 代理 Upgrade）。
  * - 配置了 VITE_API_BASE：以其协议与主机推导 ws(s)://.../ws。
+ * - 配置了 VITE_API_TOKEN：追加 ?token= 供服务端鉴权（docs/API_P1.md §7）。
  */
 export function resolveWsUrl(): string {
+  const token = (import.meta.env.VITE_API_TOKEN ?? '').trim()
   const base = (import.meta.env.VITE_API_BASE ?? '').trim().replace(/\/+$/, '')
+
+  let url: URL
   if (base) {
-    const url = new URL(base, window.location.origin)
+    url = new URL(base, window.location.origin)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     url.pathname = `${url.pathname.replace(/\/+$/, '')}/ws`
-    url.search = ''
-    url.hash = ''
-    return url.toString()
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    url = new URL(`${protocol}//${window.location.host}/ws`)
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/ws`
+
+  url.search = ''
+  url.hash = ''
+  if (token) url.searchParams.set('token', token)
+  return url.toString()
 }
 
-const WS_MESSAGE_TYPES = new Set(['hello', 'event', 'camera_status', 'stats'])
+const WS_MESSAGE_TYPES = new Set([
+  'hello',
+  'event',
+  'event_updated',
+  'camera_status',
+  'track_point',
+  'stats',
+])
 
 /** 运行时校验最小消息结构，避免异常帧把状态机打乱。 */
 function parseMessage(raw: string): WsMessage | null {

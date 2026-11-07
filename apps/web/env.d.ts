@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE?: string
   /** 顶栏站点标题。 */
   readonly VITE_SITE_NAME?: string
+  /** 可选鉴权令牌：REST 加 Authorization: Bearer，WS 加 ?token=。 */
+  readonly VITE_API_TOKEN?: string
 }
 
 interface ImportMeta {

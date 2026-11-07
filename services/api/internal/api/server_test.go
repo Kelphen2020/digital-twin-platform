@@ -24,7 +24,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	memory := store.NewMemory(1000)
 	memory.Seed(store.SeedCameras(), store.SeedAreas())
-	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test")
+	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", "")
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts

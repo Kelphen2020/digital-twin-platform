@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Digital-twin detection simulator (P0).
+"""Digital-twin detection simulator (P0 + P1.0 tracks).
 
 Plays the role of the AI inference service for the digital-twin demo:
 
 1. On start it loads the camera inventory from ``GET /api/cameras`` and keeps
    only the cameras it will report against.
-2. It synthesizes detections (weighted classes, confidence, bbox, world
-   position in local ENU metres) and posts them in per-camera batches to
+2. It synthesizes detections (weighted classes, confidence, realistic bbox,
+   world position in local ENU metres) and posts them in per-camera batches to
    ``POST /api/ingest/detections`` at a configurable detection rate.
-3. The API rule engine turns qualifying detections into events and broadcasts
+3. P1.0 (docs/API_P1.md): every camera keeps 2-4 persistent virtual targets
+   (``--tracks N``).  Each target has a stable ``track_id``, walks/drives along
+   a smooth ping-pong path for 30-60 s and is then respawned with a new id, so
+   detections form real trajectories for ``GET /api/tracks`` and the WS
+   ``track_point`` stream.
+4. The API rule engine turns qualifying detections into events and broadcasts
    them over WebSocket (see ``docs/API.md``).
 
 The process is stdlib-only (Python 3.9+).  Periodic stats go to stderr every
@@ -19,12 +24,13 @@ Examples::
     python3 services/simulator/simulator.py                        # mixed, 5 det/s, forever
     python3 services/simulator/simulator.py --duration 30          # run 30 s then exit
     python3 services/simulator/simulator.py --qps 20 --camera CAM-001
-    python3 services/simulator/simulator.py --scenario alarm --seed 42
+    python3 services/simulator/simulator.py --tracks 3 --scenario alarm --seed 42
+    python3 services/simulator/simulator.py --tracks 0             # P0 payloads (no track_id)
     python3 services/simulator/simulator.py --dry-run --duration 2 # print payloads, no POST
 
 Exit codes:
     0  normal completion (--duration elapsed) or clean Ctrl-C / SIGTERM
-    2  camera inventory unavailable or --camera filter matched nothing
+    2  camera inventory unavailable, bad arguments, or --camera filter matched nothing
     3  gave up after too many consecutive ingest failures
 """
 
@@ -224,21 +230,204 @@ def sample_world(rng: random.Random, camera: dict):
     return {"x": round(x, 3), "y": round(y, 3), "z": 0.0}
 
 
-def build_payload(rng: random.Random, camera: dict, weights) -> dict:
-    """Create one ingest request: 1-3 detections, all for the same camera."""
+# Real-world size (width, height) in metres, used to project realistic bboxes.
+CLASS_DIMENSIONS = {
+    "person": (0.55, 1.75),
+    "vehicle": (1.9, 1.55),
+    "intrusion": (0.6, 1.75),
+    "smoke": (0.9, 1.1),
+    "no_helmet": (0.55, 1.75),
+}
+
+
+def bearing_offset_deg(camera: dict, x: float, y: float):
+    """Return (horizontal angle off the camera axis in degrees, horizontal distance m)."""
+    heading = float(camera.get("heading") or 0.0)
+    dx = x - float(camera.get("x") or 0.0)
+    dy = y - float(camera.get("y") or 0.0)
+    bearing = math.degrees(math.atan2(dx, dy))
+    angle_off = (bearing - heading + 180.0) % 360.0 - 180.0
+    return angle_off, math.hypot(dx, dy)
+
+
+def project_bbox(rng: random.Random, camera: dict, class_name: str, world: dict):
+    """Project a target's world position into a plausible normalized bbox.
+
+    The box moves horizontally with the target's bearing off the camera axis and
+    shrinks with distance (real-world object size / FOV), which keeps bboxes
+    consistent with the world coordinates instead of being uniform rectangles.
+    """
+    angle_off, distance = bearing_offset_deg(camera, world["x"], world["y"])
+    distance = max(distance, 5.0)
+    fov_h = float(camera.get("fov_h") or 60.0)
+    fov_v = float(camera.get("fov_v") or 34.0)
+    width_m, height_m = CLASS_DIMENSIONS.get(class_name, (0.6, 1.7))
+
+    box_h = height_m / (2.0 * distance * math.tan(math.radians(fov_v) / 2.0))
+    box_w = width_m / (2.0 * distance * math.tan(math.radians(fov_h) / 2.0))
+    box_h = min(0.6, max(0.015, box_h * rng.uniform(0.9, 1.1)))
+    box_w = min(0.6, max(0.008, box_w * rng.uniform(0.9, 1.15)))
+
+    center_x = 0.5 + angle_off / fov_h
+    center_x = min(max(center_x, box_w / 2.0 + 0.003), 1.0 - box_w / 2.0 - 0.003)
+
+    # Ground contact point sits below the horizon; closer/higher camera -> lower box.
+    cam_z = float(camera.get("z") or 0.0)
+    depression = math.degrees(math.atan2(cam_z, distance))
+    bottom = min(0.99, max(0.40, 0.5 + depression / fov_v))
+    top = max(0.005, bottom - box_h)
+    x1 = max(0.002, center_x - box_w / 2.0)
+    x2 = min(0.998, center_x + box_w / 2.0)
+    return [round(x1, 3), round(top, 3), round(x2, 3), round(bottom, 3)]
+
+
+# ---------------------------------------------------------------------------
+# persistent virtual targets (P1 track simulation, docs/API_P1.md §3)
+# ---------------------------------------------------------------------------
+
+_track_seq = 0
+
+
+def next_track_id() -> str:
+    """Monotonic, process-unique track id (e.g. trk-00007)."""
+    global _track_seq
+    _track_seq += 1
+    return "trk-%05d" % _track_seq
+
+
+class VirtualTarget:
+    """One synthetic moving object seen by a camera for 30-60 s.
+
+    The target bounces along a straight lateral path inside the camera frustum
+    (ping-pong), so every detection carrying its ``track_id`` is part of a
+    smooth world-space trajectory — what ``GET /api/tracks`` and the web
+    client's polylines need.  On expiry the pool respawns it with a new track
+    id and (weighted) class.
+    """
+
+    __slots__ = (
+        "camera_code",
+        "track_id",
+        "class_name",
+        "path_kind",
+        "born",
+        "lifetime",
+        "ax",
+        "ay",
+        "bx",
+        "by",
+        "period",
+    )
+
+    def __init__(self, camera, track_id, class_name, born, lifetime, ax, ay, bx, by, period):
+        self.camera_code = camera.get("code")
+        self.track_id = track_id
+        self.class_name = class_name
+        self.path_kind = "vehicle" if class_name == "vehicle" else "walk"
+        self.born = born
+        self.lifetime = lifetime
+        self.ax, self.ay = ax, ay
+        self.bx, self.by = bx, by
+        self.period = period
+
+    def expired(self, now: float) -> bool:
+        return now - self.born >= self.lifetime
+
+    def position(self, now: float):
+        """World (x, y) at ``now`` via ping-pong interpolation along A->B."""
+        age = max(0.0, now - self.born)
+        phase = (age % self.period) / self.period if self.period > 0 else 0.0
+        s = 2.0 * phase if phase <= 0.5 else 2.0 * (1.0 - phase)
+        return self.ax + (self.bx - self.ax) * s, self.ay + (self.by - self.ay) * s
+
+
+class TrackPool:
+    """The live virtual targets of one camera."""
+
+    def __init__(self, camera: dict, count: int):
+        self.camera = camera
+        self.count = count
+        self.targets = []
+
+    def refresh(self, rng: random.Random, weights, now: float) -> None:
+        alive = [target for target in self.targets if not target.expired(now)]
+        while len(alive) < self.count:
+            alive.append(self._spawn(rng, weights, now))
+        self.targets = alive
+
+    def _spawn(self, rng: random.Random, weights, now: float) -> VirtualTarget:
+        camera = self.camera
+        class_name = pick_class(rng, weights)
+        heading = math.radians(float(camera.get("heading") or 0.0))
+        fov_h = float(camera.get("fov_h") or 60.0)
+        cam_x = float(camera.get("x") or 0.0)
+        cam_y = float(camera.get("y") or 0.0)
+
+        # Lateral path across the view, 15-70 m along the optical axis.  Keeping
+        # the path lateral guarantees the target stays inside the horizontal FOV.
+        distance = rng.uniform(20.0, 65.0) + rng.uniform(-5.0, 5.0)
+        half_lateral = min(distance * math.tan(math.radians(fov_h) / 2.0) * 0.75, 24.0)
+        half_lateral = max(half_lateral, 3.0)
+        forward_x, forward_y = math.sin(heading), math.cos(heading)
+        lateral_x, lateral_y = math.cos(heading), -math.sin(heading)
+        center_x = cam_x + forward_x * distance
+        center_y = cam_y + forward_y * distance
+        ax = center_x - lateral_x * half_lateral
+        ay = center_y - lateral_y * half_lateral
+        bx = center_x + lateral_x * half_lateral
+        by = center_y + lateral_y * half_lateral
+
+        # Walk/vehicle speeds; cap so a full back-and-forth loop takes >= ~15 s.
+        speed = rng.uniform(3.0, 8.0) if class_name == "vehicle" else rng.uniform(0.8, 1.8)
+        segment = math.hypot(bx - ax, by - ay)
+        period = max(15.0, 2.0 * segment / max(speed, 0.1))
+        lifetime = rng.uniform(30.0, 60.0)
+        return VirtualTarget(
+            camera, next_track_id(), class_name, now, lifetime, ax, ay, bx, by, period
+        )
+
+
+def build_track_detection(rng: random.Random, camera: dict, target: VirtualTarget, now: float) -> dict:
+    """One detection of a virtual target, carrying its stable track_id."""
+    px, py = target.position(now)
+    world = {
+        "x": round(px + rng.uniform(-0.4, 0.4), 3),
+        "y": round(py + rng.uniform(-0.4, 0.4), 3),
+        "z": 0.0,
+    }
+    return {
+        "class": target.class_name,
+        # Confidence 0.45-0.99 on purpose: the API drops everything below 0.6
+        # (rule #1 in docs/API.md), so accepted/dropped counters are exercised.
+        "confidence": round(rng.uniform(0.45, 0.99), 3),
+        "bbox": project_bbox(rng, camera, target.class_name, world),
+        "track_id": target.track_id,
+        "world": world,
+    }
+
+
+def build_payload(rng, camera, weights, pool=None, now=None) -> dict:
+    """Create one ingest request: 1-3 detections, all for the same camera.
+
+    With ``pool`` set (P1 mode, the default) every detection comes from one of
+    the camera's persistent virtual targets and carries a stable ``track_id``.
+    With ``pool=None`` (``--tracks 0``) the P0 payload shape is preserved:
+    weighted random classes, no ``track_id``.
+    """
     detections = []
     for _ in range(rng.randint(1, 3)):
-        detections.append(
-            {
-                "class": pick_class(rng, weights),
-                # Confidence is spread 0.45-0.99 on purpose: the API drops
-                # everything below 0.6 (rule #1 in docs/API.md), so the
-                # accepted/dropped counters are exercised.
-                "confidence": round(rng.uniform(0.45, 0.99), 3),
-                "bbox": build_bbox(rng),
-                "world": sample_world(rng, camera),
-            }
-        )
+        if pool is not None and pool.targets:
+            target = rng.choice(pool.targets)
+            detections.append(build_track_detection(rng, camera, target, now))
+        else:
+            detections.append(
+                {
+                    "class": pick_class(rng, weights),
+                    "confidence": round(rng.uniform(0.45, 0.99), 3),
+                    "bbox": build_bbox(rng),
+                    "world": sample_world(rng, camera),
+                }
+            )
     return {
         "camera_code": camera.get("code"),
         "ts": utc_now_rfc3339(),
@@ -357,6 +546,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CODE",
         help="only report detections for this camera code, e.g. CAM-001",
     )
+    parser.add_argument(
+        "--tracks",
+        type=int,
+        default=None,
+        metavar="N",
+        help="virtual targets per camera carrying a stable track_id (P1); "
+        "default: random 2-4 per camera; 0 disables tracks and restores P0 payloads",
+    )
     parser.add_argument("--seed", type=int, default=None, help="random seed for reproducible traffic")
     parser.add_argument(
         "--scenario",
@@ -382,6 +579,9 @@ def main(argv=None) -> int:
         return 2
     if args.duration < 0:
         log(f"[simulator] error: --duration must be >= 0 (got {args.duration})")
+        return 2
+    if args.tracks is not None and not 0 <= args.tracks <= 64:
+        log(f"[simulator] error: --tracks must be between 0 and 64 (got {args.tracks})")
         return 2
 
     signal.signal(signal.SIGINT, _on_signal)
@@ -412,10 +612,32 @@ def main(argv=None) -> int:
     rng = random.Random(args.seed)
     stats = Stats()
 
+    # P1 virtual targets: 2-4 per camera by default (random), fixed by --tracks,
+    # disabled by --tracks 0 (P0 payloads without track_id).
+    track_counts = {}
+    for index, camera in enumerate(cameras):
+        if args.tracks is None:
+            count = rng.randint(2, 4)
+        else:
+            count = args.tracks
+        track_counts[index] = count
+    pools = {}
+    for index, camera in enumerate(cameras):
+        if track_counts[index] > 0:
+            pools[index] = TrackPool(camera, track_counts[index])
+
     log(
         f"[simulator] reporting for {len(cameras)} camera(s): "
         + ", ".join(str(cam.get("code")) for cam in cameras)
     )
+    if pools:
+        if args.tracks is None:
+            scope = "2-4 (random) per camera"
+        else:
+            scope = f"{args.tracks} per camera"
+        log(f"[simulator] P1 virtual targets: {scope}; track_id on every detection")
+    else:
+        log("[simulator] P0 mode: --tracks 0, detections carry no track_id")
 
     started = time.monotonic()
     deadline = started + args.duration if args.duration > 0 else None
@@ -444,8 +666,13 @@ def main(argv=None) -> int:
                 last_report = now
             continue
 
-        camera = rng.choice(cameras)
-        payload = build_payload(rng, camera, weights)
+        camera_index = rng.randrange(len(cameras))
+        camera = cameras[camera_index]
+        pool = pools.get(camera_index)
+        if pool is not None:
+            # Respawn expired targets, then sample detections from live ones.
+            pool.refresh(rng, weights, now)
+        payload = build_payload(rng, camera, weights, pool, now)
         # Count the detections actually in the batch (build_payload draws 1-3).
         batch_size = len(payload["detections"])
 

@@ -13,9 +13,16 @@ import (
 	"digital-twin-platform/api/internal/model"
 )
 
-// FallbackDistanceM is where a detection without world coordinates is placed
-// along the camera's optical axis. P1 replaces this with real calibration.
+// FallbackDistanceM is where a detection without world coordinates and without
+// camera calibration is placed along the camera's optical axis.
 const FallbackDistanceM = 30.0
+
+// P1 assumes a 1920x1080 camera image so normalized bboxes can be turned into
+// the pixel coordinates a calibration matrix expects.
+const (
+	PixelWidth  = 1920.0
+	PixelHeight = 1080.0
+)
 
 // Result is one evaluation outcome.
 type Result struct {
@@ -74,6 +81,7 @@ func (e *Engine) Evaluate(camera model.Camera, batch []model.Detection, occurred
 			continue
 		}
 		e.last[key] = occurredAt
+		x, y, z, source := ProjectToWorld(camera, detection)
 		result.Events = append(result.Events, model.Event{
 			ID:         newEventID(),
 			CameraID:   camera.ID,
@@ -82,15 +90,16 @@ func (e *Engine) Evaluate(camera model.Camera, batch []model.Detection, occurred
 			Type:       mapping.eventType,
 			Severity:   mapping.severity,
 			Confidence: detection.Confidence,
-			X:          eventX(camera, detection),
-			Y:          eventY(camera, detection),
-			Z:          eventZ(detection),
+			X:          x,
+			Y:          y,
+			Z:          z,
 			OccurredAt: occurredAt.UTC(),
 			Status:     "new",
 			Payload: map[string]any{
-				"class":      detection.Class,
-				"bbox":       detection.BBox,
-				"confidence": detection.Confidence,
+				"class":        detection.Class,
+				"bbox":         detection.BBox,
+				"confidence":   detection.Confidence,
+				"world_source": source,
 			},
 		})
 	}
@@ -110,25 +119,36 @@ func (e *Engine) prune(now time.Time) {
 	}
 }
 
-func eventX(camera model.Camera, detection model.Detection) float64 {
+// ProjectToWorld resolves a detection's world position. Priority follows
+// docs/API_P1.md: explicit world coordinates, then the camera calibration
+// matrix, then the P0 fallback along the optical axis. The returned source is
+// "world", "calibration", "fallback" or "none".
+func ProjectToWorld(camera model.Camera, detection model.Detection) (x, y, z float64, source string) {
 	if detection.World != nil {
-		return detection.World.X
+		return detection.World.X, detection.World.Y, detection.World.Z, "world"
 	}
-	return camera.X + math.Sin(radians(camera.Heading))*FallbackDistanceM
+	if camera.Calibration != nil {
+		px := (detection.BBox[0] + detection.BBox[2]) / 2 * PixelWidth
+		py := detection.BBox[3] * PixelHeight
+		if wx, wy, ok := project(camera.Calibration.Matrix, px, py); ok {
+			return wx, wy, 0, "calibration"
+		}
+	}
+	return camera.X + math.Sin(radians(camera.Heading))*FallbackDistanceM,
+		camera.Y + math.Cos(radians(camera.Heading))*FallbackDistanceM, 0, "fallback"
 }
 
-func eventY(camera model.Camera, detection model.Detection) float64 {
-	if detection.World != nil {
-		return detection.World.Y
+func project(matrix [3][3]float64, px, py float64) (float64, float64, bool) {
+	w := matrix[2][0]*px + matrix[2][1]*py + matrix[2][2]
+	if math.Abs(w) < 1e-9 {
+		return 0, 0, false
 	}
-	return camera.Y + math.Cos(radians(camera.Heading))*FallbackDistanceM
-}
-
-func eventZ(detection model.Detection) float64 {
-	if detection.World != nil {
-		return detection.World.Z
+	x := (matrix[0][0]*px + matrix[0][1]*py + matrix[0][2]) / w
+	y := (matrix[1][0]*px + matrix[1][1]*py + matrix[1][2]) / w
+	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+		return 0, 0, false
 	}
-	return 0
+	return x, y, true
 }
 
 func radians(degrees float64) float64 { return degrees * math.Pi / 180 }

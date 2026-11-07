@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  EVENT_STATUS_COLORS,
+  EVENT_STATUS_LABELS,
   EVENT_TYPE_LABELS,
   EVENT_TYPE_ORDER,
   SEVERITY_COLORS,
@@ -18,6 +20,8 @@ const {
   focusEvent,
   acknowledgeEvent,
   clearAckError,
+  clearExportError,
+  downloadEventsCsv,
   setTypeFilter,
   setSeverityFilter,
 } = useTwinStore()
@@ -57,6 +61,13 @@ function onSeverityChange(event: Event): void {
   setSeverityFilter((event.target as HTMLSelectElement).value as Severity | 'all')
 }
 
+function ackLabel(event: { status: string; id: string }): string {
+  if (pendingIds.value.has(event.id)) return '确认中…'
+  if (event.status === 'closed') return '已关闭'
+  if (event.status === 'acked') return '已确认'
+  return '确认'
+}
+
 // 场景中点击事件标记后，把对应条目滚动到可视区域
 watch(
   () => state.selectedEventId,
@@ -73,9 +84,12 @@ watch(
   <section class="event-feed">
     <header class="panel-head">
       <h2>实时事件</h2>
-      <span class="feed-count">
-        {{ filteredEvents.length }}<template v-if="isFiltered"> / {{ state.events.length }}</template>
-      </span>
+      <div class="panel-head-actions">
+        <span class="feed-count">
+          {{ filteredEvents.length }}<template v-if="isFiltered"> / {{ state.events.length }}</template>
+        </span>
+        <button class="ghost-btn" :disabled="state.exportError !== null" @click="downloadEventsCsv">导出 CSV</button>
+      </div>
     </header>
 
     <div class="feed-filters">
@@ -99,6 +113,10 @@ watch(
       <span>确认失败：{{ state.ackError }}</span>
       <button class="ghost-btn" @click="clearAckError">关闭</button>
     </div>
+    <div v-if="state.exportError" class="feed-error">
+      <span>CSV 导出失败：{{ state.exportError }}</span>
+      <button class="ghost-btn" @click="clearExportError">关闭</button>
+    </div>
 
     <div ref="listRef" class="feed-list">
       <div v-if="filteredEvents.length === 0" class="feed-empty">
@@ -118,7 +136,10 @@ watch(
         v-for="event in filteredEvents"
         :key="event.id"
         class="event-item"
-        :class="[`sev-${event.severity}`, { selected: event.id === state.selectedEventId, acked: event.status === 'acked' }]"
+        :class="[
+          `sev-${event.severity}`,
+          { selected: event.id === state.selectedEventId, closed: event.status === 'closed', acked: event.status === 'acked' },
+        ]"
         :data-event-id="event.id"
         @click="focusEvent(event.id)"
       >
@@ -129,6 +150,12 @@ watch(
             <span class="event-severity" :style="{ color: SEVERITY_COLORS[event.severity] }">
               {{ SEVERITY_LABELS[event.severity] }}
             </span>
+            <span
+              class="status-chip-sm"
+              :style="{ color: EVENT_STATUS_COLORS[event.status], borderColor: EVENT_STATUS_COLORS[event.status] }"
+            >
+              {{ EVENT_STATUS_LABELS[event.status] }}
+            </span>
             <time>{{ formatRelativeTime(event.occurred_at, nowTick) }}</time>
           </div>
           <p class="event-camera">{{ event.camera_code }} · {{ event.camera_name }}</p>
@@ -138,15 +165,15 @@ watch(
         </div>
         <button
           class="ack-btn"
-          :class="{ done: event.status === 'acked' }"
-          :disabled="event.status === 'acked' || pendingIds.has(event.id)"
+          :class="{ done: event.status !== 'new' }"
+          :disabled="event.status !== 'new' || pendingIds.has(event.id)"
           @click.stop="acknowledgeEvent(event.id)"
         >
-          {{ event.status === 'acked' ? '已确认' : pendingIds.has(event.id) ? '确认中…' : '确认' }}
+          {{ ackLabel(event) }}
         </button>
       </article>
     </div>
 
-    <footer class="feed-foot">点击事件可定位所属相机 · 三维标记约 60 秒后自动淡出</footer>
+    <footer class="feed-foot">点击事件查看处置详情并定位相机 · 三维标记约 60 秒后自动淡出</footer>
   </section>
 </template>

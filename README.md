@@ -64,6 +64,19 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 预期结果记录在 `docs/ACCEPTANCE.md`。
 
+![P1.0 界面（视频 + 轨迹 + 处置 + 统计）](docs/screenshots/p1-web.png)
+
+## P1.0 能力（在 P0 之上）
+
+- **相机视频**：`stream_url` + hls.js 播放器（本机测试流 `scripts/make_hls.sh` 生成），LIVE 标识与错误态。
+- **单目标定**：地面控制点（≥4）→ DLT 求单应矩阵 → `POST /api/calibration/solve` → 保存到相机；规则引擎优先用标定投影事件世界坐标（`world > calibration > fallback`）。
+- **轨迹**：检测带 `track_id` 时落库轨迹点并通过 WS 推送，前端按 track 绘制轨迹线。
+- **告警处置闭环**：确认 / 派单 / 关闭 + 处置动作记录 + 审计日志（`/api/audit`）。
+- **统计与导出**：`/api/stats/summary`（按等级/类型/相机/小时）、`/api/stats/events.csv`。
+- **可选鉴权**：设置 `AUTH_TOKEN` 后启用 Bearer Token（前端 `VITE_API_TOKEN`）。
+
+契约见 [`docs/API_P1.md`](docs/API_P1.md)。
+
 ## 目录
 
 ```

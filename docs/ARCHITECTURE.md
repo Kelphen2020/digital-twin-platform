@@ -48,7 +48,20 @@
 - **坐标统一**：ENU 米制贯穿后端与前端，避免"大屏一套坐标、后端一套坐标"。
 - **可观测性优先**：`/metrics` 从 P0 就有，压测数据直接可查。
 
-## 6. P1 建议优先级
+## 6. P1.0 已落地
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 视频播放 | `apps/web` + `scripts/make_hls.sh` | hls.js 播 `camera.stream_url`；本机用 ffmpeg 测试流，真实接入换 ZLMediaKit 地址 |
+| 单目标定 | `services/api/internal/calib` | 4–20 个控制点 DLT（法方程）→ 单应矩阵 + 残差；规则引擎优先标定投影 |
+| 轨迹 | `track_points` 表 + `/api/tracks` + WS `track_point` | 带 `track_id` 的检测落库，前端画轨迹线 |
+| 处置闭环 | `event_actions` + `audit_log` | 确认/派单/关闭；写审计（`/api/audit`） |
+| 统计导出 | `/api/stats/summary`、`/api/stats/events.csv` | 按等级/类型/相机/小时聚合；CSV 导出 |
+| 可选鉴权 | `AUTH_TOKEN` + 中间件 | REST Bearer；WS `?token=`；默认关闭 |
+
+演进备注：标定求解当前是代数最小二乘（不是 SVD），已用合成数据验证；真实场景需加鲁棒估计（RANSAC）与多相机融合；视频播放走 HLS 演示链路，WebRTC 低时延需接媒体服务器。
+
+## 7. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

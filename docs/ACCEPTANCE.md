@@ -72,3 +72,60 @@ make smoke
 
 - 软件闭环（注入 → 规则 → 事件 → WS → 列表/确认/metrics）已在本机跑通，延迟与吞吐远高于 P0 目标。
 - 三维前端与数据库持久化用于演示"可交付形态"，真实视频接入、标定与 AI 指标属于 P1/P2。
+
+---
+
+# P1.0 验收记录（2026-11-07 晚）
+
+## 7. P1 后端接口测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | `internal/calib`（仿射/单位矩阵还原、退化点拒绝）、`internal/api`（标定 solve/put/get/delete、轨迹、确认/派单/关闭、审计、统计、CSV、可选 Bearer Token、错误码）全部通过 |
+
+## 8. smoke.sh（P0 8 项 + P1 13 项 = 21 项）
+
+```
+smoke: PASS (21 checks passed)
+```
+
+P1 覆盖：标定 solve（rmse=7.6e-14）→ PUT → GET 相机标定；带 `track_id` 注入 → `/api/tracks` 首轮命中；事件 → 详情（actions 空）→ 派单（target=安保A组）→ 关闭（closed_at 设置）→ 详情 actions=[dispatch,close]；`/api/audit` 含标定/处置动作；`/api/stats/summary` totals>0；`/api/stats/events.csv` 表头匹配。
+
+> 顺带修复 P0 smoke 的一个潜在抖动：在模拟器高并发时，5s 去重窗口可能吞掉 smoke 的注入，现已加入去重窗口重试（3 次并发 smoke 全绿）。
+
+## 9. 压测（P1 轨迹路径）
+
+```bash
+python3 scripts/load.py --qps 50 --duration 5    # 默认 --track-ratio 0.5
+```
+
+| 指标 | 值 |
+|---|---|
+| 请求 | 250/250 成功（100%），50.00 QPS |
+| 延迟 | p50 0.50 ms / p95 1.51 ms / p99 2.47 ms |
+| 事件/轨迹 | 25 事件，108/250 条检测带 track_id 落库 |
+| 结论 | ✅ PASS |
+
+## 10. 前端 P1 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 视频 | ✅ HLS 真实播放：`video.readyState=4`，`currentSrc=/hls/test.m3u8`，`paused=false`，LIVE 标识，切换相机后重新附着 |
+| 轨迹 | ✅ 相机选择加载 + WS 实时增量；「显示轨迹」计数 29；3D 轨迹线渲染；开关往返正常 |
+| 处置闭环 | ✅ 通过真实按钮：确认 → 派单（安保B组+备注）→ 关闭（备注）；actions 3 条，按钮置灰；收到 3 次 `event_updated` |
+| 统计 | ✅ 24h/1h 切换、等级/类型分布、TOP 相机、小时柱状；CSV 下载 200 |
+| 标定 UI | ✅ 显示 CAM-001「已标定 RMSE 0.00 m / 5 点」；对话框 4–20 点求解返回矩阵与残差 |
+| 控制台 | ✅ console errors=[]，page exceptions=[]，failed HTTP=[] |
+| 截图 | `docs/screenshots/p1-web.png`、`p1-actions.png`、`p1-stats.png`、`p1-calibration.png` |
+
+## 11. 已知限制（P1.0）
+
+- 视频源是本机 ffmpeg 测试流（`scripts/make_hls.sh`），HLS 有 2–6s 级延迟；WebRTC 低时延需接 ZLMediaKit，网络/Docker 环境具备后进行。
+- 标定求解是代数最小二乘（非 SVD/RANSAC），合成数据验证通过；真实场景需加鲁棒估计与多相机融合。
+- 真机 GPU 帧率、画布交互（拖拽/悬停/3D 点选）未自动化，headless 软渲染 46 FPS 不代表真机（目标 ≥30fps@1080p）。
+- 可选鉴权（`AUTH_TOKEN`）代码与前端支持已实现，但本次未以开启状态做端到端验证。
+- PostgreSQL 容器化仍未在本机验证（Docker Hub 网络受限，镜像经镜像源拉取过慢）。
