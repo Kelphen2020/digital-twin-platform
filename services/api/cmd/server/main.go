@@ -37,7 +37,9 @@ func main() {
 	authService := auth.New(cfg.AuthMode, cfg.JWTSecret)
 	server := api.New(database, engine, hub, meters, cfg.Version, authService, cfg.IngestToken)
 
+	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)
+	go server.RunEscalation(ctx, 15*time.Second)
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,

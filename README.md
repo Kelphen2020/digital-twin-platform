@@ -91,6 +91,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P2.md`](docs/API_P2.md)。
 
+![P3.0 管理设置与审计](docs/screenshots/p3-admin.png)
+
+## P3.0 能力（数据权限 / 升级 / 通知）
+
+- **数据级权限**：非 admin 且配置了 `areas` 的账号，读取相机/事件/轨迹/工单/统计时自动按区域过滤；单资源越权返回 `403 out_of_scope`；审计与通知日志仅 admin 可见。
+- **告警升级**：后台每 15 秒扫描，超过阈值（默认 300s）仍未关闭的 warn/critical 事件标记 `escalated_at`，WS 推送 `event_updated` 并触发升级通知；前端显示「已升级」。
+- **Webhook 通知**：管理员可配置 `generic`（JSON）或 `feishu`（飞书机器人格式）webhook、最小严重级别、超时；新事件与升级都会投递，最近 1000 条投递记录可在 `GET /api/notifications` 查询。
+- **运行时设置**：`GET/PUT /api/settings/notifications` 与 `/api/settings/escalation`（仅 admin，实时生效并审计）。
+
+契约见 [`docs/API_P3.md`](docs/API_P3.md)。
+
 ## 目录
 
 ```

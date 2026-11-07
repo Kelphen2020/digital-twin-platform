@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { fetchCameraRules, saveCameraRules, apiErrorMessage } from '../api'
+import { ApiError, fetchCameraRules, saveCameraRules, apiErrorMessage } from '../api'
 import { EVENT_TYPE_LABELS, EVENT_TYPE_ORDER, ROLE_LABELS, formatDateTime } from '../labels'
 import { useAuthStore } from '../store/auth'
 import { pushToast } from '../store/ui'
@@ -40,6 +40,9 @@ async function load(): Promise<void> {
     applyRules(await fetchCameraRules(props.camera.id))
   } catch (error) {
     loadError.value = apiErrorMessage(error)
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      pushToast(apiErrorMessage(error), 'error')
+    }
   } finally {
     loading.value = false
   }

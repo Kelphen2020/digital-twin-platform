@@ -184,3 +184,61 @@ API_TOKEN=<admin token> python3 scripts/load.py --qps 50 --duration 5
 - 操作员区域权限作用于相机/事件/工单；跨区域**只读**仍可见（P2.0 简化，P3 可做数据级过滤）。
 - ROI 编辑器为归一化坐标点列表（无拖拽手柄）；规则未配置时 `updated_at` 省略。
 - 真实 GPU 帧率、画布手势、真实视频源仍需人工验收；PostgreSQL 容器化仍受本机 Docker 网络限制未验证。
+
+---
+
+# P3.0 验收记录（2026-11-08 凌晨）
+
+## 17. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增 P3 测试：数据级过滤（operator 仅 3 台相机、越权事件 403、统计按区域收敛）、设置校验（非法 webhook URL 400）、escalation 生效（stale 事件 → escalated_at）、webhook 投递（httptest 接收器收到事件 id、/api/notifications 记录 ok=true）、审计 `event.escalate` actor=system |
+
+## 18. smoke.sh（P0 8 + P1 13 + P2 18 + P3 21 = 60 项 / 23 步）
+
+```
+smoke: PASS (60 checks passed)
+```
+
+P3 覆盖：
+- 数据过滤：operator `GET /api/cameras` = `[CAM-001, CAM-005, CAM-006]`；CAM-002 新事件 admin 可见、operator 列表不可见、详情 `403 out_of_scope`；operator 访问审计/通知 → `403 forbidden`。
+- 升级：admin PUT escalation `{after_seconds:1}` → 500ms 内生效；`ts=now-10s` 的 warn 事件在 **2.3–7.8s** 内写入 `escalated_at`（合同要求 ≤15s 扫描周期）。
+- 通知：非法 URL 400；本地 webhook 接收器收到事件 POST（body 461B），`/api/notifications` 记录 `ok=true/status_code=200`；测试后恢复默认（300s、通知关闭、CAM-005 规则恢复）。
+- 幂等：重复运行 PASS，并发模拟器 8 det/s 下 PASS。
+
+## 19. 压测（P3 回归，AUTH_MODE=on）
+
+```bash
+API_TOKEN=<admin token> python3 scripts/load.py --qps 50 --duration 5
+```
+
+| 指标 | 值 |
+|---|---|
+| 请求 | 250/250 成功（100%），50.00 QPS |
+| 延迟 | p50 1.09 ms / p95 1.41 ms / p99 2.15 ms |
+| 轨迹 | 132/250 带 track_id |
+| 结论 | ✅ PASS（P3 过滤/通知/升级未影响 ingest 吞吐） |
+
+## 20. 前端 P3 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 升级 UI | ✅ 事件流/详情「已升级」标记 + 升级时间；WS `event_updated` 触发「告警已升级」toast（CAM-001/CAM-006 实测） |
+| 设置（admin） | ✅ 通知设置与升级设置加载、保存、GET 回读（300s↔30s、timeout 7↔5 保存/恢复）；表单校验 |
+| 审计/通知（admin） | ✅ 审计 9 行（含 settings.*.put、event.escalate actor=system）；通知投递 3 行「投递成功 200」 |
+| operator | ✅ 侧栏「仅显示负责区域：东门、停车场」；3 个页签（无设置/审计）；相机 3 台；越权 403 toast |
+| viewer | ✅ 只读、6 台相机、无管理面板 |
+| 控制台 | ✅ console errors=[]、page exceptions=[]（仅预期 403 测试请求） |
+| 截图 | `docs/screenshots/p3-admin.png`、`p3-escalated-detail.png`、`p3-audit.png`、`p3-notifications.png`、`p3-escalation-toast.png`、`p3-operator.png` |
+
+## 21. 已知限制（P3.0）
+
+- 设置缓存在 Host 内存（单实例）；多实例部署需共享存储 + 失效广播。
+- 通知为异步尽力投递：失败只记录不重试；飞书负载仅按自定义机器人文本格式实现，未接真实机器人验证。
+- 升级采用 15s 扫描，最坏延迟约 15s；`escalated_at` 只标记不升级严重级别。
+- 数据级过滤作用于读取；写操作仍由 P2 的区域校验保证。真实 GPU 帧率/画布手势/真实视频源仍需人工验收。

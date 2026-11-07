@@ -1,5 +1,7 @@
 import { getAuthToken } from './auth/token'
 import type {
+  AuditEntry,
+  AuditListResponse,
   AuthUser,
   CalibrationSavePayload,
   CalibrationSolveResponse,
@@ -11,8 +13,12 @@ import type {
   ControlPoint,
   CreateOrderPayload,
   EventDetailResponse,
+  EscalationSettings,
   EventListResponse,
   LoginResponse,
+  NotificationListResponse,
+  NotificationLogEntry,
+  NotificationSettings,
   Order,
   OrderListResponse,
   OrderStatus,
@@ -108,6 +114,14 @@ function postJson<T>(path: string, body?: unknown): Promise<T> {
 function patchJson<T>(path: string, body: unknown): Promise<T> {
   return requestJson<T>(path, {
     method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+function putJson<T>(path: string, body: unknown): Promise<T> {
+  return requestJson<T>(path, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -313,6 +327,40 @@ export async function createOrder(payload: CreateOrderPayload): Promise<Order> {
 /** PATCH /api/orders/{id}（operator/admin）→ 流转工单。 */
 export async function updateOrder(orderId: string, payload: UpdateOrderPayload): Promise<Order> {
   return patchJson<Order>(`/api/orders/${encodeURIComponent(orderId)}`, payload)
+}
+
+// ---------------- P3 设置 / 审计 / 通知 ----------------
+
+/** GET /api/settings/notifications（admin）→ 通知（Webhook）设置。 */
+export async function fetchNotificationSettings(): Promise<NotificationSettings> {
+  return requestJson<NotificationSettings>('/api/settings/notifications')
+}
+
+/** PUT /api/settings/notifications（admin）→ 保存通知设置。 */
+export async function saveNotificationSettings(payload: NotificationSettings): Promise<NotificationSettings> {
+  return putJson<NotificationSettings>('/api/settings/notifications', payload)
+}
+
+/** GET /api/settings/escalation（admin）→ 告警升级设置。 */
+export async function fetchEscalationSettings(): Promise<EscalationSettings> {
+  return requestJson<EscalationSettings>('/api/settings/escalation')
+}
+
+/** PUT /api/settings/escalation（admin）→ 保存告警升级设置。 */
+export async function saveEscalationSettings(payload: EscalationSettings): Promise<EscalationSettings> {
+  return putJson<EscalationSettings>('/api/settings/escalation', payload)
+}
+
+/** GET /api/audit?limit=（admin）→ 操作审计。 */
+export async function fetchAudit(limit = 100): Promise<AuditEntry[]> {
+  const data = await requestJson<AuditListResponse>(`/api/audit?limit=${limit}`)
+  return data.items ?? []
+}
+
+/** GET /api/notifications?limit=（admin）→ 通知投递记录。 */
+export async function fetchNotifications(limit = 50): Promise<NotificationLogEntry[]> {
+  const data = await requestJson<NotificationListResponse>(`/api/notifications?limit=${limit}`)
+  return data.items ?? []
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

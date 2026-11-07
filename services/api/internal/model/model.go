@@ -53,20 +53,73 @@ type Area struct {
 
 // Event is one produced event (P0 stand-in for the Kafka event envelope).
 type Event struct {
-	ID         string         `json:"id"`
-	CameraID   string         `json:"camera_id"`
-	CameraCode string         `json:"camera_code"`
-	CameraName string         `json:"camera_name"`
-	Type       string         `json:"type"`
-	Severity   string         `json:"severity"`
-	Confidence float64        `json:"confidence"`
-	X          float64        `json:"x"`
-	Y          float64        `json:"y"`
-	Z          float64        `json:"z"`
-	OccurredAt time.Time      `json:"occurred_at"`
-	Status     string         `json:"status"`
-	ClosedAt   *time.Time     `json:"closed_at,omitempty"`
-	Payload    map[string]any `json:"payload"`
+	ID          string         `json:"id"`
+	CameraID    string         `json:"camera_id"`
+	CameraCode  string         `json:"camera_code"`
+	CameraName  string         `json:"camera_name"`
+	Type        string         `json:"type"`
+	Severity    string         `json:"severity"`
+	Confidence  float64        `json:"confidence"`
+	X           float64        `json:"x"`
+	Y           float64        `json:"y"`
+	Z           float64        `json:"z"`
+	OccurredAt  time.Time      `json:"occurred_at"`
+	Status      string         `json:"status"`
+	ClosedAt    *time.Time     `json:"closed_at,omitempty"`
+	EscalatedAt *time.Time     `json:"escalated_at,omitempty"`
+	Payload     map[string]any `json:"payload"`
+}
+
+// NotificationSettings controls webhook delivery of events and escalations.
+type NotificationSettings struct {
+	Enabled        bool   `json:"enabled"`
+	WebhookURL     string `json:"webhook_url"`
+	Format         string `json:"format"`
+	MinSeverity    string `json:"min_severity"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+// DefaultNotificationSettings is the disabled-by-default webhook configuration.
+func DefaultNotificationSettings() NotificationSettings {
+	return NotificationSettings{Enabled: false, WebhookURL: "", Format: "generic", MinSeverity: "warn", TimeoutSeconds: 5}
+}
+
+// EscalationSettings controls the stale-alert escalation worker.
+type EscalationSettings struct {
+	Enabled      bool     `json:"enabled"`
+	AfterSeconds int      `json:"after_seconds"`
+	Severities   []string `json:"severities"`
+}
+
+// DefaultEscalationSettings escalates warn/critical alerts after five minutes.
+func DefaultEscalationSettings() EscalationSettings {
+	return EscalationSettings{Enabled: true, AfterSeconds: 300, Severities: []string{"warn", "critical"}}
+}
+
+// NotificationLog is one webhook delivery attempt.
+type NotificationLog struct {
+	ID         string    `json:"id"`
+	At         time.Time `json:"at"`
+	Kind       string    `json:"kind"`
+	EventID    string    `json:"event_id"`
+	URL        string    `json:"url"`
+	Format     string    `json:"format"`
+	OK         bool      `json:"ok"`
+	StatusCode int       `json:"status_code"`
+	Error      string    `json:"error"`
+}
+
+// SeverityRank orders severities for notification thresholds.
+func SeverityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 3
+	case "warn":
+		return 2
+	case "info":
+		return 1
+	}
+	return 0
 }
 
 // EventAction is one workflow action recorded against an event.
@@ -103,9 +156,10 @@ type TrackPoint struct {
 
 // TrackFilter narrows GET /api/tracks.
 type TrackFilter struct {
-	CameraID string
-	Since    *time.Time
-	Limit    int
+	CameraID  string
+	Since     *time.Time
+	Limit     int
+	CameraIDs []string
 }
 
 // World is an optional pre-computed ground position for a detection.
@@ -133,10 +187,11 @@ type IngestRequest struct {
 
 // EventFilter narrows GET /api/events.
 type EventFilter struct {
-	Limit  int
-	Status string
-	Type   string
-	Since  *time.Time
+	Limit     int
+	Status    string
+	Type      string
+	Since     *time.Time
+	CameraIDs []string
 }
 
 // AuditFilter narrows GET /api/audit.
@@ -243,9 +298,10 @@ type Order struct {
 
 // OrderFilter narrows GET /api/orders.
 type OrderFilter struct {
-	Status   string
-	Assignee string
-	Limit    int
+	Status    string
+	Assignee  string
+	Limit     int
+	CameraIDs []string
 }
 
 // OrderUpdate carries the mutable fields of PATCH /api/orders/{id}.

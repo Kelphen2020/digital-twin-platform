@@ -41,7 +41,12 @@ type Store interface {
 	GetOrder(ctx context.Context, id string) (model.Order, error)
 	UpdateOrder(ctx context.Context, id string, update model.OrderUpdate) (model.Order, error)
 	ListOrders(ctx context.Context, filter model.OrderFilter) ([]model.Order, error)
-	Stats(ctx context.Context, from, to time.Time) (model.StatsSummary, error)
+	GetSetting(ctx context.Context, key string) ([]byte, bool, error)
+	SetSetting(ctx context.Context, key string, value []byte) error
+	CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error
+	ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error)
+	EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
+	Stats(ctx context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error)
 	Counts(ctx context.Context) (model.Counts, error)
 }
 
@@ -54,6 +59,8 @@ type Memory struct {
 	events    []model.Event
 	rules     map[string]model.CameraRules
 	orders    []model.Order
+	settings  map[string][]byte
+	logs      []model.NotificationLog
 	tracks    []model.TrackPoint
 	actions   map[string][]model.EventAction
 	audit     []model.AuditEntry
@@ -74,6 +81,7 @@ func NewMemory(maxEvents int) *Memory {
 		maxAudit:  5000,
 		actions:   make(map[string][]model.EventAction),
 		rules:     make(map[string]model.CameraRules),
+		settings:  make(map[string][]byte),
 	}
 }
 
@@ -180,6 +188,9 @@ func (m *Memory) ListEvents(_ context.Context, filter model.EventFilter) ([]mode
 		if filter.Since != nil && event.OccurredAt.Before(*filter.Since) {
 			continue
 		}
+		if len(filter.CameraIDs) > 0 && !containsString(filter.CameraIDs, event.CameraID) {
+			continue
+		}
 		out = append(out, event)
 	}
 	return out, nil
@@ -276,6 +287,9 @@ func (m *Memory) ListTrackPoints(_ context.Context, filter model.TrackFilter) ([
 		if filter.Since != nil && point.TS.Before(*filter.Since) {
 			continue
 		}
+		if len(filter.CameraIDs) > 0 && !containsString(filter.CameraIDs, point.CameraID) {
+			continue
+		}
 		out = append(out, point)
 	}
 	return out, nil
@@ -312,7 +326,7 @@ func (m *Memory) ListAudit(_ context.Context, filter model.AuditFilter) ([]model
 	return out, nil
 }
 
-func (m *Memory) Stats(_ context.Context, from, to time.Time) (model.StatsSummary, error) {
+func (m *Memory) Stats(_ context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	summary := model.StatsSummary{
@@ -324,6 +338,9 @@ func (m *Memory) Stats(_ context.Context, from, to time.Time) (model.StatsSummar
 	perHour := map[time.Time]int64{}
 	for _, event := range m.events {
 		if event.OccurredAt.Before(from) || event.OccurredAt.After(to) {
+			continue
+		}
+		if len(cameraIDs) > 0 && !containsString(cameraIDs, event.CameraID) {
 			continue
 		}
 		summary.Totals.Events++
@@ -428,6 +445,9 @@ func (m *Memory) ListOrders(_ context.Context, filter model.OrderFilter) ([]mode
 		if filter.Assignee != "" && order.Assignee != filter.Assignee {
 			continue
 		}
+		if len(filter.CameraIDs) > 0 && !containsString(filter.CameraIDs, order.CameraID) {
+			continue
+		}
 		out = append(out, order)
 	}
 	return out, nil
@@ -470,6 +490,78 @@ func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (m *Memory) GetSetting(_ context.Context, key string) ([]byte, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	value, ok := m.settings[key]
+	if !ok {
+		return nil, false, nil
+	}
+	return append([]byte(nil), value...), true, nil
+}
+
+func (m *Memory) SetSetting(_ context.Context, key string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings[key] = append([]byte(nil), value...)
+	return nil
+}
+
+func (m *Memory) CreateNotificationLog(_ context.Context, entry model.NotificationLog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logs = append(m.logs, entry)
+	if len(m.logs) > 1000 {
+		m.logs = append([]model.NotificationLog(nil), m.logs[len(m.logs)-1000:]...)
+	}
+	return nil
+}
+
+func (m *Memory) ListNotificationLog(_ context.Context, limit int) ([]model.NotificationLog, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	out := make([]model.NotificationLog, 0, limit)
+	for i := len(m.logs) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, m.logs[i])
+	}
+	return out, nil
+}
+
+func (m *Memory) EscalateStale(_ context.Context, before time.Time, severities []string) ([]model.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	escalated := make([]model.Event, 0, 4)
+	for i := range m.events {
+		event := &m.events[i]
+		if event.Status == "closed" || event.EscalatedAt != nil {
+			continue
+		}
+		if event.OccurredAt.After(before) {
+			continue
+		}
+		if len(severities) > 0 && !containsString(severities, event.Severity) {
+			continue
+		}
+		closed := now
+		event.EscalatedAt = &closed
+		escalated = append(escalated, *event)
+	}
+	return escalated, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func applyPatch(camera *model.Camera, patch model.CameraPatch) {

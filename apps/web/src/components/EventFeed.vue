@@ -161,6 +161,7 @@ watch(
             >
               {{ EVENT_STATUS_LABELS[event.status] }}
             </span>
+            <span v-if="event.escalated_at" class="escalation-chip" title="超过处置时限，已由系统升级">已升级</span>
             <time>{{ formatRelativeTime(event.occurred_at, nowTick) }}</time>
           </div>
           <p class="event-camera">{{ event.camera_code }} · {{ event.camera_name }}</p>

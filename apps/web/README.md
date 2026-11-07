@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P2.0）
+# 数字孪生安防平台 · Web 前端（P3.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3，均为固定契约）。
 
 ## 快速开始
 
@@ -58,8 +58,11 @@ pnpm dev          # http://127.0.0.1:5173
 | 相机状态/坐标/朝向修改 | ❌ | ✅ 仅负责区域内（区域外后端返回 `403 out_of_scope`，前端浮层提示） | ✅ 任意相机 |
 | 相机规则配置 | ❌（只读） | ❌（只读） | ✅ |
 | 相机标定 | ❌ | ❌ | ✅ |
+| 平台设置（通知/升级）与审计/通知投递 | ❌ | ❌ | ✅ |
 
 权限错误统一以顶部 Toast 提示（`403 out_of_scope` / 无权限 / 登录过期）。
+
+**数据级权限（P3）**：非 admin 且 `areas` 非空时，后端对相机/事件/轨迹/工单/统计只返回负责区域内的数据；前端侧栏顶部显示「仅显示负责区域：…」提示。单相机/事件/工单详情越权返回 `403 out_of_scope`，前端以 Toast 提示而不影响其他功能。
 
 ### 三维场景与视频（P0/P1）
 
@@ -92,6 +95,25 @@ pnpm dev          # http://127.0.0.1:5173
 
 - 相机详情显示「已标定（RMSE/点数/时间）/ 未标定」；admin 可打开标定弹窗：粘贴 4–20 组控制点 JSON → `POST /api/calibration/solve` 展示 3×3 单应矩阵与残差 → `PUT /api/cameras/{id}/calibration` 保存，支持删除。
 
+### 告警升级（P3）
+
+- 事件新增 `escalated_at`：事件流与处置详情显示红色「已升级」徽标（呼吸高亮），详情展示升级时间。
+- 服务端按升级设置每 15 s 扫描超时未处置事件；升级时 WS 推送 `event_updated`，前端显示「告警已升级」Toast；升级同时触发一次通知投递。
+
+### 平台设置（P3，admin）
+
+- 右侧「设置」页签（仅 admin 可见）：
+  - **通知（Webhook）**：启用开关、Webhook URL、格式（`generic` / `feishu`）、最低严重级别、超时（1–30 s），保存后经 `GET /api/settings/notifications` 确认持久化。
+  - **告警升级**：启用开关、超时未处置时限（0–86400 s）、适用严重级别勾选，保存经 `GET /api/settings/escalation` 确认。
+- 前端做与契约一致的本地校验（URL 为 http/https、数值范围等），保存成功/失败均有 Toast。
+
+### 审计与通知投递（P3，admin）
+
+- 右侧「审计」页签（仅 admin 可见），子页签：
+  - **操作审计**：`GET /api/audit?limit=100`，展示 actor / action / resource / 时间 / detail 摘要（含 `event.escalate`、`settings.*.put` 等）。
+  - **通知投递**：`GET /api/notifications?limit=50`，展示 kind / event_id / 格式 / 成功或失败 / `status_code` / 错误 / url。
+- 刷新按钮同时拉取两类数据；操作审计与通知投递均有空态与错误重试。
+
 ## 后端契约（前端实际调用）
 
 | 方法 | 路径 | 角色 | 用途 |
@@ -109,6 +131,10 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/tracks?camera_id=&limit=500` | 全部 | 历史轨迹 |
 | GET | `/api/stats/summary`、`/api/stats/events.csv` | 全部 | 统计 / 导出 |
 | GET/POST | `/api/orders`、`GET/PATCH /api/orders/{id}` | 全部 / operator/admin | 工单 |
+| GET/PUT | `/api/settings/notifications` | admin | 通知（Webhook）设置 |
+| GET/PUT | `/api/settings/escalation` | admin | 告警升级设置 |
+| GET | `/api/audit?limit=100` | admin | 操作审计 |
+| GET | `/api/notifications?limit=50` | admin | 通知投递记录 |
 | WS | `/ws?token=` | 已登录 | `hello/event/event_updated/camera_status/track_point/order_updated/stats` |
 
 ## 坐标与渲染约定
@@ -132,12 +158,15 @@ apps/web/
    ├─ ws.ts                      # WS 客户端（token、消息校验、指数退避）
    ├─ store/
    │  ├─ auth.ts                 # 登录/会话/角色权限矩阵/区域判定
-   │  ├─ twin.ts                 # 相机/事件/轨迹/统计/工单/选择状态
+   │  ├─ twin.ts                 # 相机/事件/轨迹/统计/工单/选择状态（含升级 Toast）
+   │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递记录
    │  └─ ui.ts                   # Toast 队列
    ├─ components/
    │  ├─ LoginView.vue / ToastHost.vue / TopBar.vue / OfflineBanner.vue
    │  ├─ CameraDetail.vue / CameraVideo.vue / CalibrationDialog.vue / CameraRulesPanel.vue
    │  ├─ EventFeed.vue / EventDetail.vue / StatsPanel.vue / OrdersPanel.vue
+   │  ├─ SettingsPanel.vue       # P3 通知/升级设置（admin）
+   │  ├─ AuditPanel.vue          # P3 操作审计 + 通知投递（admin）
    │  └─ （其余见代码）
    ├─ scene/                     # TwinScene + 环境/相机标记/事件标记/轨迹/坐标/资源释放
    └─ styles/main.css            # 深蓝指挥中心风格（1280–1920）
@@ -154,7 +183,11 @@ apps/web/
 | 事件、处置状态与审计 | **实时**：REST + WS `event`/`event_updated` |
 | 轨迹 | **实时**：`/api/tracks` + WS `track_point`（模拟器产生） |
 | 工单 | **实时**：`/api/orders` + WS `order_updated` |
-| 统计与 CSV | **实时**：`/api/stats/summary`、`/api/stats/events.csv` |
+| 统计与 CSV | **实时**：`/api/stats/summary`、`/api/stats/events.csv`（按角色区域过滤） |
+| 告警升级 | **实时**：服务端升级 worker + WS `event_updated`（`escalated_at`） |
+| 通知设置 / 投递记录 | **实时**：`/api/settings/notifications`、`/api/notifications`；投递需要可达的 Webhook 接收端 |
+| 升级设置 | **实时**：`/api/settings/escalation` |
+| 操作审计 | **实时**：`/api/audit` |
 | AI 推理 | **未接入**，由 `services/simulator` 按 `/api/ingest/detections` 契约模拟 |
 
 ## 验证方式
@@ -175,6 +208,23 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:5173/api/orders?limi
 
 # 未认证访问应为 401
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5173/api/cameras
+
+# P3：管理员设置 / 审计 / 通知投递
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:5173/api/audit?limit=20"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:5173/api/notifications?limit=20"
+
+# P3：非 admin 访问管理端点应为 403 forbidden；operator 相机列表仅返回负责区域
+OP_TOKEN=$(curl -s -X POST http://localhost:5173/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"operator","password":"Operator@123"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $OP_TOKEN" http://localhost:5173/api/settings/escalation
+curl -s -H "Authorization: Bearer $OP_TOKEN" http://localhost:5173/api/cameras | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["items"]))'
+
+# 升级链路手工验证：把 after_seconds 设为 0 并注入一条 critical 检测，等待 ≤15s
+# curl -X PUT .../api/settings/escalation -d '{"enabled":true,"after_seconds":0,"severities":["critical"]}'
+# curl -X POST .../api/ingest/detections -d '{"camera_code":"CAM-001","detections":[{"class":"smoke","confidence":0.9}]}'
+# 随后 GET /api/events 可见 escalated_at，WS 收到 event_updated，/api/notifications 出现 escalation 投递记录。
 ```
 
 无头 Chrome 手动验收（本机有 Chrome 时）：
@@ -194,3 +244,5 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5173/api/cameras
 - 生产构建中 three.js 主包约 726 kB（gzip ≈ 196 kB），hls.js 为按需加载独立分包（gzip ≈ 181 kB）。
 - 真机 GPU 帧率与画布交互（拖拽/悬停/3D 点选）未自动化；headless 软渲染约 45 FPS 不代表真机（目标 ≥30 fps@1080p）。
 - P2 不做多租户/权限管理后台/审批流；这些留在后续阶段。
+- P3 通知投递依赖可达的 Webhook 接收端（默认示例 `http://127.0.0.1:8099/hook`），失败会记入通知投递记录；升级 worker 扫描周期 15 s，前端不提供手动升级入口。
+- 已升级事件的 `escalated_at` 由服务端写入后不可撤销（P3 契约），仅用于展示与通知。

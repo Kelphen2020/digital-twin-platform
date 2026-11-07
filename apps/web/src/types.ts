@@ -62,6 +62,8 @@ export interface TwinEvent {
   occurred_at: string
   status: EventStatus
   closed_at?: string | null
+  /** 告警升级时间（P3，可空）；非空表示超时未处置已升级。 */
+  escalated_at?: string | null
   payload: Record<string, unknown> | null
 }
 
@@ -295,7 +297,58 @@ export interface EventFilters {
   severity: Severity | 'all'
 }
 
-export type SidebarTab = 'events' | 'stats' | 'orders'
+// ---------------- P3：设置 / 审计 / 通知投递 ----------------
+
+export type NotificationFormat = 'generic' | 'feishu'
+
+/** GET/PUT /api/settings/notifications（admin）。 */
+export interface NotificationSettings {
+  enabled: boolean
+  webhook_url: string
+  format: NotificationFormat
+  min_severity: Severity
+  timeout_seconds: number
+}
+
+/** GET/PUT /api/settings/escalation（admin）。 */
+export interface EscalationSettings {
+  enabled: boolean
+  after_seconds: number
+  severities: Severity[]
+}
+
+/** GET /api/audit 审计条目。 */
+export interface AuditEntry {
+  id: string
+  at: string
+  actor: string
+  action: string
+  resource: string
+  detail: Record<string, unknown> | null
+}
+
+export interface AuditListResponse {
+  items: AuditEntry[]
+}
+
+/** GET /api/notifications 通知投递记录。 */
+export interface NotificationLogEntry {
+  id: string
+  at: string
+  kind: string
+  event_id: string
+  url: string
+  format: string
+  ok: boolean
+  status_code: number
+  error: string
+}
+
+export interface NotificationListResponse {
+  items: NotificationLogEntry[]
+}
+
+export type SidebarTab = 'events' | 'stats' | 'orders' | 'settings' | 'audit'
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

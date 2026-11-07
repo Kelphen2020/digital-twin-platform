@@ -1,12 +1,14 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
 [`docs/API.md`](../../docs/API.md) / [`docs/P0_SCOPE.md`](../../docs/P0_SCOPE.md),
 the P1.0 additions in [`docs/API_P1.md`](../../docs/API_P1.md) (tracks,
-calibration, alarm workflow, audit, stats/CSV export) and the P2.0 additions in
+calibration, alarm workflow, audit, stats/CSV export), the P2.0 additions in
 [`docs/API_P2.md`](../../docs/API_P2.md) (JWT auth + RBAC, per-camera rules,
-work orders).
+work orders) and the P3.0 additions in
+[`docs/API_P3.md`](../../docs/API_P3.md) (data-level filtering, escalation,
+webhook notifications, settings).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -15,8 +17,9 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 checks + 18 P2.0 checks = **39 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 = **60 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings). |
 | `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
+| `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness. |
 
 Prerequisite: the Go API must be running on `http://127.0.0.1:8080`
 (`make dev-api`) with the seeded camera inventory (`CAM-001` … `CAM-006`).
@@ -40,6 +43,12 @@ TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/auth/login \
 `simulator.py`, `load.py` and `run_camera_status.py` accept the token via
 `--api-token` / `--token` or the `API_TOKEN` environment variable; `smoke.sh`
 logs in by itself (admin + operator + viewer).
+
+P3.0 data-level filtering: non-admin users with `areas` only see data for their
+cameras (operator = `area_gate` + `area_parking` -> `CAM-001`, `CAM-005`,
+`CAM-006`); out-of-area detail reads return `403 out_of_scope`, and
+`GET /api/audit` + `GET /api/notifications` are admin-only (`403 forbidden`).
+`smoke.sh` verifies all of this.
 
 ---
 
@@ -181,7 +190,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**39 checks**: 21 P0/P1.0 + 18 P2.0):
+(**60 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -216,10 +225,35 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     contains `order.create`, `order.update` and `camera.rules.put` with
     `actor=operator` (not `web`).
 
+**P3.0 (steps 19–23, 21 checks)**
+
+19. data filtering: operator `GET /api/cameras` returns exactly
+    `CAM-001,CAM-005,CAM-006`; a fresh CAM-002 (out-of-area) event is readable
+    by admin but absent from the operator's event list and its detail returns
+    `403 out_of_scope`; operator `GET /api/audit` and `GET /api/notifications`
+    return `403 forbidden`;
+20. escalation settings: admin `PUT /api/settings/escalation`
+    `{enabled:true, after_seconds:1, severities:[warn,critical]}` → 200 and
+    `GET` reflects it (defaults reset at the start of the run);
+21. escalation effect: a warn event injected with `ts=now-10s` on CAM-005
+    (`no_helmet`) receives `escalated_at` within 25 s (observed ~3 s) and the
+    event list shows it;
+22. notifications + webhook: local `scripts/webhook_receiver.py` listens on a
+    free port; invalid `webhook_url` → 400; valid enabled settings (generic
+    format, `min_severity=warn`) are saved and read back; a new warn event on
+    CAM-006 is delivered → `GET /api/notifications` shows `ok=true,
+    status_code=200`, and the receiver JSONL log contains the event id;
+23. cleanup: escalation defaults restored (`after_seconds=300`), notifications
+    disabled with empty URL, receiver stopped cleanly (also on Ctrl-C/failure
+    via the EXIT trap).
+
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
-reliable even while `simulator.py` is running. All temporary files live in a
-`mktemp -d` directory and are removed on exit. A full run takes ~15–25 s.
+reliable even while `simulator.py` is running. P3.0 settings are reset to
+defaults at the start of the run and restored again on exit (even on failure),
+so repeated runs are idempotent. All temporary files live in a `mktemp -d`
+directory and are removed on exit. A full run takes ~40–60 s (the escalation
+worker can take up to ~15 s to escalate).
 
 ---
 
@@ -281,7 +315,58 @@ Compare the `accepted`/`events` numbers with `GET /metrics`
 
 ---
 
-## 5. Typical demo sequence
+## 5. P3.0 escalation & webhook notifications demo
+
+Escalation settings (admin only; defaults `enabled=true, after_seconds=300,
+severities=[warn, critical]`) and notification settings (defaults
+`enabled=false`) are simple REST resources:
+
+```bash
+ADMIN="$TOKEN"
+
+# 1) inspect / tighten escalation so a stale warning escalates quickly
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/settings/escalation
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":1,"severities":["warn","critical"]}' \
+  http://127.0.0.1:8080/api/settings/escalation
+
+# 2) start the local webhook receiver (records POSTs as JSONL, answers 200)
+python3 scripts/webhook_receiver.py --port 8099 --out /tmp/webhook.log &
+# -> webhook_receiver ready: http://127.0.0.1:8099 (out=/tmp/webhook.log, received=0)
+curl -s http://127.0.0.1:8099/health
+
+# 3) point notifications at it and enable delivery for warn+ events
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"webhook_url":"http://127.0.0.1:8099/hook","format":"generic","min_severity":"warn","timeout_seconds":5}' \
+  http://127.0.0.1:8080/api/settings/notifications
+
+# 4) trigger a warn event (token-free ingest) and inspect delivery
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"camera_code":"CAM-005","detections":[{"class":"no_helmet","confidence":0.93}]}' \
+  http://127.0.0.1:8080/api/ingest/detections
+sleep 2
+curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:8080/api/notifications?limit=10'
+tail -n 1 /tmp/webhook.log
+
+# 5) restore defaults when done
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":false,"webhook_url":"","format":"generic","min_severity":"warn","timeout_seconds":5}' \
+  http://127.0.0.1:8080/api/settings/notifications
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":300,"severities":["warn","critical"]}' \
+  http://127.0.0.1:8080/api/settings/escalation
+```
+
+`webhook_receiver.py` flags: `--port` (default `8099`), `--host` (default
+`127.0.0.1`), `--out` (default `/tmp/webhook.log`). Each request becomes one
+JSON line with `at`, `method`, `path`, `headers` and the parsed `body`; the
+server logs one line per delivery to stderr and shuts down cleanly on Ctrl-C.
+Set `format=feishu` to receive Feishu custom-bot payloads instead of the raw
+event JSON.
+
+---
+
+## 6. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)
@@ -301,6 +386,9 @@ API_TOKEN="$TOKEN" python3 services/simulator/simulator.py
 
 # terminal 4 (optional): camera status broadcast demo
 python3 services/simulator/run_camera_status.py --once --interval 5 --token "$TOKEN"
+
+# terminal 5 (optional): P3.0 webhook notifications (see section 5)
+python3 scripts/webhook_receiver.py --port 8099 --out /tmp/webhook.log
 
 # terminal 4: acceptance + load
 make smoke                                          # logs in internally

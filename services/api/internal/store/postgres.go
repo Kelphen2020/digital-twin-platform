@@ -172,6 +172,9 @@ func (p *Postgres) ListEvents(ctx context.Context, filter model.EventFilter) ([]
 	if filter.Since != nil {
 		add("occurred_at >= $%d", *filter.Since)
 	}
+	if len(filter.CameraIDs) > 0 {
+		add("camera_id = ANY($%d)", filter.CameraIDs)
+	}
 	query := eventSelect
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -304,6 +307,9 @@ func (p *Postgres) ListTrackPoints(ctx context.Context, filter model.TrackFilter
 	if filter.Since != nil {
 		add("ts >= $%d", *filter.Since)
 	}
+	if len(filter.CameraIDs) > 0 {
+		add("camera_id = ANY($%d)", filter.CameraIDs)
+	}
 	query := `SELECT track_id, camera_id, class, x, y, z, ts FROM track_points`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -380,15 +386,21 @@ func (p *Postgres) ListAudit(ctx context.Context, filter model.AuditFilter) ([]m
 	return entries, rows.Err()
 }
 
-func (p *Postgres) Stats(ctx context.Context, from, to time.Time) (model.StatsSummary, error) {
+func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error) {
 	summary := model.StatsSummary{
 		From:   from,
 		To:     to,
 		Totals: model.StatsTotals{BySeverity: map[string]int64{}, ByType: map[string]int64{}},
 	}
 
+	var filterArg []string
+	if len(cameraIDs) > 0 {
+		filterArg = cameraIDs
+	}
 	rows, err := p.pool.Query(ctx,
-		`SELECT severity, count(*) FROM events WHERE occurred_at >= $1 AND occurred_at <= $2 GROUP BY severity`, from, to)
+		`SELECT severity, count(*) FROM events
+		 WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
+		 GROUP BY severity`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
@@ -405,7 +417,9 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time) (model.StatsSu
 	rows.Close()
 
 	rows, err = p.pool.Query(ctx,
-		`SELECT type, count(*) FROM events WHERE occurred_at >= $1 AND occurred_at <= $2 GROUP BY type`, from, to)
+		`SELECT type, count(*) FROM events
+		 WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
+		 GROUP BY type`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
@@ -423,8 +437,8 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time) (model.StatsSu
 	rows, err = p.pool.Query(ctx, `
         SELECT e.camera_id, c.code, c.name, count(*) AS count
         FROM events e JOIN cameras c ON c.id = e.camera_id
-        WHERE e.occurred_at >= $1 AND e.occurred_at <= $2
-        GROUP BY e.camera_id, c.code, c.name ORDER BY count DESC LIMIT 20`, from, to)
+        WHERE e.occurred_at >= $1 AND e.occurred_at <= $2 AND ($3::text[] IS NULL OR e.camera_id = ANY($3))
+        GROUP BY e.camera_id, c.code, c.name ORDER BY count DESC LIMIT 20`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
@@ -440,8 +454,8 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time) (model.StatsSu
 
 	rows, err = p.pool.Query(ctx, `
         SELECT date_trunc('hour', occurred_at) AS hour, count(*)
-        FROM events WHERE occurred_at >= $1 AND occurred_at <= $2
-        GROUP BY hour ORDER BY hour`, from, to)
+        FROM events WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
+        GROUP BY hour ORDER BY hour`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
@@ -468,7 +482,7 @@ func (p *Postgres) Counts(ctx context.Context) (model.Counts, error) {
 const cameraSelect = `SELECT id, code, name, area_id, x, y, z, heading, fov_h, fov_v, range_m, status, stream_url, calibration, updated_at FROM cameras`
 
 const eventSelect = `SELECT id, camera_id, camera_code, camera_name, type, severity, confidence,
-                            x, y, z, occurred_at, status, closed_at, payload FROM events`
+                            x, y, z, occurred_at, status, closed_at, escalated_at, payload FROM events`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -499,7 +513,8 @@ func scanEvent(row rowScanner) (model.Event, error) {
 	var event model.Event
 	var payload []byte
 	err := row.Scan(&event.ID, &event.CameraID, &event.CameraCode, &event.CameraName, &event.Type, &event.Severity,
-		&event.Confidence, &event.X, &event.Y, &event.Z, &event.OccurredAt, &event.Status, &event.ClosedAt, &payload)
+		&event.Confidence, &event.X, &event.Y, &event.Z, &event.OccurredAt, &event.Status, &event.ClosedAt,
+		&event.EscalatedAt, &payload)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.Event{}, ErrNotFound
@@ -510,6 +525,10 @@ func scanEvent(row rowScanner) (model.Event, error) {
 	if event.ClosedAt != nil {
 		closed := event.ClosedAt.UTC()
 		event.ClosedAt = &closed
+	}
+	if event.EscalatedAt != nil {
+		escalated := event.EscalatedAt.UTC()
+		event.EscalatedAt = &escalated
 	}
 	if len(payload) > 0 {
 		_ = json.Unmarshal(payload, &event.Payload)
@@ -625,6 +644,9 @@ func (p *Postgres) ListOrders(ctx context.Context, filter model.OrderFilter) ([]
 	if filter.Assignee != "" {
 		add("assignee = $%d", filter.Assignee)
 	}
+	if len(filter.CameraIDs) > 0 {
+		add("camera_id = ANY($%d)", filter.CameraIDs)
+	}
 	query := orderSelect
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -665,4 +687,81 @@ func scanOrder(row rowScanner) (model.Order, error) {
 		order.ClosedAt = &closed
 	}
 	return order, nil
+}
+
+func (p *Postgres) GetSetting(ctx context.Context, key string) ([]byte, bool, error) {
+	var value []byte
+	err := p.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, key).Scan(&value)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return value, true, nil
+}
+
+func (p *Postgres) SetSetting(ctx context.Context, key string, value []byte) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,now())
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, key, value)
+	return err
+}
+
+func (p *Postgres) CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO notification_log (id, at, kind, event_id, url, format, ok, status_code, error)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		entry.ID, entry.At, entry.Kind, entry.EventID, entry.URL, entry.Format,
+		entry.OK, entry.StatusCode, entry.Error)
+	return err
+}
+
+func (p *Postgres) ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := p.pool.Query(ctx, `
+        SELECT id, at, kind, event_id, url, format, ok, status_code, error
+        FROM notification_log ORDER BY at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]model.NotificationLog, 0, limit)
+	for rows.Next() {
+		var entry model.NotificationLog
+		if err := rows.Scan(&entry.ID, &entry.At, &entry.Kind, &entry.EventID, &entry.URL,
+			&entry.Format, &entry.OK, &entry.StatusCode, &entry.Error); err != nil {
+			return nil, err
+		}
+		entry.At = entry.At.UTC()
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error) {
+	if len(severities) == 0 {
+		return nil, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+        UPDATE events SET escalated_at = now()
+        WHERE status <> 'closed' AND escalated_at IS NULL
+          AND occurred_at < $1 AND severity = ANY($2)
+        RETURNING id, camera_id, camera_code, camera_name, type, severity, confidence,
+                  x, y, z, occurred_at, status, closed_at, escalated_at, payload`, before, severities)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]model.Event, 0, 8)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }

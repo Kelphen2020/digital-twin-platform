@@ -1,24 +1,39 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import AuditPanel from './components/AuditPanel.vue'
 import CameraDetail from './components/CameraDetail.vue'
 import EventDetail from './components/EventDetail.vue'
 import EventFeed from './components/EventFeed.vue'
 import LoginView from './components/LoginView.vue'
 import OfflineBanner from './components/OfflineBanner.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import ToastHost from './components/ToastHost.vue'
 import TopBar from './components/TopBar.vue'
+import { formatArea } from './labels'
 import TwinScene from './scene/TwinScene.vue'
+import { useAdminStore } from './store/admin'
 import { useAuthStore } from './store/auth'
 import { useTwinStore } from './store/twin'
 
 const { state: authState, isAuthenticated, restoreSession } = useAuthStore()
 const { state, start, stop, reset, selectCamera, selectEvent, setFps, setSidebarTab } = useTwinStore()
+const admin = useAdminStore()
+
+const isAdmin = computed(() => authState.user?.role === 'admin')
 
 const openOrders = computed(
   () => state.orders.filter((order) => order.status !== 'done' && order.status !== 'cancelled').length,
 )
+
+/** 非 admin 且负责区域非空时，后端只返回区域内数据 —— 侧栏显示提示 */
+const areaHint = computed(() => {
+  const user = authState.user
+  if (!user || user.role === 'admin') return ''
+  const areas = user.areas ?? []
+  return areas.length > 0 ? areas.map(formatArea).join('、') : ''
+})
 
 onMounted(() => {
   void restoreSession()
@@ -30,7 +45,10 @@ onBeforeUnmount(() => {
 // 登录成功 → 启动数据/WS；登出/过期 → 停止并清空历史数据
 watch(isAuthenticated, (authenticated) => {
   if (authenticated) start()
-  else reset()
+  else {
+    reset()
+    admin.reset()
+  }
 })
 </script>
 
@@ -65,8 +83,12 @@ watch(isAuthenticated, (authenticated) => {
       </section>
 
       <aside class="sidebar">
+        <p v-if="areaHint" class="area-scope-hint">
+          <span class="area-scope-dot" />
+          仅显示负责区域：{{ areaHint }}
+        </p>
         <CameraDetail />
-        <div class="sidebar-tabs" role="tablist">
+        <div class="sidebar-tabs" :class="{ 'admin-tabs': isAdmin }" role="tablist">
           <button
             class="sidebar-tab"
             :class="{ active: state.sidebarTab === 'events' }"
@@ -95,10 +117,33 @@ watch(isAuthenticated, (authenticated) => {
             工单
             <span v-if="openOrders > 0" class="tab-badge">{{ openOrders }}</span>
           </button>
+          <button
+            v-if="isAdmin"
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'settings' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'settings'"
+            @click="setSidebarTab('settings')"
+          >
+            设置
+          </button>
+          <button
+            v-if="isAdmin"
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'audit' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'audit'"
+            @click="setSidebarTab('audit')"
+          >
+            审计
+          </button>
         </div>
         <EventFeed v-if="state.sidebarTab === 'events'" />
         <StatsPanel v-else-if="state.sidebarTab === 'stats'" />
-        <OrdersPanel v-else />
+        <OrdersPanel v-else-if="state.sidebarTab === 'orders'" />
+        <SettingsPanel v-else-if="state.sidebarTab === 'settings' && isAdmin" />
+        <AuditPanel v-else-if="state.sidebarTab === 'audit' && isAdmin" />
+        <EventFeed v-else />
       </aside>
     </div>
   </div>

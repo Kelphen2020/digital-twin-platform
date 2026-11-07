@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
@@ -36,6 +37,10 @@ type Server struct {
 	auth        *auth.Service
 	ingestToken string
 	started     time.Time
+
+	settingsMu sync.RWMutex
+	notify     model.NotificationSettings
+	escalation model.EscalationSettings
 }
 
 type userContextKey struct{}
@@ -54,6 +59,8 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		auth:        authService,
 		ingestToken: ingestToken,
 		started:     time.Now().UTC(),
+		notify:      model.DefaultNotificationSettings(),
+		escalation:  model.DefaultEscalationSettings(),
 	}
 }
 
@@ -78,6 +85,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/events/{id}/close", s.handleCloseEvent)
 	mux.HandleFunc("POST /api/events/{id}/dispatch", s.handleDispatchEvent)
 	mux.HandleFunc("GET /api/tracks", s.handleTracks)
+	mux.HandleFunc("GET /api/settings/notifications", s.handleGetNotificationSettings)
+	mux.HandleFunc("PUT /api/settings/notifications", s.handlePutNotificationSettings)
+	mux.HandleFunc("GET /api/settings/escalation", s.handleGetEscalationSettings)
+	mux.HandleFunc("PUT /api/settings/escalation", s.handlePutEscalationSettings)
+	mux.HandleFunc("GET /api/notifications", s.handleListNotifications)
 	mux.HandleFunc("POST /api/orders", s.handleCreateOrder)
 	mux.HandleFunc("GET /api/orders", s.handleListOrders)
 	mux.HandleFunc("GET /api/orders/{id}", s.handleGetOrder)
@@ -263,6 +275,160 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.hub.ServeHTTP(w, r)
 }
 
+const (
+	settingNotifications = "notifications"
+	settingEscalation    = "escalation"
+)
+
+// LoadSettings hydrates the cached notification/escalation settings.
+func (s *Server) LoadSettings(ctx context.Context) {
+	notify := model.DefaultNotificationSettings()
+	if raw, ok, err := s.store.GetSetting(ctx, settingNotifications); err == nil && ok && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &notify)
+	}
+	escalation := model.DefaultEscalationSettings()
+	if raw, ok, err := s.store.GetSetting(ctx, settingEscalation); err == nil && ok && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &escalation)
+	}
+	s.settingsMu.Lock()
+	s.notify = notify
+	s.escalation = escalation
+	s.settingsMu.Unlock()
+}
+
+func (s *Server) currentNotify() model.NotificationSettings {
+	s.settingsMu.RLock()
+	defer s.settingsMu.RUnlock()
+	return s.notify
+}
+
+func (s *Server) currentEscalation() model.EscalationSettings {
+	s.settingsMu.RLock()
+	defer s.settingsMu.RUnlock()
+	return s.escalation
+}
+
+// RunEscalation periodically marks stale open alerts as escalated.
+func (s *Server) RunEscalation(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.escalateOnce(ctx)
+		}
+	}
+}
+
+func (s *Server) escalateOnce(ctx context.Context) {
+	cfg := s.currentEscalation()
+	if !cfg.Enabled || len(cfg.Severities) == 0 {
+		return
+	}
+	before := time.Now().UTC().Add(-time.Duration(cfg.AfterSeconds) * time.Second)
+	events, err := s.store.EscalateStale(ctx, before, cfg.Severities)
+	if err != nil {
+		log.Printf("api: escalate: %v", err)
+		return
+	}
+	for _, event := range events {
+		s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: event})
+		_ = s.store.AddAudit(ctx, model.AuditEntry{
+			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
+			Action: "event.escalate", Resource: event.ID,
+			Detail: map[string]any{"severity": event.Severity, "after_seconds": cfg.AfterSeconds},
+		})
+		go s.deliverNotification(context.Background(), "escalation", event)
+	}
+}
+
+// deliverNotification posts one event/escalation to the configured webhook.
+func (s *Server) deliverNotification(ctx context.Context, kind string, event model.Event) {
+	cfg := s.currentNotify()
+	if !cfg.Enabled || strings.TrimSpace(cfg.WebhookURL) == "" {
+		return
+	}
+	if model.SeverityRank(event.Severity) < model.SeverityRank(cfg.MinSeverity) {
+		return
+	}
+	var payload []byte
+	if cfg.Format == "feishu" {
+		text := fmt.Sprintf("[%s] %s · %s %s（置信度 %.2f）\n事件 %s",
+			map[string]string{"event": "告警", "escalation": "告警升级"}[kind],
+			event.Severity, event.CameraCode, event.CameraName, event.Confidence, event.ID)
+		payload, _ = json.Marshal(map[string]any{"msg_type": "text", "content": map[string]string{"text": text}})
+	} else {
+		payload, _ = json.Marshal(map[string]any{
+			"kind": kind, "event": event, "source": "digital-twin-platform",
+		})
+	}
+	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	entry := model.NotificationLog{
+		ID: newID("ntf"), At: time.Now().UTC(), Kind: kind, EventID: event.ID,
+		URL: cfg.WebhookURL, Format: cfg.Format,
+	}
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, cfg.WebhookURL, strings.NewReader(string(payload)))
+	if err == nil {
+		request.Header.Set("Content-Type", "application/json")
+		var response *http.Response
+		response, err = (&http.Client{Timeout: timeout}).Do(request)
+		if err == nil {
+			entry.StatusCode = response.StatusCode
+			entry.OK = response.StatusCode >= 200 && response.StatusCode < 300
+			if !entry.OK {
+				entry.Error = fmt.Sprintf("webhook returned HTTP %d", response.StatusCode)
+			}
+			_ = response.Body.Close()
+		}
+	}
+	if err != nil {
+		entry.Error = err.Error()
+	}
+	if err := s.store.CreateNotificationLog(context.Background(), entry); err != nil {
+		log.Printf("api: notification log: %v", err)
+	}
+}
+
+// visibleCameras returns the camera ids a user may read. restricted=false means
+// the caller may read every camera (admin or an unrestricted account).
+func (s *Server) visibleCameras(ctx context.Context, user auth.User) (ids []string, restricted bool) {
+	if !s.auth.Enabled() || user.Role == auth.RoleAdmin || len(user.Areas) == 0 {
+		return nil, false
+	}
+	cameras, err := s.store.ListCameras(ctx)
+	if err != nil {
+		return []string{}, true
+	}
+	allowed := make(map[string]struct{}, len(user.Areas))
+	for _, area := range user.Areas {
+		allowed[area] = struct{}{}
+	}
+	for _, camera := range cameras {
+		if _, ok := allowed[camera.AreaID]; ok {
+			ids = append(ids, camera.ID)
+		}
+	}
+	return ids, true
+}
+
+func (s *Server) cameraVisible(ctx context.Context, user auth.User, cameraID string) (bool, error) {
+	if !s.auth.Enabled() || user.Role == auth.RoleAdmin || len(user.Areas) == 0 {
+		return true, nil
+	}
+	camera, err := s.store.GetCamera(ctx, cameraID)
+	if err != nil {
+		return false, err
+	}
+	return auth.InScope(user, camera.AreaID), nil
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
@@ -286,10 +452,30 @@ func (s *Server) handleCameras(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	if _, restricted := s.visibleCameras(r.Context(), userOf(r)); restricted {
+		user := userOf(r)
+		filtered := make([]model.Camera, 0, len(cameras))
+		for _, camera := range cameras {
+			if auth.InScope(user, camera.AreaID) {
+				filtered = append(filtered, camera)
+			}
+		}
+		cameras = filtered
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": cameras})
 }
 
 func (s *Server) handleCamera(w http.ResponseWriter, r *http.Request) {
+	user := userOf(r)
+	visible, err := s.cameraVisible(r.Context(), user, r.PathValue("id"))
+	if err != nil {
+		s.writeCameraError(w, err)
+		return
+	}
+	if !visible {
+		writeError(w, http.StatusForbidden, "out_of_scope", "camera is outside your assigned areas")
+		return
+	}
 	camera, err := s.store.GetCamera(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeCameraError(w, err)
@@ -407,6 +593,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Since = &parsed
 	}
+	if ids, restricted := s.visibleCameras(r.Context(), userOf(r)); restricted {
+		if len(ids) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []model.Event{}, "total": 0})
+			return
+		}
+		filter.CameraIDs = ids
+	}
 	events, err := s.store.ListEvents(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -424,6 +617,10 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 	event, err := s.store.GetEvent(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeEventError(w, err)
+		return
+	}
+	if visible, err := s.cameraVisible(r.Context(), userOf(r), event.CameraID); err != nil || !visible {
+		writeError(w, http.StatusForbidden, "out_of_scope", "event camera is outside your assigned areas")
 		return
 	}
 	actions, err := s.store.ListEventActions(r.Context(), event.ID)
@@ -507,6 +704,26 @@ func (s *Server) handleTracks(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Since = &parsed
 	}
+	if ids, restricted := s.visibleCameras(r.Context(), userOf(r)); restricted {
+		if len(ids) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []model.TrackPoint{}})
+			return
+		}
+		if filter.CameraID != "" {
+			allowed := false
+			for _, id := range ids {
+				if id == filter.CameraID {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				writeError(w, http.StatusForbidden, "out_of_scope", "camera is outside your assigned areas")
+				return
+			}
+		}
+		filter.CameraIDs = ids
+	}
 	points, err := s.store.ListTrackPoints(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -516,6 +733,9 @@ func (s *Server) handleTracks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
 	filter := model.AuditFilter{
 		Limit:  parseIntDefault(r.URL.Query().Get("limit"), 100),
 		Action: r.URL.Query().Get("action"),
@@ -538,7 +758,8 @@ func (s *Server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	summary, err := s.store.Stats(r.Context(), from, to)
+	cameraIDs, _ := s.visibleCameras(r.Context(), userOf(r))
+	summary, err := s.store.Stats(r.Context(), from, to, cameraIDs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -558,7 +779,12 @@ func (s *Server) handleStatsCSV(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	events, err := s.store.ListEvents(r.Context(), model.EventFilter{Limit: 5000, Since: &from})
+	cameraIDs, restricted := s.visibleCameras(r.Context(), userOf(r))
+	csvFilter := model.EventFilter{Limit: 5000, Since: &from}
+	if restricted {
+		csvFilter.CameraIDs = cameraIDs
+	}
+	events, err := s.store.ListEvents(r.Context(), csvFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -639,6 +865,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, event := range result.Events {
 		s.hub.Broadcast(realtime.Frame{Type: "event", Data: event})
+		go s.deliverNotification(context.Background(), "event", event)
 	}
 	s.metrics.ObserveIngest(time.Since(started).Microseconds())
 	events := result.Events
@@ -701,6 +928,15 @@ func actorOf(r *http.Request) string {
 
 func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
 	cameraID := r.PathValue("id")
+	visible, err := s.cameraVisible(r.Context(), userOf(r), cameraID)
+	if err != nil {
+		s.writeCameraError(w, err)
+		return
+	}
+	if !visible {
+		writeError(w, http.StatusForbidden, "out_of_scope", "camera is outside your assigned areas")
+		return
+	}
 	if _, err := s.store.GetCamera(r.Context(), cameraID); err != nil {
 		s.writeCameraError(w, err)
 		return
@@ -802,6 +1038,13 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	if filter.Limit > 500 {
 		filter.Limit = 500
 	}
+	if ids, restricted := s.visibleCameras(r.Context(), userOf(r)); restricted {
+		if len(ids) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []model.Order{}})
+			return
+		}
+		filter.CameraIDs = ids
+	}
 	orders, err := s.store.ListOrders(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -817,6 +1060,10 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 	order, err := s.store.GetOrder(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeOrderError(w, err)
+		return
+	}
+	if visible, err := s.cameraVisible(r.Context(), userOf(r), order.CameraID); err != nil || !visible {
+		writeError(w, http.StatusForbidden, "out_of_scope", "order camera is outside your assigned areas")
 		return
 	}
 	writeJSON(w, http.StatusOK, order)
@@ -897,6 +1144,130 @@ func validOrderStatus(status string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Server) handleGetNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.currentNotify())
+}
+
+func (s *Server) handlePutNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	var cfg model.NotificationSettings
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	cfg.WebhookURL = strings.TrimSpace(cfg.WebhookURL)
+	if cfg.Format == "" {
+		cfg.Format = "generic"
+	}
+	if cfg.MinSeverity == "" {
+		cfg.MinSeverity = "warn"
+	}
+	if cfg.TimeoutSeconds == 0 {
+		cfg.TimeoutSeconds = 5
+	}
+	if cfg.Format != "generic" && cfg.Format != "feishu" {
+		writeError(w, http.StatusBadRequest, "bad_request", "format must be generic or feishu")
+		return
+	}
+	if !validSeverity(cfg.MinSeverity) {
+		writeError(w, http.StatusBadRequest, "bad_request", "min_severity must be info, warn or critical")
+		return
+	}
+	if cfg.TimeoutSeconds < 1 || cfg.TimeoutSeconds > 30 {
+		writeError(w, http.StatusBadRequest, "bad_request", "timeout_seconds must be within [1,30]")
+		return
+	}
+	if cfg.WebhookURL != "" && !strings.HasPrefix(cfg.WebhookURL, "http://") && !strings.HasPrefix(cfg.WebhookURL, "https://") {
+		writeError(w, http.StatusBadRequest, "bad_request", "webhook_url must be http(s)")
+		return
+	}
+	if cfg.Enabled && cfg.WebhookURL == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "webhook_url is required when notifications are enabled")
+		return
+	}
+	raw, _ := json.Marshal(cfg)
+	if err := s.store.SetSetting(r.Context(), settingNotifications, raw); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.settingsMu.Lock()
+	s.notify = cfg
+	s.settingsMu.Unlock()
+	s.audit(r, "settings.notifications.put", settingNotifications, map[string]any{"enabled": cfg.Enabled, "format": cfg.Format})
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) handleGetEscalationSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.currentEscalation())
+}
+
+func (s *Server) handlePutEscalationSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	var cfg model.EscalationSettings
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if cfg.AfterSeconds < 0 || cfg.AfterSeconds > 86400 {
+		writeError(w, http.StatusBadRequest, "bad_request", "after_seconds must be within [0,86400]")
+		return
+	}
+	for _, severity := range cfg.Severities {
+		if !validSeverity(severity) {
+			writeError(w, http.StatusBadRequest, "bad_request", "severities must be info, warn or critical")
+			return
+		}
+	}
+	if cfg.Severities == nil {
+		cfg.Severities = []string{}
+	}
+	raw, _ := json.Marshal(cfg)
+	if err := s.store.SetSetting(r.Context(), settingEscalation, raw); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.settingsMu.Lock()
+	s.escalation = cfg
+	s.settingsMu.Unlock()
+	s.audit(r, "settings.escalation.put", settingEscalation, map[string]any{
+		"enabled": cfg.Enabled, "after_seconds": cfg.AfterSeconds,
+	})
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	limit := parseIntDefault(r.URL.Query().Get("limit"), 50)
+	if limit > 200 {
+		limit = 200
+	}
+	entries, err := s.store.ListNotificationLog(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []model.NotificationLog{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": entries})
+}
+
+func validSeverity(severity string) bool {
+	return severity == "info" || severity == "warn" || severity == "critical"
 }
 
 func (s *Server) writeCameraError(w http.ResponseWriter, err error) {

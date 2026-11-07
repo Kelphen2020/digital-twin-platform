@@ -20,6 +20,7 @@ import {
   updateOrder as requestUpdateOrder,
 } from '../api'
 import { TwinSocket } from '../ws'
+import { EVENT_TYPE_LABELS } from '../labels'
 import { pushToast } from './ui'
 import type {
   CalibrationSavePayload,
@@ -291,6 +292,9 @@ async function loadOrders(): Promise<void> {
     state.orders = await fetchOrders({ limit: 100 })
   } catch (error) {
     state.ordersError = apiErrorMessage(error)
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      pushToast(apiErrorMessage(error), 'error')
+    }
   } finally {
     state.ordersLoading = false
   }
@@ -378,6 +382,9 @@ async function loadTracks(cameraId: string | null): Promise<void> {
   } catch (error) {
     if (seq === trackRequestSeq) {
       state.tracksError = error instanceof Error ? error.message : String(error)
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        pushToast(apiErrorMessage(error), 'error')
+      }
     }
   } finally {
     if (seq === trackRequestSeq) state.tracksLoading = false
@@ -431,6 +438,9 @@ async function loadEventDetail(eventId: string | null = state.selectedEventId): 
   } catch (error) {
     if (seq === eventDetailSeq) {
       state.eventDetailError = error instanceof Error ? error.message : String(error)
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        pushToast(apiErrorMessage(error), 'error')
+      }
     }
   } finally {
     if (seq === eventDetailSeq) state.eventDetailLoading = false
@@ -581,7 +591,15 @@ function handleWsMessage(message: WsMessage): void {
       break
     }
     case 'event_updated': {
+      const previous = state.events.find((item) => item.id === message.data.id)
       applyEventUpdate(message.data)
+      // 告警升级：escalated_at 由空变为非空时浮层提示（P3）
+      if (message.data.escalated_at && !previous?.escalated_at) {
+        pushToast(
+          `告警已升级：${EVENT_TYPE_LABELS[message.data.type]} · ${message.data.camera_code} ${message.data.camera_name}`,
+          'warning',
+        )
+      }
       if (state.selectedEventId === message.data.id) void loadEventDetail(message.data.id)
       break
     }
