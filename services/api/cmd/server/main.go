@@ -1,0 +1,82 @@
+// Command server boots the P0 digital-twin API.
+package main
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"digital-twin-platform/api/internal/api"
+	"digital-twin-platform/api/internal/config"
+	"digital-twin-platform/api/internal/metrics"
+	"digital-twin-platform/api/internal/realtime"
+	"digital-twin-platform/api/internal/rules"
+	"digital-twin-platform/api/internal/store"
+)
+
+func main() {
+	cfg := config.Load()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	database, closeStore, err := openStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("api: open store: %v", err)
+	}
+	defer closeStore()
+
+	engine := rules.New(cfg.DedupeWindow)
+	hub := realtime.NewHub()
+	meters := metrics.New()
+	server := api.New(database, engine, hub, meters, cfg.Version)
+
+	go server.RunStats(ctx, 5*time.Second)
+
+	httpServer := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("api: listening on :%s (store=%s, version=%s)", cfg.Port, storeMode(cfg.DatabaseURL), cfg.Version)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("api: serve: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("api: shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("api: shutdown: %v", err)
+	}
+}
+
+func openStore(ctx context.Context, cfg config.Config) (store.Store, func(), error) {
+	if cfg.DatabaseURL != "" {
+		postgres, err := store.NewPostgres(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return nil, nil, err
+		}
+		log.Printf("api: PostgreSQL store ready")
+		return postgres, postgres.Close, nil
+	}
+	memory := store.NewMemory(cfg.MaxEvents)
+	memory.Seed(store.SeedCameras(), store.SeedAreas())
+	log.Printf("api: in-memory store ready (6 demo cameras)")
+	return memory, func() {}, nil
+}
+
+func storeMode(databaseURL string) string {
+	if databaseURL == "" {
+		return "memory"
+	}
+	return "postgres"
+}

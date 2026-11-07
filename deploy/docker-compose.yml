@@ -1,0 +1,86 @@
+# P0 deployment for macOS/Linux. The default profile runs PostgreSQL + API;
+# optional profiles add Redis/MinIO and the future media stack.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml --profile full up -d
+#
+# The web client runs from source in P0 (pnpm dev); P1 will serve it from nginx.
+
+name: digital-twin-platform
+
+services:
+  postgres:
+    # POSTGIS_IMAGE lets networks without Docker Hub use a mirror, e.g.
+    #   POSTGIS_IMAGE=docker.m.daocloud.io/postgis/postgis:16-3.4 make db-up
+    image: ${POSTGIS_IMAGE:-postgis/postgis:16-3.4}
+    container_name: dtp-postgres
+    environment:
+      POSTGRES_USER: twin
+      POSTGRES_PASSWORD: twin
+      POSTGRES_DB: twin
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twin -d twin"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ../services/api
+      dockerfile: Dockerfile
+    container_name: dtp-api
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://twin:twin@postgres:5432/twin?sslmode=disable
+      VERSION: "0.1.0"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---- optional: full profile -------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: dtp-redis
+    profiles: ["full"]
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: dtp-minio
+    profiles: ["full"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: twin
+      MINIO_ROOT_PASSWORD: twin-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  # Kafka-compatible bus for the P1 event pipeline (P0 uses in-process fan-out).
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: dtp-redpanda
+    profiles: ["full"]
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://127.0.0.1:9092
+    ports:
+      - "9092:9092"
+
+volumes:
+  postgres-data:
+  minio-data:
