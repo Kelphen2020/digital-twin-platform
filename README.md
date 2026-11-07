@@ -77,6 +77,20 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P1.md`](docs/API_P1.md)。
 
+![P2.0 登录与 RBAC](docs/screenshots/p2-login.png)
+
+## P2.0 能力（运营底座）
+
+- **登录与 RBAC**：`POST /api/auth/login` 返回 JWT；角色 `admin` / `operator` / `viewer`；操作员按区域（areas）限制相机与告警处置；前端登录页 + 角色化按钮。
+- **相机规则配置**：`GET/PUT /api/cameras/{id}/rules` —— 置信度阈值、去重窗口、启用类别、ROI 多边形（归一化图像坐标），仅 admin 可改。
+- **工单闭环**：`POST/GET/PATCH /api/orders` —— 从事件一键转工单，指派/处理/完成，WS `order_updated` 实时刷新；审计记录 `order.create/order.update`。
+- **审计主体**：写操作的 `actor` 为登录用户名（不再是 `web`）。
+- **鉴权默认开启**（`AUTH_MODE=on`），`AUTH_MODE=off` 可关闭用于本机联调；机器入口可用 `INGEST_TOKEN` 保护。
+
+内置演示账号：`admin/Admin@123456`、`operator/Operator@123`（区域：东门+停车场）、`viewer/Viewer@123`（只读）。**生产必须替换**。
+
+契约见 [`docs/API_P2.md`](docs/API_P2.md)。
+
 ## 目录
 
 ```

@@ -13,7 +13,7 @@ func testCamera() model.Camera {
 
 func TestDropsLowConfidence(t *testing.T) {
 	engine := New(5 * time.Second)
-	result := engine.Evaluate(testCamera(), []model.Detection{{Class: "person", Confidence: 0.4}}, time.Now())
+	result := engine.Evaluate(testCamera(), model.DefaultCameraRules("cam_001"), []model.Detection{{Class: "person", Confidence: 0.4}}, time.Now())
 	if len(result.Events) != 0 || result.Dropped != 1 {
 		t.Fatalf("expected drop, got events=%d dropped=%d", len(result.Events), result.Dropped)
 	}
@@ -33,8 +33,10 @@ func TestMapsClassToTypeAndSeverity(t *testing.T) {
 		{"weird", "other", "info"},
 	}
 	engine := New(time.Second)
+	cfg := model.DefaultCameraRules("cam_001")
+	cfg.EnabledClasses = nil // allow every class so the mapping itself is tested
 	for i, testCase := range cases {
-		result := engine.Evaluate(testCamera(), []model.Detection{{Class: testCase.class, Confidence: 0.9}}, time.Now().Add(time.Duration(i)*time.Minute))
+		result := engine.Evaluate(testCamera(), cfg, []model.Detection{{Class: testCase.class, Confidence: 0.9}}, time.Now().Add(time.Duration(i)*time.Minute))
 		if len(result.Events) != 1 {
 			t.Fatalf("%s: expected one event, got %d", testCase.class, len(result.Events))
 		}
@@ -48,15 +50,15 @@ func TestMapsClassToTypeAndSeverity(t *testing.T) {
 func TestDedupeWindow(t *testing.T) {
 	engine := New(5 * time.Second)
 	base := time.Now()
-	first := engine.Evaluate(testCamera(), []model.Detection{{Class: "person", Confidence: 0.9}}, base)
+	first := engine.Evaluate(testCamera(), model.DefaultCameraRules("cam_001"), []model.Detection{{Class: "person", Confidence: 0.9}}, base)
 	if len(first.Events) != 1 {
 		t.Fatalf("first event missing")
 	}
-	second := engine.Evaluate(testCamera(), []model.Detection{{Class: "person", Confidence: 0.9}}, base.Add(2*time.Second))
+	second := engine.Evaluate(testCamera(), model.DefaultCameraRules("cam_001"), []model.Detection{{Class: "person", Confidence: 0.9}}, base.Add(2*time.Second))
 	if len(second.Events) != 0 || second.Dropped != 1 {
 		t.Fatalf("expected dedupe drop, got events=%d dropped=%d", len(second.Events), second.Dropped)
 	}
-	third := engine.Evaluate(testCamera(), []model.Detection{{Class: "person", Confidence: 0.9}}, base.Add(6*time.Second))
+	third := engine.Evaluate(testCamera(), model.DefaultCameraRules("cam_001"), []model.Detection{{Class: "person", Confidence: 0.9}}, base.Add(6*time.Second))
 	if len(third.Events) != 1 {
 		t.Fatalf("expected new event after window, got %d", len(third.Events))
 	}
@@ -64,14 +66,14 @@ func TestDedupeWindow(t *testing.T) {
 
 func TestWorldAndFallbackPosition(t *testing.T) {
 	engine := New(time.Second)
-	withWorld := engine.Evaluate(testCamera(), []model.Detection{{
+	withWorld := engine.Evaluate(testCamera(), model.DefaultCameraRules("cam_001"), []model.Detection{{
 		Class: "person", Confidence: 0.9, World: &model.World{X: 12, Y: -3, Z: 0},
 	}}, time.Now())
 	if len(withWorld.Events) != 1 || withWorld.Events[0].X != 12 || withWorld.Events[0].Y != -3 {
 		t.Fatalf("world position not used: %+v", withWorld.Events)
 	}
 
-	fallback := engine.Evaluate(testCamera(), []model.Detection{{Class: "vehicle", Confidence: 0.9}}, time.Now().Add(time.Minute))
+	fallback := engine.Evaluate(testCamera(), model.DefaultCameraRules("cam_001"), []model.Detection{{Class: "vehicle", Confidence: 0.9}}, time.Now().Add(time.Minute))
 	if len(fallback.Events) != 1 {
 		t.Fatalf("expected fallback event")
 	}

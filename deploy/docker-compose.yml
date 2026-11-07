@@ -36,7 +36,11 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://twin:twin@postgres:5432/twin?sslmode=disable
-      VERSION: "0.1.0"
+      VERSION: "0.2.0"
+      AUTH_MODE: "on"
+      # Change these before any non-local deployment:
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
     ports:
       - "8080:8080"
     depends_on:

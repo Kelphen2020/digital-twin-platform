@@ -129,3 +129,58 @@ python3 scripts/load.py --qps 50 --duration 5    # 默认 --track-ratio 0.5
 - 真机 GPU 帧率、画布交互（拖拽/悬停/3D 点选）未自动化，headless 软渲染 46 FPS 不代表真机（目标 ≥30fps@1080p）。
 - 可选鉴权（`AUTH_TOKEN`）代码与前端支持已实现，但本次未以开启状态做端到端验证。
 - PostgreSQL 容器化仍未在本机验证（Docker Hub 网络受限，镜像经镜像源拉取过慢）。
+
+---
+
+# P2.0 验收记录（2026-11-07 深夜）
+
+## 12. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增 `internal/auth`（PBKDF2 口令、JWT 签发/校验、角色/区域策略）与 `server_p2_test.go`：登录、401/403、`out_of_scope`、规则阈值与类别过滤、工单状态机与 `closed_at`、审计 actor=用户名、ingest token 守卫、WS 鉴权 |
+
+## 13. smoke.sh（P0 8 + P1 13 + P2 18 = 39 项）
+
+```
+smoke: PASS (39 checks passed)
+```
+
+P2 覆盖：无 token 401；admin 登录 + `/auth/me`；viewer 读 200 / 写 403；operator 区域内 ack 200、区域外 `403 out_of_scope`；operator 建单 201 → processing（指派）→ done（closed_at）→ GET；admin 规则 threshold=0.99 → 0.95 检测产生 0 事件（规则生效）→ 恢复默认；审计含 `order.create/order.update/camera.rules.put` 且 actor=operator。
+
+## 14. 压测（AUTH_MODE=on）
+
+```bash
+API_TOKEN=<admin token> python3 scripts/load.py --qps 50 --duration 5
+```
+
+| 指标 | 值 |
+|---|---|
+| 请求 | 250/250 成功（100%），50.00 QPS |
+| 延迟 | p50 1.13 ms / p95 1.42 ms / p99 1.60 ms |
+| 轨迹 | 130/250 条检测带 track_id |
+| 结论 | ✅ PASS（鉴权开启后延迟仍在 1–2ms 量级） |
+
+## 15. 前端 P2 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 登录页 | ✅ 三种演示账号（点击填充）；表单登录成功；标题 P2.0 |
+| admin | ✅ 用户标识「管理员 · 全部区域」；标定与规则配置可见可编辑（规则保存后 `updated_at` 更新）；工单可建可改；事件处置可用；登出回到登录页 |
+| operator | ✅「值班员 · 东门、停车场」；标定/规则只读；事件处置与建单可用；修改区域外相机（CAM-004）→ toast「403 out_of_scope」 |
+| viewer | ✅ 只读：处置按钮禁用 + 只读提示、无建单、无相机编辑、规则/工单只读 |
+| 401 自动登出 | ✅ 无效 token 重载 → 登录页 +「登录已过期」提示 |
+| 控制台 | ✅ console errors=[]、page exceptions=[]（仅预期的 403/401 测试请求） |
+| 截图 | `docs/screenshots/p2-login.png`、`p2-admin.png`、`p2-rules.png`、`p2-operator.png`、`p2-viewer.png` |
+
+## 16. 已知限制（P2.0）
+
+- 演示账号与固定口令仅用于本机；生产需接企业 IdP/SSO、HTTPS、密钥轮换，并替换 `JWT_SECRET`。
+- JWT 存 localStorage，无刷新令牌/多标签同步；`AUTH_MODE=off` 仅供本地联调。
+- 操作员区域权限作用于相机/事件/工单；跨区域**只读**仍可见（P2.0 简化，P3 可做数据级过滤）。
+- ROI 编辑器为归一化坐标点列表（无拖拽手柄）；规则未配置时 `updated_at` 省略。
+- 真实 GPU 帧率、画布手势、真实视频源仍需人工验收；PostgreSQL 容器化仍受本机 Docker 网络限制未验证。

@@ -1,5 +1,5 @@
 /**
- * 与 docs/API.md + docs/API_P1.md 对齐的数据模型与 WS 消息类型。
+ * 与 docs/API.md + docs/API_P1.md + docs/API_P2.md 对齐的数据模型与 WS 消息类型。
  * 坐标统一为局部 ENU 米制：x 东、y 北、z 上；时间统一 RFC3339 UTC 字符串。
  */
 
@@ -37,6 +37,15 @@ export interface Camera {
   stream_url: string | null
   calibration?: CameraCalibration | null
   updated_at: string
+}
+
+/** PATCH /api/cameras/{id} 允许修改的字段（P0 契约）。 */
+export interface CameraUpdatePayload {
+  status?: CameraStatus
+  x?: number
+  y?: number
+  z?: number
+  heading?: number
 }
 
 export interface TwinEvent {
@@ -149,7 +158,92 @@ export interface StatsSummary {
 
 export type StatsRange = '1h' | '24h'
 
-/** WebSocket 推送消息（服务端 → 客户端，P0 + P1）。 */
+// ---------------- P2：身份与 RBAC ----------------
+
+export type Role = 'viewer' | 'operator' | 'admin'
+
+export interface AuthUser {
+  id: string
+  username: string
+  display_name: string
+  role: Role
+  /** 负责区域；admin/viewer 可能为 null（表示全部/只读）。 */
+  areas: string[] | null
+}
+
+export interface LoginResponse {
+  token: string
+  expires_at: string
+  user: AuthUser
+}
+
+/** 前端可判定的操作权限键（与后端角色矩阵一致）。 */
+export type Permission =
+  | 'event:handle'
+  | 'order:create'
+  | 'order:update'
+  | 'camera:update'
+  | 'camera:calibration'
+  | 'camera:rules'
+
+// ---------------- P2：相机规则 ----------------
+
+export interface CameraRules {
+  camera_id: string
+  confidence_threshold: number
+  dedupe_seconds: number
+  enabled_classes: EventType[]
+  /** 归一化图像坐标多边形；null 表示全画面。 */
+  roi: [number, number][] | null
+  updated_at: string
+}
+
+export type CameraRulesPayload = Pick<
+  CameraRules,
+  'confidence_threshold' | 'dedupe_seconds' | 'enabled_classes' | 'roi'
+>
+
+// ---------------- P2：工单 ----------------
+
+export type OrderStatus = 'open' | 'assigned' | 'processing' | 'done' | 'cancelled'
+
+export type OrderPriority = 'low' | 'normal' | 'high' | 'urgent'
+
+export interface Order {
+  id: string
+  event_id: string
+  camera_id: string
+  title: string
+  status: OrderStatus
+  priority: OrderPriority
+  assignee: string
+  note: string
+  created_at: string
+  updated_at: string
+  closed_at?: string | null
+}
+
+export interface CreateOrderPayload {
+  event_id: string
+  title?: string
+  priority?: OrderPriority
+  assignee?: string
+  note?: string
+}
+
+export interface UpdateOrderPayload {
+  status?: OrderStatus
+  assignee?: string
+  note?: string
+}
+
+export interface OrderListResponse {
+  items: Order[]
+}
+
+// ---------------- WS ----------------
+
+/** WebSocket 推送消息（服务端 → 客户端，P0 + P1 + P2）。 */
 export interface WsHelloMessage {
   type: 'hello'
   data: { server_time: string; cameras: number }
@@ -175,6 +269,11 @@ export interface WsTrackPointMessage {
   data: TrackPoint
 }
 
+export interface WsOrderUpdatedMessage {
+  type: 'order_updated'
+  data: Order
+}
+
 export interface WsStatsMessage {
   type: 'stats'
   data: { events_total: number; online_cameras: number; ws_clients: number }
@@ -186,6 +285,7 @@ export type WsMessage =
   | WsEventUpdatedMessage
   | WsCameraStatusMessage
   | WsTrackPointMessage
+  | WsOrderUpdatedMessage
   | WsStatsMessage
 
 export type WsState = 'connecting' | 'online' | 'offline'
@@ -195,7 +295,7 @@ export interface EventFilters {
   severity: Severity | 'all'
 }
 
-export type SidebarTab = 'events' | 'stats'
+export type SidebarTab = 'events' | 'stats' | 'orders'
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

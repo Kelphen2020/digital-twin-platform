@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { WS_STATE_LABELS, formatClock } from '../labels'
+import { ROLE_COLORS, ROLE_LABELS, WS_STATE_LABELS, formatArea, formatClock } from '../labels'
+import { useAuthStore } from '../store/auth'
 import { useTwinStore } from '../store/twin'
 
 const { state, onlineCameras, toggleTracks } = useTwinStore()
+const { state: authState, role, logout } = useAuthStore()
 
 const now = ref(new Date())
 let clockTimer: number | null = null
@@ -24,6 +26,17 @@ const wsTone = computed(() =>
   state.wsState === 'online' ? 'ok' : state.wsState === 'connecting' ? 'warn' : 'bad',
 )
 const trackCount = computed(() => new Set(state.tracks.map((point) => point.track_id)).size)
+
+const roleLabel = computed(() => (role.value ? ROLE_LABELS[role.value] : '未登录'))
+const roleColor = computed(() => (role.value ? ROLE_COLORS[role.value] : '#94a3b8'))
+const userInitial = computed(() => authState.user?.display_name?.slice(0, 1) ?? '?')
+const areaText = computed(() => {
+  const areas = authState.user?.areas ?? []
+  return areas.length > 0 ? areas.map(formatArea).join('、') : '全部区域'
+})
+const userTitle = computed(() =>
+  authState.user ? `${authState.user.username} · ${roleLabel.value} · 负责区域：${areaText.value}` : '',
+)
 </script>
 
 <template>
@@ -32,7 +45,7 @@ const trackCount = computed(() => new Set(state.tracks.map((point) => point.trac
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P1.0 视频 / 轨迹 / 处置</p>
+        <p>园区三维安防 · P2.0 登录 / 规则 / 工单</p>
       </div>
     </div>
 
@@ -69,6 +82,15 @@ const trackCount = computed(() => new Set(state.tracks.map((point) => point.trac
         <span>{{ wsLabel }}</span>
       </div>
       <time class="clock">{{ clock }}</time>
+
+      <div class="user-chip" :title="userTitle">
+        <span class="user-avatar" :style="{ borderColor: roleColor, color: roleColor }">{{ userInitial }}</span>
+        <span class="user-meta">
+          <strong>{{ authState.user?.display_name ?? '未登录' }}</strong>
+          <em :style="{ color: roleColor }">{{ roleLabel }} · {{ areaText }}</em>
+        </span>
+        <button class="ghost-btn logout-btn" title="退出登录" @click="logout">退出</button>
+      </div>
     </div>
   </header>
 </template>

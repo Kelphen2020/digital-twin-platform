@@ -203,3 +203,54 @@ type SolveResult struct {
 	MaxResidual float64       `json:"max_residual"`
 	PointsCount int           `json:"points_count"`
 }
+
+// CameraRules is the per-camera detection rule configuration (P2.0).
+type CameraRules struct {
+	CameraID            string   `json:"camera_id"`
+	ConfidenceThreshold float64  `json:"confidence_threshold"`
+	DedupeSeconds       int      `json:"dedupe_seconds"`
+	EnabledClasses      []string `json:"enabled_classes"`
+	// ROI is a normalized image polygon (0..1). Nil means the full frame.
+	ROI       [][2]float64 `json:"roi"`
+	UpdatedAt *time.Time   `json:"updated_at,omitempty"`
+}
+
+// DefaultCameraRules returns the P0 defaults for a camera without stored rules.
+func DefaultCameraRules(cameraID string) CameraRules {
+	return CameraRules{
+		CameraID:            cameraID,
+		ConfidenceThreshold: 0.6,
+		DedupeSeconds:       5,
+		EnabledClasses:      []string{"person", "vehicle", "intrusion", "smoke", "no_helmet"},
+		ROI:                 nil,
+	}
+}
+
+// Order is one work order created from an event (P2.0).
+type Order struct {
+	ID        string     `json:"id"`
+	EventID   string     `json:"event_id"`
+	CameraID  string     `json:"camera_id"`
+	Title     string     `json:"title"`
+	Status    string     `json:"status"`
+	Priority  string     `json:"priority"`
+	Assignee  string     `json:"assignee"`
+	Note      string     `json:"note"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+}
+
+// OrderFilter narrows GET /api/orders.
+type OrderFilter struct {
+	Status   string
+	Assignee string
+	Limit    int
+}
+
+// OrderUpdate carries the mutable fields of PATCH /api/orders/{id}.
+type OrderUpdate struct {
+	Status   *string `json:"status,omitempty"`
+	Assignee *string `json:"assignee,omitempty"`
+	Note     *string `json:"note,omitempty"`
+}

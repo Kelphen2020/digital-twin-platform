@@ -35,6 +35,12 @@ type Store interface {
 	ListTrackPoints(ctx context.Context, filter model.TrackFilter) ([]model.TrackPoint, error)
 	AddAudit(ctx context.Context, entry model.AuditEntry) error
 	ListAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEntry, error)
+	GetCameraRules(ctx context.Context, cameraID string) (model.CameraRules, error)
+	SetCameraRules(ctx context.Context, rules model.CameraRules) (model.CameraRules, error)
+	CreateOrder(ctx context.Context, order model.Order) error
+	GetOrder(ctx context.Context, id string) (model.Order, error)
+	UpdateOrder(ctx context.Context, id string, update model.OrderUpdate) (model.Order, error)
+	ListOrders(ctx context.Context, filter model.OrderFilter) ([]model.Order, error)
 	Stats(ctx context.Context, from, to time.Time) (model.StatsSummary, error)
 	Counts(ctx context.Context) (model.Counts, error)
 }
@@ -46,6 +52,8 @@ type Memory struct {
 	order     []string
 	areas     []model.Area
 	events    []model.Event
+	rules     map[string]model.CameraRules
+	orders    []model.Order
 	tracks    []model.TrackPoint
 	actions   map[string][]model.EventAction
 	audit     []model.AuditEntry
@@ -65,6 +73,7 @@ func NewMemory(maxEvents int) *Memory {
 		maxTracks: 50000,
 		maxAudit:  5000,
 		actions:   make(map[string][]model.EventAction),
+		rules:     make(map[string]model.CameraRules),
 	}
 }
 
@@ -342,6 +351,104 @@ func (m *Memory) Stats(_ context.Context, from, to time.Time) (model.StatsSummar
 	}
 	sort.Slice(summary.ByHour, func(i, j int) bool { return summary.ByHour[i].Hour.Before(summary.ByHour[j].Hour) })
 	return summary, nil
+}
+
+func (m *Memory) GetCameraRules(_ context.Context, cameraID string) (model.CameraRules, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rules, ok := m.rules[cameraID]
+	if !ok {
+		return model.CameraRules{}, ErrNotFound
+	}
+	return rules, nil
+}
+
+func (m *Memory) SetCameraRules(_ context.Context, rules model.CameraRules) (model.CameraRules, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.cameras[rules.CameraID]; !ok {
+		return model.CameraRules{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	rules.UpdatedAt = &now
+	if rules.EnabledClasses == nil {
+		rules.EnabledClasses = []string{}
+	}
+	m.rules[rules.CameraID] = rules
+	return rules, nil
+}
+
+func (m *Memory) CreateOrder(_ context.Context, order model.Order) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orders = append(m.orders, order)
+	if len(m.orders) > 10000 {
+		m.orders = append([]model.Order(nil), m.orders[len(m.orders)-10000:]...)
+	}
+	return nil
+}
+
+func (m *Memory) GetOrder(_ context.Context, id string) (model.Order, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.orders {
+		if m.orders[i].ID == id {
+			return m.orders[i], nil
+		}
+	}
+	return model.Order{}, ErrNotFound
+}
+
+func (m *Memory) UpdateOrder(_ context.Context, id string, update model.OrderUpdate) (model.Order, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.orders {
+		if m.orders[i].ID != id {
+			continue
+		}
+		applyOrderUpdate(&m.orders[i], update)
+		return m.orders[i], nil
+	}
+	return model.Order{}, ErrNotFound
+}
+
+func (m *Memory) ListOrders(_ context.Context, filter model.OrderFilter) ([]model.Order, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]model.Order, 0, limit)
+	for i := len(m.orders) - 1; i >= 0 && len(out) < limit; i-- {
+		order := m.orders[i]
+		if filter.Status != "" && order.Status != filter.Status {
+			continue
+		}
+		if filter.Assignee != "" && order.Assignee != filter.Assignee {
+			continue
+		}
+		out = append(out, order)
+	}
+	return out, nil
+}
+
+func applyOrderUpdate(order *model.Order, update model.OrderUpdate) {
+	now := time.Now().UTC()
+	if update.Status != nil {
+		order.Status = *update.Status
+		if order.Status == "done" || order.Status == "cancelled" {
+			closed := now
+			order.ClosedAt = &closed
+		}
+	}
+	if update.Assignee != nil {
+		order.Assignee = *update.Assignee
+	}
+	if update.Note != nil {
+		order.Note = *update.Note
+	}
+	order.UpdatedAt = now
 }
 
 func (m *Memory) Counts(_ context.Context) (model.Counts, error) {

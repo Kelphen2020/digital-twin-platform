@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"digital-twin-platform/api/internal/auth"
 	"digital-twin-platform/api/internal/calib"
 	"digital-twin-platform/api/internal/metrics"
 	"digital-twin-platform/api/internal/model"
@@ -27,25 +28,32 @@ import (
 
 // Server wires the store, rule engine and WebSocket hub into HTTP handlers.
 type Server struct {
-	store     store.Store
-	rules     *rules.Engine
-	hub       *realtime.Hub
-	metrics   *metrics.Metrics
-	version   string
-	authToken string
-	started   time.Time
+	store       store.Store
+	rules       *rules.Engine
+	hub         *realtime.Hub
+	metrics     *metrics.Metrics
+	version     string
+	auth        *auth.Service
+	ingestToken string
+	started     time.Time
 }
 
-// New builds the API server. authToken enables the optional bearer-token guard.
-func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *metrics.Metrics, version, authToken string) *Server {
+type userContextKey struct{}
+
+// New builds the API server. A nil auth service means authentication is off.
+func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *metrics.Metrics, version string, authService *auth.Service, ingestToken string) *Server {
+	if authService == nil {
+		authService = auth.New("off", "")
+	}
 	return &Server{
-		store:     database,
-		rules:     engine,
-		hub:       hub,
-		metrics:   meters,
-		version:   version,
-		authToken: authToken,
-		started:   time.Now().UTC(),
+		store:       database,
+		rules:       engine,
+		hub:         hub,
+		metrics:     meters,
+		version:     version,
+		auth:        authService,
+		ingestToken: ingestToken,
+		started:     time.Now().UTC(),
 	}
 }
 
@@ -53,10 +61,14 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("GET /api/auth/me", s.handleMe)
 	mux.HandleFunc("GET /api/areas", s.handleAreas)
 	mux.HandleFunc("GET /api/cameras", s.handleCameras)
 	mux.HandleFunc("GET /api/cameras/{id}", s.handleCamera)
 	mux.HandleFunc("PATCH /api/cameras/{id}", s.handlePatchCamera)
+	mux.HandleFunc("GET /api/cameras/{id}/rules", s.handleGetRules)
+	mux.HandleFunc("PUT /api/cameras/{id}/rules", s.handlePutRules)
 	mux.HandleFunc("PUT /api/cameras/{id}/calibration", s.handlePutCalibration)
 	mux.HandleFunc("DELETE /api/cameras/{id}/calibration", s.handleDeleteCalibration)
 	mux.HandleFunc("POST /api/calibration/solve", s.handleSolveCalibration)
@@ -66,6 +78,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/events/{id}/close", s.handleCloseEvent)
 	mux.HandleFunc("POST /api/events/{id}/dispatch", s.handleDispatchEvent)
 	mux.HandleFunc("GET /api/tracks", s.handleTracks)
+	mux.HandleFunc("POST /api/orders", s.handleCreateOrder)
+	mux.HandleFunc("GET /api/orders", s.handleListOrders)
+	mux.HandleFunc("GET /api/orders/{id}", s.handleGetOrder)
+	mux.HandleFunc("PATCH /api/orders/{id}", s.handlePatchOrder)
 	mux.HandleFunc("GET /api/audit", s.handleAudit)
 	mux.HandleFunc("GET /api/stats/summary", s.handleStatsSummary)
 	mux.HandleFunc("GET /api/stats/events.csv", s.handleStatsCSV)
@@ -83,7 +99,7 @@ func (s *Server) Handler() http.Handler {
 			"cameras":     count,
 		}}
 	}
-	return cors(s.auth(mux))
+	return cors(s.authenticate(mux))
 }
 
 // RunStats broadcasts the stats frame every interval until ctx is cancelled.
@@ -113,26 +129,134 @@ func (s *Server) broadcastStats() {
 	}})
 }
 
-// auth enforces the optional bearer token. Health, metrics and assets stay open.
-func (s *Server) auth(next http.Handler) http.Handler {
-	if s.authToken == "" {
-		return next
+// authenticate resolves the caller: JWT for users, an optional shared header
+// for the machine ingest endpoint, and an implicit admin when auth is off.
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	if !s.auth.Enabled() {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, auth.DevUser())))
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" || r.URL.Path == "/metrics" {
+		path := r.URL.Path
+		switch path {
+		case "/api/health", "/metrics", "/api/auth/login":
+			next.ServeHTTP(w, r)
+			return
+		case "/api/ingest/detections":
+			if s.ingestToken != "" {
+				presented := r.Header.Get("X-Ingest-Token")
+				if subtle.ConstantTimeCompare([]byte(presented), []byte(s.ingestToken)) != 1 {
+					writeError(w, http.StatusUnauthorized, "ingest_unauthorized", "a valid X-Ingest-Token is required")
+					return
+				}
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		presented := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if r.URL.Path == "/ws" {
-			presented = r.URL.Query().Get("token")
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if path == "/ws" {
+			token = r.URL.Query().Get("token")
 		}
-		if subtle.ConstantTimeCompare([]byte(presented), []byte(s.authToken)) != 1 {
+		user, err := s.auth.Verify(token)
+		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
 	})
+}
+
+// userOf returns the authenticated principal, or the dev admin when auth is off.
+func userOf(r *http.Request) auth.User {
+	if user, ok := r.Context().Value(userContextKey{}).(auth.User); ok {
+		return user
+	}
+	return auth.DevUser()
+}
+
+// allow enforces one role permission; auth-off mode always passes.
+func (s *Server) allow(w http.ResponseWriter, r *http.Request, permission string) (auth.User, bool) {
+	user := userOf(r)
+	if !s.auth.Enabled() {
+		return user, true
+	}
+	if !auth.Can(user.Role, permission) {
+		writeError(w, http.StatusForbidden, "forbidden", "this role lacks the "+permission+" permission")
+		return user, false
+	}
+	return user, true
+}
+
+// allowCamera enforces a permission plus the user's area scope for a camera.
+func (s *Server) allowCamera(w http.ResponseWriter, r *http.Request, permission, cameraID string) bool {
+	user, ok := s.allow(w, r, permission)
+	if !ok {
+		return false
+	}
+	if !s.auth.Enabled() {
+		return true
+	}
+	camera, err := s.store.GetCamera(r.Context(), cameraID)
+	if err != nil {
+		s.writeCameraError(w, err)
+		return false
+	}
+	if !auth.InScope(user, camera.AreaID) {
+		writeError(w, http.StatusForbidden, "out_of_scope", "camera is outside your assigned areas")
+		return false
+	}
+	return true
+}
+
+// allowEventCamera enforces a permission plus the area scope of an event's camera.
+func (s *Server) allowEventCamera(w http.ResponseWriter, r *http.Request, permission, eventID string) (model.Event, bool) {
+	user, ok := s.allow(w, r, permission)
+	if !ok {
+		return model.Event{}, false
+	}
+	event, err := s.store.GetEvent(r.Context(), eventID)
+	if err != nil {
+		s.writeEventError(w, err)
+		return model.Event{}, false
+	}
+	if s.auth.Enabled() {
+		camera, err := s.store.GetCamera(r.Context(), event.CameraID)
+		if err != nil {
+			s.writeCameraError(w, err)
+			return model.Event{}, false
+		}
+		if !auth.InScope(user, camera.AreaID) {
+			writeError(w, http.StatusForbidden, "out_of_scope", "event camera is outside your assigned areas")
+			return model.Event{}, false
+		}
+	}
+	return event, true
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	token, expires, user, err := s.auth.Login(strings.TrimSpace(request.Username), request.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":      token,
+		"expires_at": expires.Format(time.RFC3339),
+		"user":       user,
+	})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, userOf(r))
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +308,9 @@ func (s *Server) handlePatchCamera(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "status must be online, offline or degraded")
 		return
 	}
+	if !s.allowCamera(w, r, auth.PermCameraWrite, r.PathValue("id")) {
+		return
+	}
 	camera, err := s.store.UpdateCamera(r.Context(), r.PathValue("id"), patch)
 	if err != nil {
 		s.writeCameraError(w, err)
@@ -208,6 +335,9 @@ func (s *Server) handleSolveCalibration(w http.ResponseWriter, r *http.Request) 
 	}
 	if _, err := s.store.GetCamera(r.Context(), request.CameraID); err != nil {
 		s.writeCameraError(w, err)
+		return
+	}
+	if _, ok := s.allow(w, r, auth.PermCameraCalibration); !ok {
 		return
 	}
 	result, err := calib.Solve(request.Points)
@@ -235,6 +365,9 @@ func (s *Server) handlePutCalibration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "matrix and points_count are required")
 		return
 	}
+	if !s.allowCamera(w, r, auth.PermCameraCalibration, r.PathValue("id")) {
+		return
+	}
 	camera, err := s.store.SetCameraCalibration(r.Context(), r.PathValue("id"), &request)
 	if err != nil {
 		s.writeCameraError(w, err)
@@ -245,6 +378,9 @@ func (s *Server) handlePutCalibration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteCalibration(w http.ResponseWriter, r *http.Request) {
+	if !s.allowCamera(w, r, auth.PermCameraCalibration, r.PathValue("id")) {
+		return
+	}
 	camera, err := s.store.SetCameraCalibration(r.Context(), r.PathValue("id"), nil)
 	if err != nil {
 		s.writeCameraError(w, err)
@@ -302,6 +438,9 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allowEventCamera(w, r, auth.PermEventAction, r.PathValue("id")); !ok {
+		return
+	}
 	event, err := s.store.AckEvent(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeEventError(w, err)
@@ -313,6 +452,9 @@ func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCloseEvent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allowEventCamera(w, r, auth.PermEventAction, r.PathValue("id")); !ok {
+		return
+	}
 	var body struct {
 		Note string `json:"note"`
 	}
@@ -340,9 +482,8 @@ func (s *Server) handleDispatchEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "target is required")
 		return
 	}
-	event, err := s.store.GetEvent(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.writeEventError(w, err)
+	event, ok := s.allowEventCamera(w, r, auth.PermEventAction, r.PathValue("id"))
+	if !ok {
 		return
 	}
 	action := s.recordAction(r, event, "dispatch", body.Target, body.Note)
@@ -460,7 +601,11 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if request.TS != nil {
 		occurredAt = request.TS.UTC()
 	}
-	result := s.rules.Evaluate(camera, request.Detections, occurredAt)
+	cameraRules, rulesErr := s.store.GetCameraRules(r.Context(), camera.ID)
+	if rulesErr != nil {
+		cameraRules = model.DefaultCameraRules(camera.ID)
+	}
+	result := s.rules.Evaluate(camera, cameraRules, request.Detections, occurredAt)
 	s.metrics.Detections.Add(int64(len(request.Detections)))
 	s.metrics.Dropped.Add(int64(result.Dropped))
 	for _, event := range result.Events {
@@ -548,10 +693,210 @@ func actorOf(r *http.Request) string {
 	if r == nil {
 		return "system"
 	}
-	if actor := strings.TrimSpace(r.Header.Get("X-Actor")); actor != "" {
-		return actor
+	if user := userOf(r); user.Username != "" {
+		return user.Username
 	}
-	return "web"
+	return "system"
+}
+
+func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
+	cameraID := r.PathValue("id")
+	if _, err := s.store.GetCamera(r.Context(), cameraID); err != nil {
+		s.writeCameraError(w, err)
+		return
+	}
+	rules, err := s.store.GetCameraRules(r.Context(), cameraID)
+	if err != nil {
+		rules = model.DefaultCameraRules(cameraID)
+	}
+	if rules.EnabledClasses == nil {
+		rules.EnabledClasses = []string{}
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+func (s *Server) handlePutRules(w http.ResponseWriter, r *http.Request) {
+	cameraID := r.PathValue("id")
+	var rules model.CameraRules
+	if err := json.NewDecoder(r.Body).Decode(&rules); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if err := validateRules(&rules); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if !s.allowCamera(w, r, auth.PermCameraRules, cameraID) {
+		return
+	}
+	if _, err := s.store.GetCamera(r.Context(), cameraID); err != nil {
+		s.writeCameraError(w, err)
+		return
+	}
+	rules.CameraID = cameraID
+	saved, err := s.store.SetCameraRules(r.Context(), rules)
+	if err != nil {
+		s.writeCameraError(w, err)
+		return
+	}
+	s.audit(r, "camera.rules.put", cameraID, map[string]any{
+		"confidence_threshold": saved.ConfidenceThreshold,
+		"dedupe_seconds":       saved.DedupeSeconds,
+	})
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		EventID  string `json:"event_id"`
+		Title    string `json:"title"`
+		Priority string `json:"priority"`
+		Assignee string `json:"assignee"`
+		Note     string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.EventID) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id is required")
+		return
+	}
+	event, ok := s.allowEventCamera(w, r, auth.PermOrderWrite, body.EventID)
+	if !ok {
+		return
+	}
+	priority := strings.TrimSpace(body.Priority)
+	if priority == "" {
+		priority = "normal"
+	}
+	if !validPriority(priority) {
+		writeError(w, http.StatusBadRequest, "bad_request", "priority must be low, normal, high or urgent")
+		return
+	}
+	title := strings.TrimSpace(body.Title)
+	if title == "" {
+		title = fmt.Sprintf("%s · %s %s", event.Type, event.CameraCode, event.CameraName)
+	}
+	now := time.Now().UTC()
+	order := model.Order{
+		ID: newID("ord"), EventID: event.ID, CameraID: event.CameraID, Title: title,
+		Status: "open", Priority: priority, Assignee: strings.TrimSpace(body.Assignee),
+		Note: strings.TrimSpace(body.Note), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.store.CreateOrder(r.Context(), order); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "order.create", order.ID, map[string]any{"event_id": order.EventID, "priority": order.Priority})
+	s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
+	writeJSON(w, http.StatusCreated, order)
+}
+
+func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
+	filter := model.OrderFilter{
+		Status:   r.URL.Query().Get("status"),
+		Assignee: r.URL.Query().Get("assignee"),
+		Limit:    parseIntDefault(r.URL.Query().Get("limit"), 100),
+	}
+	if filter.Limit > 500 {
+		filter.Limit = 500
+	}
+	orders, err := s.store.ListOrders(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if orders == nil {
+		orders = []model.Order{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orders})
+}
+
+func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
+	order, err := s.store.GetOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeOrderError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+
+func (s *Server) handlePatchOrder(w http.ResponseWriter, r *http.Request) {
+	var update model.OrderUpdate
+	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if update.Status != nil && !validOrderStatus(*update.Status) {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid order status")
+		return
+	}
+	existing, err := s.store.GetOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeOrderError(w, err)
+		return
+	}
+	if !s.allowCamera(w, r, auth.PermOrderWrite, existing.CameraID) {
+		return
+	}
+	order, err := s.store.UpdateOrder(r.Context(), existing.ID, update)
+	if err != nil {
+		s.writeOrderError(w, err)
+		return
+	}
+	s.audit(r, "order.update", order.ID, map[string]any{"status": order.Status, "assignee": order.Assignee})
+	s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
+	writeJSON(w, http.StatusOK, order)
+}
+
+func (s *Server) writeOrderError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "order_not_found", "order not found")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+}
+
+func validateRules(rules *model.CameraRules) error {
+	if rules.ConfidenceThreshold < 0 || rules.ConfidenceThreshold > 1 {
+		return errors.New("confidence_threshold must be within [0,1]")
+	}
+	if rules.DedupeSeconds < 0 || rules.DedupeSeconds > 300 {
+		return errors.New("dedupe_seconds must be within [0,300]")
+	}
+	if len(rules.ROI) > 0 && len(rules.ROI) < 3 {
+		return errors.New("roi needs at least 3 points")
+	}
+	for _, point := range rules.ROI {
+		if point[0] < 0 || point[0] > 1 || point[1] < 0 || point[1] > 1 {
+			return errors.New("roi points must be normalized to [0,1]")
+		}
+	}
+	for _, class := range rules.EnabledClasses {
+		switch class {
+		case "person", "vehicle", "intrusion", "smoke", "no_helmet", "other":
+		default:
+			return fmt.Errorf("unknown enabled class %q", class)
+		}
+	}
+	return nil
+}
+
+func validPriority(priority string) bool {
+	switch priority {
+	case "low", "normal", "high", "urgent":
+		return true
+	}
+	return false
+}
+
+func validOrderStatus(status string) bool {
+	switch status {
+	case "open", "assigned", "processing", "done", "cancelled":
+		return true
+	}
+	return false
 }
 
 func (s *Server) writeCameraError(w http.ResponseWriter, err error) {
@@ -645,7 +990,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Actor")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Ingest-Token")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

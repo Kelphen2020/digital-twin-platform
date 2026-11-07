@@ -16,6 +16,9 @@ type Config struct {
 	MaxEvents    int
 	Version      string
 	AuthToken    string
+	AuthMode     string
+	JWTSecret    string
+	IngestToken  string
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -27,6 +30,9 @@ func Load() Config {
 		MaxEvents:    envInt("MAX_EVENTS", 20000),
 		Version:      env("VERSION", "0.1.0"),
 		AuthToken:    env("AUTH_TOKEN", ""),
+		AuthMode:     env("AUTH_MODE", "on"),
+		JWTSecret:    env("JWT_SECRET", "dev-secret-change-me"),
+		IngestToken:  env("INGEST_TOKEN", ""),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

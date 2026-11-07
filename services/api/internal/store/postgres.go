@@ -516,3 +516,153 @@ func scanEvent(row rowScanner) (model.Event, error) {
 	}
 	return event, nil
 }
+
+func (p *Postgres) GetCameraRules(ctx context.Context, cameraID string) (model.CameraRules, error) {
+	var rules model.CameraRules
+	var classes, roi []byte
+	err := p.pool.QueryRow(ctx, `
+        SELECT camera_id, confidence_threshold, dedupe_seconds, enabled_classes, roi, updated_at
+        FROM camera_rules WHERE camera_id=$1`, cameraID).
+		Scan(&rules.CameraID, &rules.ConfidenceThreshold, &rules.DedupeSeconds, &classes, &roi, &rules.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.CameraRules{}, ErrNotFound
+		}
+		return model.CameraRules{}, err
+	}
+	if len(classes) > 0 {
+		_ = json.Unmarshal(classes, &rules.EnabledClasses)
+	}
+	if len(roi) > 0 {
+		_ = json.Unmarshal(roi, &rules.ROI)
+	}
+	return rules, nil
+}
+
+func (p *Postgres) SetCameraRules(ctx context.Context, rules model.CameraRules) (model.CameraRules, error) {
+	classes, err := json.Marshal(rules.EnabledClasses)
+	if err != nil {
+		return model.CameraRules{}, err
+	}
+	var roi []byte
+	if len(rules.ROI) > 0 {
+		roi, err = json.Marshal(rules.ROI)
+		if err != nil {
+			return model.CameraRules{}, err
+		}
+	}
+	_, err = p.pool.Exec(ctx, `
+        INSERT INTO camera_rules (camera_id, confidence_threshold, dedupe_seconds, enabled_classes, roi, updated_at)
+        VALUES ($1,$2,$3,$4,$5,now())
+        ON CONFLICT (camera_id) DO UPDATE SET
+            confidence_threshold=EXCLUDED.confidence_threshold,
+            dedupe_seconds=EXCLUDED.dedupe_seconds,
+            enabled_classes=EXCLUDED.enabled_classes,
+            roi=EXCLUDED.roi,
+            updated_at=now()`,
+		rules.CameraID, rules.ConfidenceThreshold, rules.DedupeSeconds, classes, roi)
+	if err != nil {
+		return model.CameraRules{}, err
+	}
+	return p.GetCameraRules(ctx, rules.CameraID)
+}
+
+func (p *Postgres) CreateOrder(ctx context.Context, order model.Order) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO orders (id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		order.ID, order.EventID, order.CameraID, order.Title, order.Status, order.Priority,
+		order.Assignee, order.Note, order.CreatedAt, order.UpdatedAt)
+	return err
+}
+
+func (p *Postgres) GetOrder(ctx context.Context, id string) (model.Order, error) {
+	return scanOrder(p.pool.QueryRow(ctx, orderSelect+` WHERE id=$1`, id))
+}
+
+func (p *Postgres) UpdateOrder(ctx context.Context, id string, update model.OrderUpdate) (model.Order, error) {
+	current, err := p.GetOrder(ctx, id)
+	if err != nil {
+		return model.Order{}, err
+	}
+	now := time.Now().UTC()
+	if update.Status != nil {
+		current.Status = *update.Status
+		if current.Status == "done" || current.Status == "cancelled" {
+			closed := now
+			current.ClosedAt = &closed
+		}
+	}
+	if update.Assignee != nil {
+		current.Assignee = *update.Assignee
+	}
+	if update.Note != nil {
+		current.Note = *update.Note
+	}
+	_, err = p.pool.Exec(ctx, `
+        UPDATE orders SET status=$2, assignee=$3, note=$4, updated_at=$5, closed_at=$6 WHERE id=$1`,
+		id, current.Status, current.Assignee, current.Note, now, current.ClosedAt)
+	if err != nil {
+		return model.Order{}, err
+	}
+	return p.GetOrder(ctx, id)
+}
+
+func (p *Postgres) ListOrders(ctx context.Context, filter model.OrderFilter) ([]model.Order, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	conditions := []string{}
+	args := []any{}
+	add := func(condition string, value any) {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
+	}
+	if filter.Status != "" {
+		add("status = $%d", filter.Status)
+	}
+	if filter.Assignee != "" {
+		add("assignee = $%d", filter.Assignee)
+	}
+	query := orderSelect
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit)
+	rows, err := p.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := make([]model.Order, 0, limit)
+	for rows.Next() {
+		order, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	return orders, rows.Err()
+}
+
+const orderSelect = `SELECT id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at, closed_at FROM orders`
+
+func scanOrder(row rowScanner) (model.Order, error) {
+	var order model.Order
+	err := row.Scan(&order.ID, &order.EventID, &order.CameraID, &order.Title, &order.Status, &order.Priority,
+		&order.Assignee, &order.Note, &order.CreatedAt, &order.UpdatedAt, &order.ClosedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.Order{}, ErrNotFound
+		}
+		return model.Order{}, err
+	}
+	order.CreatedAt = order.CreatedAt.UTC()
+	order.UpdatedAt = order.UpdatedAt.UTC()
+	if order.ClosedAt != nil {
+		closed := order.ClosedAt.UTC()
+		order.ClosedAt = &closed
+	}
+	return order, nil
+}

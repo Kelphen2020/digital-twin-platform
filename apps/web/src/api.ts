@@ -1,15 +1,26 @@
+import { getAuthToken } from './auth/token'
 import type {
+  AuthUser,
   CalibrationSavePayload,
   CalibrationSolveResponse,
   Camera,
   CameraListResponse,
+  CameraRules,
+  CameraRulesPayload,
+  CameraUpdatePayload,
   ControlPoint,
+  CreateOrderPayload,
   EventDetailResponse,
   EventListResponse,
+  LoginResponse,
+  Order,
+  OrderListResponse,
+  OrderStatus,
   StatsSummary,
   TrackListResponse,
   TrackPoint,
   TwinEvent,
+  UpdateOrderPayload,
 } from './types'
 
 /**
@@ -18,21 +29,32 @@ import type {
  */
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? '').trim().replace(/\/+$/, '')
 
-/** 可选鉴权令牌（docs/API_P1.md §7）；默认关闭。 */
-export const API_TOKEN = (import.meta.env.VITE_API_TOKEN ?? '').trim()
+/** 机器/联调用的静态令牌兜底（P1 遗留）；正常使用登录会话令牌。 */
+const ENV_API_TOKEN = (import.meta.env.VITE_API_TOKEN ?? '').trim()
 
 export class ApiError extends Error {
   readonly status: number | undefined
+  /** 后端错误码（响应体 error 字段，如 out_of_scope / forbidden）。 */
+  readonly code: string | undefined
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null
+
+/** 注册 401 处理（会话过期自动登出）；返回解除函数。 */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler
+}
+
 function authHeaders(): Record<string, string> {
-  return API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}
+  const token = getAuthToken() ?? ENV_API_TOKEN
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export function apiUrl(path: string): string {
@@ -41,13 +63,21 @@ export function apiUrl(path: string): string {
 
 async function parseError(response: Response): Promise<ApiError> {
   let message = `HTTP ${response.status}`
+  let code: string | undefined
   try {
     const body = (await response.json()) as { error?: string; message?: string }
+    code = body.error
     message = body.message ?? body.error ?? message
   } catch {
     // 错误响应不是 JSON 时保留 HTTP 状态信息
   }
-  return new ApiError(message, response.status)
+  return new ApiError(message, response.status, code)
+}
+
+function notifyUnauthorized(path: string): void {
+  // 登录接口的 401 是凭证错误，不应触发"会话过期"登出
+  if (path.startsWith('/api/auth/login')) return
+  unauthorizedHandler?.()
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -59,7 +89,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...((init?.headers as Record<string, string> | undefined) ?? {}),
     },
   })
-  if (!response.ok) throw await parseError(response)
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized(path)
+    throw error
+  }
   return (await response.json()) as T
 }
 
@@ -71,12 +105,57 @@ function postJson<T>(path: string, body?: unknown): Promise<T> {
   })
 }
 
+function patchJson<T>(path: string, body: unknown): Promise<T> {
+  return requestJson<T>(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/**
+ * 把后端/网络错误转成可直接展示的中文文案。
+ * 特别处理 P2 RBAC 的 401/403（forbidden / out_of_scope）。
+ */
+export function apiErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return '登录已过期，请重新登录'
+    if (error.status === 403) {
+      if (error.code === 'out_of_scope' || error.message.includes('out_of_scope')) {
+        return '该相机不在您的负责区域，操作被拒绝（403 out_of_scope）'
+      }
+      return `当前角色无此操作权限（403）：${error.message}`
+    }
+    if (error.status === 404) return `资源不存在（404 ${error.message}）`
+    return error.message
+  }
+  if (error instanceof TypeError) return '无法连接后端 API'
+  return error instanceof Error ? error.message : String(error)
+}
+
+// ---------------- P2 身份 ----------------
+
+/** POST /api/auth/login → JWT + 用户信息。 */
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  return postJson<LoginResponse>('/api/auth/login', { username, password })
+}
+
+/** GET /api/auth/me → 当前登录用户。 */
+export async function fetchMe(): Promise<AuthUser> {
+  return requestJson<AuthUser>('/api/auth/me')
+}
+
 // ---------------- P0 REST ----------------
 
 /** GET /api/cameras → 相机台账。 */
 export async function fetchCameras(): Promise<Camera[]> {
   const data = await requestJson<CameraListResponse>('/api/cameras')
   return data.items ?? []
+}
+
+/** PATCH /api/cameras/{id} → 修改状态/坐标/朝向，返回更新后的 Camera。 */
+export async function updateCamera(cameraId: string, payload: CameraUpdatePayload): Promise<Camera> {
+  return patchJson<Camera>(`/api/cameras/${encodeURIComponent(cameraId)}`, payload)
 }
 
 /** GET /api/events?limit=N → 按发生时间倒序的事件列表。 */
@@ -151,7 +230,11 @@ export async function fetchEventsCsv(from?: string, to?: string): Promise<Blob> 
   const response = await fetch(apiUrl(`/api/stats/events.csv${query ? `?${query}` : ''}`), {
     headers: { Accept: 'text/csv', ...authHeaders() },
   })
-  if (!response.ok) throw await parseError(response)
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized('/api/stats/events.csv')
+    throw error
+  }
   return response.blob()
 }
 
@@ -182,6 +265,54 @@ export async function deleteCalibration(cameraId: string): Promise<Camera> {
   return requestJson<Camera>(`/api/cameras/${encodeURIComponent(cameraId)}/calibration`, {
     method: 'DELETE',
   })
+}
+
+// ---------------- P2 相机规则 ----------------
+
+/** GET /api/cameras/{id}/rules → 相机规则（未配置时返回 P0 默认值）。 */
+export async function fetchCameraRules(cameraId: string): Promise<CameraRules> {
+  return requestJson<CameraRules>(`/api/cameras/${encodeURIComponent(cameraId)}/rules`)
+}
+
+/** PUT /api/cameras/{id}/rules（仅 admin）→ 保存并返回规则。 */
+export async function saveCameraRules(
+  cameraId: string,
+  payload: CameraRulesPayload,
+): Promise<CameraRules> {
+  return requestJson<CameraRules>(`/api/cameras/${encodeURIComponent(cameraId)}/rules`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+// ---------------- P2 工单 ----------------
+
+/** GET /api/orders?status=&assignee=&limit= → 工单列表。 */
+export async function fetchOrders(
+  params: { status?: OrderStatus; assignee?: string; limit?: number } = {},
+): Promise<Order[]> {
+  const search = new URLSearchParams()
+  if (params.status) search.set('status', params.status)
+  if (params.assignee) search.set('assignee', params.assignee)
+  search.set('limit', String(params.limit ?? 100))
+  const data = await requestJson<OrderListResponse>(`/api/orders?${search.toString()}`)
+  return data.items ?? []
+}
+
+/** GET /api/orders/{id} → 单个工单。 */
+export async function fetchOrder(orderId: string): Promise<Order> {
+  return requestJson<Order>(`/api/orders/${encodeURIComponent(orderId)}`)
+}
+
+/** POST /api/orders（operator/admin）→ 创建工单。 */
+export async function createOrder(payload: CreateOrderPayload): Promise<Order> {
+  return postJson<Order>('/api/orders', payload)
+}
+
+/** PATCH /api/orders/{id}（operator/admin）→ 流转工单。 */
+export async function updateOrder(orderId: string, payload: UpdateOrderPayload): Promise<Order> {
+  return patchJson<Order>(`/api/orders/${encodeURIComponent(orderId)}`, payload)
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

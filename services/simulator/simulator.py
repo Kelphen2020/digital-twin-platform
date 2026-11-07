@@ -127,11 +127,25 @@ def pick_class(rng: random.Random, weights) -> str:
 # ---------------------------------------------------------------------------
 
 class ApiClient:
-    """Minimal JSON HTTP client that never raises for transport-level errors."""
+    """Minimal JSON HTTP client that never raises for transport-level errors.
 
-    def __init__(self, api_base: str, timeout: float = HTTP_TIMEOUT):
+    P2.0 auth (docs/API_P2.md): user-facing REST (GET /api/cameras) needs a
+    Bearer token when the API runs with AUTH_MODE=on, while the ingest entry
+    point stays token-free unless the API sets INGEST_TOKEN (then the
+    ``X-Ingest-Token`` header is required).  Both are optional here.
+    """
+
+    def __init__(
+        self,
+        api_base: str,
+        timeout: float = HTTP_TIMEOUT,
+        api_token: str | None = None,
+        ingest_token: str | None = None,
+    ):
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
+        self.api_token = api_token
+        self.ingest_token = ingest_token
 
     def request_json(self, method: str, path: str, payload=None):
         """Perform one request.
@@ -143,10 +157,14 @@ class ApiClient:
         """
         url = self.api_base + path
         headers = {"Accept": "application/json", "User-Agent": "dsh-twin-simulator/0.1"}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
         data = None
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
+            if self.ingest_token:
+                headers["X-Ingest-Token"] = self.ingest_token
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         started = time.perf_counter()
         try:
@@ -190,9 +208,15 @@ def load_cameras(client: ApiClient, attempts: int = 3, retry_delay: float = 1.0)
         log(f"[simulator] GET {CAMERAS_PATH} attempt {attempt}/{attempts} failed: {last_error}")
         if attempt < attempts:
             time.sleep(retry_delay * attempt)
+    hint = "Is the API running?"
+    if "401" in last_error:
+        hint = (
+            "The API runs with AUTH_MODE=on: pass --api-token/API_TOKEN "
+            "(token from POST /api/auth/login) so GET /api/cameras is authorized."
+        )
     raise RuntimeError(
         f"could not load cameras from {client.api_base}{CAMERAS_PATH} after {attempts} attempts "
-        f"({last_error}). Is the API running? Try: curl -s {client.api_base}/api/health"
+        f"({last_error}). {hint} Try: curl -s {client.api_base}/api/health"
     )
 
 
@@ -566,6 +590,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print generated ingest payloads to stdout instead of POSTing them",
     )
+    parser.add_argument(
+        "--ingest-token",
+        default=os.environ.get("INGEST_TOKEN"),
+        metavar="TOKEN",
+        help="optional X-Ingest-Token header for POST /api/ingest/detections "
+        "(or set env INGEST_TOKEN; needed only if the API sets INGEST_TOKEN)",
+    )
+    parser.add_argument(
+        "--api-token",
+        default=os.environ.get("API_TOKEN"),
+        metavar="TOKEN",
+        help="optional Bearer token for GET /api/cameras when the API runs with "
+        "AUTH_MODE=on (or set env API_TOKEN; e.g. the token from POST /api/auth/login)",
+    )
     return parser
 
 
@@ -592,11 +630,17 @@ def main(argv=None) -> int:
         # instead of printing a BrokenPipeError traceback at shutdown.
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    client = ApiClient(args.api_base)
+    client = ApiClient(
+        args.api_base,
+        api_token=args.api_token or None,
+        ingest_token=args.ingest_token or None,
+    )
     log(
         f"[simulator] api={args.api_base} qps={args.qps:g} duration="
         f"{'forever' if args.duration == 0 else f'{args.duration:g}s'} "
-        f"scenario={args.scenario} dry_run={args.dry_run} camera={args.camera or '*'}"
+        f"scenario={args.scenario} dry_run={args.dry_run} camera={args.camera or '*'} "
+        f"api_auth={'token' if args.api_token else 'none'} "
+        f"ingest_auth={'token' if args.ingest_token else 'none'}"
     )
 
     try:

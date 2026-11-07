@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"digital-twin-platform/api/internal/api"
+	"digital-twin-platform/api/internal/auth"
 	"digital-twin-platform/api/internal/metrics"
 	"digital-twin-platform/api/internal/realtime"
 	"digital-twin-platform/api/internal/rules"
@@ -24,7 +25,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	memory := store.NewMemory(1000)
 	memory.Seed(store.SeedCameras(), store.SeedAreas())
-	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", "")
+	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", auth.New("off", ""), "")
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"digital-twin-platform/api/internal/api"
+	"digital-twin-platform/api/internal/auth"
 	"digital-twin-platform/api/internal/metrics"
 	"digital-twin-platform/api/internal/realtime"
 	"digital-twin-platform/api/internal/rules"
@@ -21,7 +22,7 @@ func newTestServerWithToken(t *testing.T, token string) *httptest.Server {
 	t.Helper()
 	memory := store.NewMemory(1000)
 	memory.Seed(store.SeedCameras(), store.SeedAreas())
-	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", token)
+	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", auth.New("off", ""), "")
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts
@@ -186,24 +187,6 @@ func TestEventWorkflowAuditStatsCSV(t *testing.T) {
 	status, body = doJSON(t, http.MethodGet, ts.URL+"/api/stats/events.csv", nil)
 	if status != http.StatusOK || !strings.HasPrefix(string(body), "id,camera_code,camera_name,type,severity") {
 		t.Fatalf("csv: %d %s", status, body)
-	}
-}
-
-func TestOptionalBearerToken(t *testing.T) {
-	ts := newTestServerWithToken(t, "s3cret")
-	status, _ := doJSON(t, http.MethodGet, ts.URL+"/api/health", nil)
-	if status != http.StatusOK {
-		t.Fatalf("health without token: %d", status)
-	}
-	status, _ = doJSON(t, http.MethodGet, ts.URL+"/api/cameras", nil)
-	if status != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without token, got %d", status)
-	}
-	status, body := doJSONWithHeaders(t, http.MethodGet, ts.URL+"/api/cameras", nil, map[string]string{
-		"Authorization": "Bearer s3cret",
-	})
-	if status != http.StatusOK || !strings.Contains(string(body), "CAM-001") {
-		t.Fatalf("authorized cameras: %d %s", status, body)
 	}
 }
 

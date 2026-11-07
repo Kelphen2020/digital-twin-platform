@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"digital-twin-platform/api/internal/api"
+	"digital-twin-platform/api/internal/auth"
 	"digital-twin-platform/api/internal/config"
 	"digital-twin-platform/api/internal/metrics"
 	"digital-twin-platform/api/internal/realtime"
@@ -33,7 +34,8 @@ func main() {
 	engine := rules.New(cfg.DedupeWindow)
 	hub := realtime.NewHub()
 	meters := metrics.New()
-	server := api.New(database, engine, hub, meters, cfg.Version, cfg.AuthToken)
+	authService := auth.New(cfg.AuthMode, cfg.JWTSecret)
+	server := api.New(database, engine, hub, meters, cfg.Version, authService, cfg.IngestToken)
 
 	go server.RunStats(ctx, 5*time.Second)
 

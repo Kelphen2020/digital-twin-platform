@@ -11,8 +11,12 @@ import {
   formatDateTime,
   formatRelativeTime,
 } from '../labels'
+import { useAuthStore } from '../store/auth'
 import { useTwinStore } from '../store/twin'
 import type { EventType, Severity } from '../types'
+
+const { can } = useAuthStore()
+const canHandle = computed(() => can('event:handle'))
 
 const {
   state,
@@ -62,6 +66,7 @@ function onSeverityChange(event: Event): void {
 }
 
 function ackLabel(event: { status: string; id: string }): string {
+  if (!canHandle.value) return '只读'
   if (pendingIds.value.has(event.id)) return '确认中…'
   if (event.status === 'closed') return '已关闭'
   if (event.status === 'acked') return '已确认'
@@ -165,8 +170,9 @@ watch(
         </div>
         <button
           class="ack-btn"
-          :class="{ done: event.status !== 'new' }"
-          :disabled="event.status !== 'new' || pendingIds.has(event.id)"
+          :class="{ done: event.status !== 'new' || !canHandle }"
+          :disabled="!canHandle || event.status !== 'new' || pendingIds.has(event.id)"
+          :title="canHandle ? '' : '观察员无处置权限'"
           @click.stop="acknowledgeEvent(event.id)"
         >
           {{ ackLabel(event) }}

@@ -60,14 +60,40 @@ func New(window time.Duration) *Engine {
 	return &Engine{window: window, last: make(map[string]time.Time)}
 }
 
-// Evaluate processes one ingest batch.
-func (e *Engine) Evaluate(camera model.Camera, batch []model.Detection, occurredAt time.Time) Result {
+// Evaluate processes one ingest batch under the camera's P2.0 rule config:
+// confidence threshold, enabled classes, ROI polygon and dedupe window.
+func (e *Engine) Evaluate(camera model.Camera, cfg model.CameraRules, batch []model.Detection, occurredAt time.Time) Result {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	window := e.window
+	if cfg.DedupeSeconds > 0 {
+		window = time.Duration(cfg.DedupeSeconds) * time.Second
+	} else if cfg.CameraID != "" {
+		window = 0
+	}
+	threshold := cfg.ConfidenceThreshold
+	if cfg.CameraID == "" {
+		threshold = 0.6
+	}
+	enabled := make(map[string]struct{}, len(cfg.EnabledClasses))
+	for _, class := range cfg.EnabledClasses {
+		enabled[class] = struct{}{}
+	}
+
 	result := Result{}
 	for _, detection := range batch {
-		if detection.Confidence < 0.6 {
+		if detection.Confidence < threshold {
+			result.Dropped++
+			continue
+		}
+		if len(enabled) > 0 {
+			if _, ok := enabled[detection.Class]; !ok {
+				result.Dropped++
+				continue
+			}
+		}
+		if len(cfg.ROI) >= 3 && !inROI(cfg.ROI, detection.BBox) {
 			result.Dropped++
 			continue
 		}
@@ -76,7 +102,7 @@ func (e *Engine) Evaluate(camera model.Camera, batch []model.Detection, occurred
 			mapping = classMapping{eventType: "other", severity: "info"}
 		}
 		key := camera.ID + "|" + detection.Class
-		if previous, seen := e.last[key]; seen && occurredAt.Sub(previous) < e.window {
+		if previous, seen := e.last[key]; seen && window > 0 && occurredAt.Sub(previous) < window {
 			result.Dropped++
 			continue
 		}
@@ -149,6 +175,23 @@ func project(matrix [3][3]float64, px, py float64) (float64, float64, bool) {
 		return 0, 0, false
 	}
 	return x, y, true
+}
+
+// inROI tests whether the detection's ground-contact point (bbox bottom center,
+// normalized image coordinates) lies inside the configured polygon.
+func inROI(polygon [][2]float64, bbox [4]float64) bool {
+	x := (bbox[0] + bbox[2]) / 2
+	y := bbox[3]
+	inside := false
+	for i, j := 0, len(polygon)-1; i < len(polygon); j, i = i, i+1 {
+		xi, yi := polygon[i][0], polygon[i][1]
+		xj, yj := polygon[j][0], polygon[j][1]
+		intersects := (yi > y) != (yj > y) && x < (xj-xi)*(y-yi)/(yj-yi)+xi
+		if intersects {
+			inside = !inside
+		}
+	}
+	return inside
 }
 
 func radians(degrees float64) float64 { return degrees * math.Pi / 180 }

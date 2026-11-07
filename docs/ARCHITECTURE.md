@@ -61,7 +61,19 @@
 
 演进备注：标定求解当前是代数最小二乘（不是 SVD），已用合成数据验证；真实场景需加鲁棒估计（RANSAC）与多相机融合；视频播放走 HLS 演示链路，WebRTC 低时延需接媒体服务器。
 
-## 7. P1 建议优先级
+## 7. P2.0 已落地（运营底座）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 身份认证 | `services/api/internal/auth` | 种子用户 + PBKDF2 口令 + HS256 JWT（stdlib 实现，无外部依赖） |
+| 权限模型 | 同上 + API 中间件 | 角色（admin/operator/viewer）× 区域（areas）× 操作；401/403/out_of_scope |
+| 相机规则 | `camera_rules` 表 + 规则引擎 | 阈值/去重/启用类别/ROI；ROI 用归一化图像坐标 + 射线法 |
+| 工单 | `orders` 表 + `/api/orders` | 事件转工单、指派、状态机（open→assigned→processing→done/cancelled） |
+| 审计主体 | `audit_log.actor` | 登录用户名；机器入口单独可配 token |
+
+安全边界（P2.0）：JWT 密钥来自 env、内置口令仅演示；生产需接企业 IdP/SSO、启用 HTTPS、轮换密钥、对 ingest 启用 token。
+
+## 8. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

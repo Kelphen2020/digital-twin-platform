@@ -93,20 +93,37 @@ def decode_body(raw: bytes):
 
 
 class ApiClient:
-    """Minimal JSON HTTP client; transport errors are returned, never raised."""
+    """Minimal JSON HTTP client; transport errors are returned, never raised.
 
-    def __init__(self, api_base: str, timeout: float = HTTP_TIMEOUT):
+    P2.0 auth (docs/API_P2.md): GET /api/cameras needs a Bearer token when the
+    API runs with AUTH_MODE=on; the ingest machine entry stays token-free
+    unless the API sets INGEST_TOKEN (then ``X-Ingest-Token`` is required).
+    """
+
+    def __init__(
+        self,
+        api_base: str,
+        timeout: float = HTTP_TIMEOUT,
+        api_token: str | None = None,
+        ingest_token: str | None = None,
+    ):
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
+        self.api_token = api_token
+        self.ingest_token = ingest_token
 
     def request_json(self, method: str, path: str, payload=None):
         """Return ``(status, body, latency_ms, error)``; status 0 => transport failure."""
         url = self.api_base + path
         headers = {"Accept": "application/json", "User-Agent": "dsh-twin-load/0.1"}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
         data = None
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
+            if self.ingest_token:
+                headers["X-Ingest-Token"] = self.ingest_token
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         started = time.perf_counter()
         try:
@@ -134,9 +151,15 @@ def load_cameras(client: ApiClient, attempts: int = 3):
         log(f"[load] GET {CAMERAS_PATH} attempt {attempt}/{attempts} failed: {last_error}")
         if attempt < attempts:
             time.sleep(attempt * 0.5)
+    hint = "Is the API running?"
+    if "401" in last_error:
+        hint = (
+            "The API runs with AUTH_MODE=on: pass --api-token/API_TOKEN "
+            "(token from POST /api/auth/login) so GET /api/cameras is authorized."
+        )
     raise RuntimeError(
         f"could not load cameras from {client.api_base}{CAMERAS_PATH} after {attempts} attempts "
-        f"({last_error}). Is the API running? Try: curl -s {client.api_base}/api/health"
+        f"({last_error}). {hint} Try: curl -s {client.api_base}/api/health"
     )
 
 
@@ -214,6 +237,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=float, default=HTTP_TIMEOUT, help="per-request HTTP timeout, seconds")
     parser.add_argument(
+        "--ingest-token",
+        default=os.environ.get("INGEST_TOKEN"),
+        metavar="TOKEN",
+        help="optional X-Ingest-Token header on POST /api/ingest/detections "
+        "(or set env INGEST_TOKEN; needed only if the API sets INGEST_TOKEN)",
+    )
+    parser.add_argument(
+        "--api-token",
+        default=os.environ.get("API_TOKEN"),
+        metavar="TOKEN",
+        help="optional Bearer token for the GET /api/cameras preflight when the "
+        "API runs with AUTH_MODE=on (or set env API_TOKEN)",
+    )
+    parser.add_argument(
         "--track-ratio",
         type=float,
         default=0.5,
@@ -238,7 +275,12 @@ def main(argv=None) -> int:
         log(f"[load] error: --track-ratio must be between 0 and 1 (got {args.track_ratio})")
         return 2
 
-    client = ApiClient(args.api_base, timeout=args.timeout)
+    client = ApiClient(
+        args.api_base,
+        timeout=args.timeout,
+        api_token=args.api_token or None,
+        ingest_token=args.ingest_token or None,
+    )
     try:
         cameras = load_cameras(client)
         if not cameras:
@@ -317,7 +359,9 @@ def main(argv=None) -> int:
     log(
         f"[load] api={args.api_base} target_qps={args.qps:g} duration={args.duration:g}s "
         f"workers={args.workers} cameras={len(cameras)} scheduled={total} "
-        f"track_ratio={args.track_ratio:g}"
+        f"track_ratio={args.track_ratio:g} "
+        f"api_auth={'token' if args.api_token else 'none'} "
+        f"ingest_auth={'token' if args.ingest_token else 'none'}"
     )
 
     threads = [

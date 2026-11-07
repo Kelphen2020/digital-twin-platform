@@ -1,33 +1,45 @@
 import { computed, reactive } from 'vue'
 import {
+  ApiError,
   ackEvent as requestAckEvent,
+  apiErrorMessage,
   closeEvent as requestCloseEvent,
+  createOrder as requestCreateOrder,
   deleteCalibration as requestDeleteCalibration,
   dispatchEvent as requestDispatchEvent,
   fetchCameras,
   fetchEventDetail,
   fetchEvents,
   fetchEventsCsv,
+  fetchOrders,
   fetchStatsSummary,
   fetchTracks,
   saveCalibration as requestSaveCalibration,
   solveCalibration as requestSolveCalibration,
+  updateCamera as requestUpdateCamera,
+  updateOrder as requestUpdateOrder,
 } from '../api'
 import { TwinSocket } from '../ws'
+import { pushToast } from './ui'
 import type {
   CalibrationSavePayload,
   Camera,
+  CameraUpdatePayload,
   ControlPoint,
+  CreateOrderPayload,
   EventAction,
   EventFilters,
   EventType,
   FocusRequest,
+  Order,
+  OrderStatus,
   Severity,
   SidebarTab,
   StatsRange,
   StatsSummary,
   TrackPoint,
   TwinEvent,
+  UpdateOrderPayload,
   WsMessage,
   WsState,
 } from '../types'
@@ -86,6 +98,13 @@ interface TwinState {
   statsError: string | null
   // ---- P1：侧栏页签 ----
   sidebarTab: SidebarTab
+  // ---- P2：工单 ----
+  orders: Order[]
+  ordersLoading: boolean
+  ordersError: string | null
+  orderStatusFilter: OrderStatus | 'all'
+  orderActionPendingId: string | null
+  orderCreatePending: boolean
 }
 
 const state = reactive<TwinState>({
@@ -121,6 +140,12 @@ const state = reactive<TwinState>({
   statsLoading: false,
   statsError: null,
   sidebarTab: 'events',
+  orders: [],
+  ordersLoading: false,
+  ordersError: null,
+  orderStatusFilter: 'all',
+  orderActionPendingId: null,
+  orderCreatePending: false,
 })
 
 let socket: TwinSocket | null = null
@@ -155,6 +180,10 @@ const filteredEvents = computed(() =>
       (state.filters.type === 'all' || event.type === state.filters.type) &&
       (state.filters.severity === 'all' || event.severity === state.filters.severity),
   ),
+)
+
+const filteredOrders = computed(() =>
+  state.orders.filter((order) => state.orderStatusFilter === 'all' || order.status === state.orderStatusFilter),
 )
 
 function matchesFilters(event: TwinEvent): boolean {
@@ -226,6 +255,86 @@ function upsertEvent(event: TwinEvent): void {
 
 function applyCameraUpdate(camera: Camera): void {
   state.cameras = state.cameras.map((item) => (item.id === camera.id ? camera : item))
+}
+
+/** PATCH /api/cameras/{id}：admin 全量；operator 仅负责区域（区域外提示 403 out_of_scope）。 */
+async function updateCameraInfo(cameraId: string, payload: CameraUpdatePayload): Promise<boolean> {
+  try {
+    const camera = await requestUpdateCamera(cameraId, payload)
+    applyCameraUpdate(camera)
+    pushToast('相机信息已更新', 'success')
+    return true
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return false
+  }
+}
+
+// ---------------- P2：工单 ----------------
+
+function applyOrderUpdate(order: Order): void {
+  const index = state.orders.findIndex((item) => item.id === order.id)
+  if (index >= 0) {
+    const next = state.orders.slice()
+    next[index] = order
+    state.orders = next
+  } else {
+    state.orders = [order, ...state.orders]
+  }
+}
+
+/** 拉取工单列表（P2 数据量小，一次拉取后前端按状态过滤）。 */
+async function loadOrders(): Promise<void> {
+  state.ordersLoading = true
+  state.ordersError = null
+  try {
+    state.orders = await fetchOrders({ limit: 100 })
+  } catch (error) {
+    state.ordersError = apiErrorMessage(error)
+  } finally {
+    state.ordersLoading = false
+  }
+}
+
+/** 从事件创建工单（operator/admin）。 */
+async function createOrderFromEvent(
+  eventId: string,
+  payload: Omit<CreateOrderPayload, 'event_id'>,
+): Promise<Order | null> {
+  if (state.orderCreatePending) return null
+  state.orderCreatePending = true
+  try {
+    const order = await requestCreateOrder({ event_id: eventId, ...payload })
+    applyOrderUpdate(order)
+    pushToast('工单已创建', 'success')
+    return order
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.orderCreatePending = false
+  }
+}
+
+/** PATCH /api/orders/{id}：状态/负责人/备注流转。 */
+async function updateOrderFields(orderId: string, payload: UpdateOrderPayload): Promise<boolean> {
+  if (state.orderActionPendingId) return false
+  state.orderActionPendingId = orderId
+  try {
+    const order = await requestUpdateOrder(orderId, payload)
+    applyOrderUpdate(order)
+    pushToast('工单已更新', 'success')
+    return true
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return false
+  } finally {
+    state.orderActionPendingId = null
+  }
+}
+
+function setOrderStatusFilter(status: OrderStatus | 'all'): void {
+  state.orderStatusFilter = status
 }
 
 // ---------------- 轨迹 ----------------
@@ -346,6 +455,10 @@ async function runEventAction(
     const message = error instanceof Error ? error.message : String(error)
     state.actionError = message
     if (action === 'ack') state.ackError = message
+    // RBAC 权限错误额外浮层提示（out_of_scope / forbidden / 会话过期）
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      pushToast(apiErrorMessage(error), 'error')
+    }
     return false
   } finally {
     state.actionPending = null
@@ -481,6 +594,10 @@ function handleWsMessage(message: WsMessage): void {
       appendTrackPoint(message.data)
       break
     }
+    case 'order_updated': {
+      applyOrderUpdate(message.data)
+      break
+    }
     case 'stats': {
       state.eventsTotal = message.data.events_total
       state.onlineCamerasFromStats = message.data.online_cameras
@@ -573,6 +690,52 @@ function clearSelection(): void {
   void loadTracks(null)
 }
 
+/** 登出/切换账号时清空历史数据，避免下一会话看到上一角色残留数据。 */
+function reset(): void {
+  stop()
+  trackRequestSeq += 1
+  eventDetailSeq += 1
+  focusSeq = 0
+  loadingPromise = null
+  state.cameras = []
+  state.events = []
+  state.eventsTotal = 0
+  state.onlineCamerasFromStats = null
+  state.wsState = 'connecting'
+  state.backendOnline = false
+  state.loading = true
+  state.lastError = null
+  state.ackError = null
+  state.selectedCameraId = null
+  state.selectedEventId = null
+  state.filters = { type: 'all', severity: 'all' }
+  state.ackPendingIds = []
+  state.focusRequest = null
+  state.fps = 0
+  state.eventDetail = null
+  state.eventActions = []
+  state.eventDetailLoading = false
+  state.eventDetailError = null
+  state.actionPending = null
+  state.actionError = null
+  state.exportError = null
+  state.tracks = []
+  state.tracksLoading = false
+  state.tracksError = null
+  state.showTracks = true
+  state.stats = null
+  state.statsRange = '24h'
+  state.statsLoading = false
+  state.statsError = null
+  state.sidebarTab = 'events'
+  state.orders = []
+  state.ordersLoading = false
+  state.ordersError = null
+  state.orderStatusFilter = 'all'
+  state.orderActionPendingId = null
+  state.orderCreatePending = false
+}
+
 // ---------------- 筛选 / 页签 / 显示开关 ----------------
 
 function setTypeFilter(type: EventType | 'all'): void {
@@ -586,6 +749,7 @@ function setSeverityFilter(severity: Severity | 'all'): void {
 function setSidebarTab(tab: SidebarTab): void {
   state.sidebarTab = tab
   if (tab === 'stats') void loadStats()
+  if (tab === 'orders') void loadOrders()
 }
 
 function toggleTracks(): void {
@@ -603,8 +767,10 @@ export function useTwinStore() {
     selectedEvent,
     onlineCameras,
     filteredEvents,
+    filteredOrders,
     start,
     stop,
+    reset,
     loadInitial,
     selectCamera,
     selectEvent,
@@ -623,6 +789,11 @@ export function useTwinStore() {
     solveCameraCalibration,
     saveCameraCalibration,
     removeCameraCalibration,
+    updateCameraInfo,
+    loadOrders,
+    createOrderFromEvent,
+    updateOrderFields,
+    setOrderStatusFilter,
     setTypeFilter,
     setSeverityFilter,
     setSidebarTab,

@@ -1,3 +1,4 @@
+import { getAuthToken } from './auth/token'
 import type { WsMessage, WsState } from './types'
 
 /** 指数退避参数：1s、2s、4s……封顶 30s。 */
@@ -11,7 +12,8 @@ const RECONNECT_MAX_MS = 30_000
  * - 配置了 VITE_API_TOKEN：追加 ?token= 供服务端鉴权（docs/API_P1.md §7）。
  */
 export function resolveWsUrl(): string {
-  const token = (import.meta.env.VITE_API_TOKEN ?? '').trim()
+  // 优先使用登录会话令牌；VITE_API_TOKEN 作为机器/联调兜底
+  const token = getAuthToken() ?? (import.meta.env.VITE_API_TOKEN ?? '').trim()
   const base = (import.meta.env.VITE_API_BASE ?? '').trim().replace(/\/+$/, '')
 
   let url: URL
@@ -36,6 +38,7 @@ const WS_MESSAGE_TYPES = new Set([
   'event_updated',
   'camera_status',
   'track_point',
+  'order_updated',
   'stats',
 ])
 

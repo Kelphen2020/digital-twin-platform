@@ -56,14 +56,21 @@ def utc_now_rfc3339() -> str:
 class ApiClient:
     """Minimal JSON HTTP client (urllib only)."""
 
-    def __init__(self, api_base: str, timeout: float = HTTP_TIMEOUT):
+    def __init__(self, api_base: str, timeout: float = HTTP_TIMEOUT, api_token: str | None = None):
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
+        self.api_token = api_token
 
     def request_json(self, method: str, path: str, payload=None):
-        """Return ``(status, body, error)``; status 0 means transport failure."""
+        """Return ``(status, body, error)``; status 0 means transport failure.
+
+        P2.0: PATCH /api/cameras/{id} needs an operator/admin Bearer token when
+        the API runs with AUTH_MODE=on (docs/API_P2.md).
+        """
         url = self.api_base + path
         headers = {"Accept": "application/json", "User-Agent": "dsh-twin-camera-status/0.1"}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
         data = None
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -99,9 +106,15 @@ def load_cameras(client: ApiClient, attempts: int = 3):
         log(f"[camera-status] GET {CAMERAS_PATH} attempt {attempt}/{attempts} failed: {last_error}")
         if attempt < attempts:
             time.sleep(attempt * 1.0)
+    hint = "Is the API running?"
+    if "401" in last_error:
+        hint = (
+            "The API runs with AUTH_MODE=on: pass --token/API_TOKEN "
+            "(token from POST /api/auth/login) so GET /api/cameras is authorized."
+        )
     raise RuntimeError(
         f"could not load cameras from {client.api_base}{CAMERAS_PATH} after {attempts} attempts "
-        f"({last_error}). Is the API running? Try: curl -s {client.api_base}/api/health"
+        f"({last_error}). {hint} Try: curl -s {client.api_base}/api/health"
     )
 
 
@@ -170,6 +183,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CODE",
         help="only toggle this camera code, e.g. CAM-001",
     )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("API_TOKEN"),
+        metavar="TOKEN",
+        help="Bearer token for PATCH /api/cameras/{id} when the API runs with "
+        "AUTH_MODE=on (or set env API_TOKEN); operator or admin role",
+    )
     return parser
 
 
@@ -185,7 +205,7 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    client = ApiClient(args.api_base)
+    client = ApiClient(args.api_base, api_token=args.token or None)
     try:
         cameras = load_cameras(client)
         if not cameras:

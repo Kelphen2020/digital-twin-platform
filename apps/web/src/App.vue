@@ -1,22 +1,48 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import CameraDetail from './components/CameraDetail.vue'
 import EventDetail from './components/EventDetail.vue'
 import EventFeed from './components/EventFeed.vue'
+import LoginView from './components/LoginView.vue'
 import OfflineBanner from './components/OfflineBanner.vue'
+import OrdersPanel from './components/OrdersPanel.vue'
 import StatsPanel from './components/StatsPanel.vue'
+import ToastHost from './components/ToastHost.vue'
 import TopBar from './components/TopBar.vue'
 import TwinScene from './scene/TwinScene.vue'
+import { useAuthStore } from './store/auth'
 import { useTwinStore } from './store/twin'
 
-const { state, start, stop, selectCamera, selectEvent, setFps, setSidebarTab } = useTwinStore()
+const { state: authState, isAuthenticated, restoreSession } = useAuthStore()
+const { state, start, stop, reset, selectCamera, selectEvent, setFps, setSidebarTab } = useTwinStore()
 
-onMounted(start)
-onBeforeUnmount(stop)
+const openOrders = computed(
+  () => state.orders.filter((order) => order.status !== 'done' && order.status !== 'cancelled').length,
+)
+
+onMounted(() => {
+  void restoreSession()
+})
+onBeforeUnmount(() => {
+  stop()
+})
+
+// 登录成功 → 启动数据/WS；登出/过期 → 停止并清空历史数据
+watch(isAuthenticated, (authenticated) => {
+  if (authenticated) start()
+  else reset()
+})
 </script>
 
 <template>
-  <div class="app-shell">
+  <div v-if="authState.booting" class="boot-screen">
+    <span class="spinner" />
+    <span>正在验证登录状态…</span>
+  </div>
+
+  <LoginView v-else-if="!isAuthenticated" />
+
+  <div v-else class="app-shell">
     <TopBar />
 
     <div class="app-body">
@@ -59,10 +85,23 @@ onBeforeUnmount(stop)
           >
             统计
           </button>
+          <button
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'orders' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'orders'"
+            @click="setSidebarTab('orders')"
+          >
+            工单
+            <span v-if="openOrders > 0" class="tab-badge">{{ openOrders }}</span>
+          </button>
         </div>
         <EventFeed v-if="state.sidebarTab === 'events'" />
-        <StatsPanel v-else />
+        <StatsPanel v-else-if="state.sidebarTab === 'stats'" />
+        <OrdersPanel v-else />
       </aside>
     </div>
   </div>
+
+  <ToastHost />
 </template>

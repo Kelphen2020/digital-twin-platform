@@ -1,4 +1,14 @@
-import type { CameraStatus, EventActionType, EventStatus, EventType, Severity, WsState } from './types'
+import type {
+  CameraStatus,
+  EventActionType,
+  EventStatus,
+  EventType,
+  OrderPriority,
+  OrderStatus,
+  Role,
+  Severity,
+  WsState,
+} from './types'
 
 /** 事件类型中文标签与展示顺序。 */
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {
@@ -118,3 +128,66 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
   if (hours < 24) return `${hours} 小时前`
   return formatDateTime(iso)
 }
+
+// ---------------- P2：角色 / 工单 ----------------
+
+/** 角色中文标签与颜色。 */
+export const ROLE_LABELS: Record<Role, string> = {
+  viewer: '观察员',
+  operator: '值班员',
+  admin: '管理员',
+}
+
+export const ROLE_COLORS: Record<Role, string> = {
+  viewer: '#94a3b8',
+  operator: '#38bdf8',
+  admin: '#f59e0b',
+}
+
+/** 区域中文名（台账 area_id → 展示名；未知区域回退原值）。 */
+export const AREA_LABELS: Record<string, string> = {
+  area_gate: '东门',
+  area_parking: '停车场',
+  area_building_a: '1 号楼',
+  area_building_b: '2 号楼',
+}
+
+export function formatArea(areaId: string): string {
+  return AREA_LABELS[areaId] ?? areaId
+}
+
+/** 工单状态标签与颜色。 */
+export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
+  open: '待处理',
+  assigned: '已派发',
+  processing: '处理中',
+  done: '已完成',
+  cancelled: '已取消',
+}
+
+export const ORDER_STATUS_COLORS: Record<OrderStatus, string> = {
+  open: '#38bdf8',
+  assigned: '#a78bfa',
+  processing: '#f59e0b',
+  done: '#22c55e',
+  cancelled: '#64748b',
+}
+
+export const ORDER_STATUS_ORDER: OrderStatus[] = ['open', 'assigned', 'processing', 'done', 'cancelled']
+
+/** 工单优先级标签与颜色。 */
+export const ORDER_PRIORITY_LABELS: Record<OrderPriority, string> = {
+  low: '低',
+  normal: '普通',
+  high: '高',
+  urgent: '紧急',
+}
+
+export const ORDER_PRIORITY_COLORS: Record<OrderPriority, string> = {
+  low: '#64748b',
+  normal: '#38bdf8',
+  high: '#f59e0b',
+  urgent: '#ef4444',
+}
+
+export const ORDER_PRIORITY_ORDER: OrderPriority[] = ['low', 'normal', 'high', 'urgent']
