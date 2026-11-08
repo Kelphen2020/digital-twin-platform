@@ -160,6 +160,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P8.md`](docs/API_P8.md)。
 
+![P9.0 WebSocket 连接质量指示](docs/screenshots/p9-quality.png)
+
+## P9.0 能力（性能、背压与运维交付）
+
+- **背压与采样**：每客户端 WS 队列可配（`HUB_CLIENT_BUFFER`），满队列丢弃并计数；轨迹点广播可采样（`WS_TRACK_SAMPLE`，落库不受影响）。
+- **接入限流与体积上限**：`INGEST_RATE_LIMIT`/`INGEST_BURST` 令牌桶（超限 429），`MAX_BODY_BYTES` 请求体上限（超限 413）。
+- **可观测性**：新增 WS 帧/丢弃、轨迹写入/广播、限流拒绝指标；Prometheus 告警规则（`alerts.yml`）与 Grafana 面板。
+- **部署交付**：`deploy/Dockerfile.web` + `nginx.conf`（静态站点 + `/api` 反代 + `/ws` 升级 + `/hls`），compose 增加 `web` 服务；`docs/OPERATIONS.md` 运维手册；`docs/PERFORMANCE.md` 压测报告。
+
+契约见 [`docs/API_P9.md`](docs/API_P9.md)。
+
 ## 目录
 
 ```

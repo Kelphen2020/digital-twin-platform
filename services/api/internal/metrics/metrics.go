@@ -26,6 +26,9 @@ type Metrics struct {
 	DutySkipped             atomic.Int64
 	OrdersDeduped           atomic.Int64
 	ReEscalations           atomic.Int64
+	TrackWritten            atomic.Int64
+	TrackBroadcast          atomic.Int64
+	IngestRejected          atomic.Int64
 }
 
 // New returns an empty counter set.
@@ -109,6 +112,18 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	b.WriteString("# HELP dsh_twin_re_escalations_total Events escalated a second time.\n")
 	b.WriteString("# TYPE dsh_twin_re_escalations_total counter\n")
 	fmt.Fprintf(&b, "dsh_twin_re_escalations_total %d\n", m.ReEscalations.Load())
+
+	b.WriteString("# HELP dsh_twin_track_points_written_total Track points persisted.\n")
+	b.WriteString("# TYPE dsh_twin_track_points_written_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_track_points_written_total %d\n", m.TrackWritten.Load())
+
+	b.WriteString("# HELP dsh_twin_track_points_broadcast_total Track points broadcast over WebSocket.\n")
+	b.WriteString("# TYPE dsh_twin_track_points_broadcast_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_track_points_broadcast_total %d\n", m.TrackBroadcast.Load())
+
+	b.WriteString("# HELP dsh_twin_ingest_rejected_total Ingest requests rejected by the rate limiter.\n")
+	b.WriteString("# TYPE dsh_twin_ingest_rejected_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_ingest_rejected_total %d\n", m.IngestRejected.Load())
 
 	b.WriteString("# HELP dsh_twin_cameras_online Cameras currently online.\n")
 	b.WriteString("# TYPE dsh_twin_cameras_online gauge\n")

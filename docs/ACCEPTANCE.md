@@ -449,7 +449,8 @@ P8 覆盖：班次组创建 201、`/api/duty/current` 返回 shift + 2 班次成
 | 再升级 | ✅ 事件流/详情「再升级」徽标 + 再升级时间行；WS toast「告警再次升级：…」 |
 | 设置 | ✅ 二次升级时限字段（0–604800）保存/回读（120→0 还原） |
 | 回归 | ✅ 8 页签、场景模型/2.5D 底图/视频、P0–P7 功能正常；console errors=[]、exceptions=[]、bad responses=[] |
-| 截图 | `docs/screenshots/p8-duty-current.png`、`p8-duty-form.png`、`p8-settings.png`、`p8-event-detail.png`、`p8-orders.png`、`p8-toast.png`、`p8-operator-duty.png` |
+| 截图 | `docs/screenshots/p9-quality.png`、`p9-offline.png`、`p9-reconnect.png`、`p9-429-toast.png` |
+| 截图（P8） | `docs/screenshots/p8-duty-current.png`、`p8-duty-form.png`、`p8-settings.png`、`p8-event-detail.png`、`p8-orders.png`、`p8-toast.png`、`p8-operator-duty.png` |
 
 ## 42. 已知限制（P8.0）
 
@@ -458,3 +459,53 @@ P8 覆盖：班次组创建 201、`/api/duty/current` 返回 shift + 2 班次成
 - 二次升级依赖 15s 扫描周期，最坏延迟约 15s；与首轮升级共用静默窗口。
 - 工单去重仅针对「同一事件已有未关闭工单」；同相机同类事件跨事件仍是多张工单（按设计）。
 - 真实 GPU/视频源/机器人投递仍需人工验收。
+
+---
+
+# P9.0 验收记录（2026-11-08 深夜）
+
+## 43. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：令牌桶限流（burst/refill/禁用）、ingest 429 + 指标、请求体 413、轨迹广播采样（written=4/broadcast=2）、WS 帧指标 |
+
+## 44. 压测矩阵（sim-ai，live :8080，AUTH_MODE=on，10 workers）
+
+| 运行 | 模式 | 目标 QPS | 达成 | p50/p95/p99 ms | 成功 | WS 丢弃 | 限流 |
+|---|---|---|---|---|---|---|---|
+| 1 | steady | 50 | 50.00 | 0.57/0.77/1.10 | 100% | 0 | 0 |
+| 2 | steady | 100 | 100.00 | 0.56/2.07/3.40 | 100% | 0 | 0 |
+| 3 | steady | 200 | 200.00 | 0.52/2.68/6.54 | 100% | 0 | 0 |
+| 4 | steady + 30% 读 | 100 | 100.00 | 0.59/3.39/6.19 | 100% | 0 | 0 |
+| 5 | ramp 25%→200 | 200 峰值 | 125 avg | 0.53/2.59/6.20 | 100% | 0 | 0 |
+
+- metrics 增量：detections +3328、events +164、WS frames +1725（dropped 0）、track written=broadcast +1688、bus published +164；ingest handler 平均 ≈47.5µs。
+- 429 验证（INGEST_RATE_LIMIT=10/burst 200）：500 请求 → 248 成功 / 252 个 `429 rate_limited`，`ingest_rejected_total` 0→252；限流关闭后恢复正常。
+- 详细报告：`docs/PERFORMANCE.md`。
+
+## 45. 前端 P9 E2E
+
+| 项 | 结果 |
+|---|---|
+| 连接质量指示 | ✅ 顶栏 WS 点旁显示 `已连接 + 帧率/s + ↻重连次数`（8 tabs/4 开关布局不变）；tooltip 含帧总数/5s 速率/重连/连接时长/最近帧；注入事件后帧率 0.4/s→1.8/s；强制断开→红色「已断开」，恢复后自动重连 `↻1` |
+| 429 Toast | ✅ 拦截 `POST /api/users` 返回 429 后 UI 弹出「请求过于频繁，已限流」（未创建用户），api.ts 通用映射生效 |
+| 回归 | ✅ P0–P8 全部正常（模型/视频/值班/用户/总线等）；console errors=[]、exceptions=[] |
+
+## 46. 运维交付物
+
+- `deploy/Dockerfile.web` + `deploy/nginx.conf`：静态站点 + `/api` 反代 + `/ws` 升级 + `/hls` 静态（gzip/SPA 回退）；compose 增加 `web` 服务（8081:80）。
+- `deploy/observability/alerts.yml`：API down、无在线相机、WS 丢帧、总线积压、通知失败、限流、升级激增；prometheus.yml 挂载规则。
+- Grafana 看板新增 WS 帧/丢弃、轨迹写入/广播/限流面板。
+- `docs/OPERATIONS.md`：端口/环境变量/观测/备份恢复/升级/故障排查/安全清单。
+
+## 47. 已知限制（P9.0）
+
+- 压测为单机笔记本、共享开发机噪声（一个浏览器 WS 客户端），非生产基线；生产需独立压测环境与多客户端 WS 场景。
+- WS 背压仅"满队列丢弃"策略，未做优先级队列/慢消费者踢出；限流为单实例令牌桶。
+- compose `web` 服务与 observability 镜像拉取依赖网络（本机 Docker Hub 受限未实测）。
+- 轨迹采样只影响广播不影响落库；采样过大会影响三维轨迹连续性，需按现场调整。

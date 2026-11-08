@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ROLE_COLORS, ROLE_LABELS, WS_STATE_LABELS, formatArea, formatClock } from '../labels'
 import { useAuthStore } from '../store/auth'
 import { useTwinStore } from '../store/twin'
+import { framesInWindow, pruneFrameTimes, wsQuality } from '../store/wsQuality'
 
 const { state, onlineCameras, toggleTracks, toggleVideoFusion, toggleModelDetails, toggleBaseMap } = useTwinStore()
 const { state: authState, role, logout } = useAuthStore()
@@ -13,6 +14,7 @@ let clockTimer: number | null = null
 onMounted(() => {
   clockTimer = window.setInterval(() => {
     now.value = new Date()
+    pruneFrameTimes(now.value.getTime())
   }, 1000)
 })
 onBeforeUnmount(() => {
@@ -24,6 +26,57 @@ const cameraSummary = computed(() => `${onlineCameras.value}/${state.cameras.len
 const wsLabel = computed(() => WS_STATE_LABELS[state.wsState])
 const wsTone = computed(() =>
   state.wsState === 'online' ? 'ok' : state.wsState === 'connecting' ? 'warn' : 'bad',
+)
+
+// ---- P9：WS 连接质量（滚动 5s 帧速率 / 重连次数 / 健康色 + 详细 tooltip） ----
+const wsRate = computed(() => {
+  const timestamp = now.value.getTime()
+  const frames = framesInWindow(timestamp)
+  const elapsedSeconds = wsQuality.connectedAt
+    ? Math.max(1, Math.min(5, (timestamp - wsQuality.connectedAt) / 1000))
+    : 5
+  return frames / elapsedSeconds
+})
+const wsRateText = computed(() => (wsRate.value >= 10 ? wsRate.value.toFixed(0) : wsRate.value.toFixed(1)))
+const wsLastFrameAge = computed(() =>
+  wsQuality.lastFrameAt ? Math.max(0, now.value.getTime() - wsQuality.lastFrameAt) : null,
+)
+const wsHealth = computed<'green' | 'amber' | 'red'>(() => {
+  if (!wsQuality.connected) return wsQuality.reconnecting ? 'amber' : 'red'
+  if (wsLastFrameAge.value === null) {
+    const connectingAge = wsQuality.connectedAt ? now.value.getTime() - wsQuality.connectedAt : 0
+    return connectingAge <= 5000 ? 'green' : 'amber'
+  }
+  return wsLastFrameAge.value <= 5000 ? 'green' : 'amber'
+})
+const wsHealthLabel = computed(
+  () => ({ green: '良好', amber: '波动', red: '断开' })[wsHealth.value],
+)
+const formatDuration = (milliseconds: number): string => {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, '0')}s` : `${seconds}s`
+}
+const wsUptimeText = computed(() =>
+  wsQuality.connected && wsQuality.connectedAt
+    ? formatDuration(now.value.getTime() - wsQuality.connectedAt)
+    : '—',
+)
+const wsLastFrameText = computed(() => {
+  const age = wsLastFrameAge.value
+  if (age === null) return '—'
+  return age < 1000 ? `${age}ms 前` : `${(age / 1000).toFixed(1)}s 前`
+})
+const wsQualityTooltip = computed(() =>
+  [
+    `WebSocket 连接质量：${wsHealthLabel.value}`,
+    `帧总数：${wsQuality.framesTotal}`,
+    `5s 速率：${wsRateText.value} 帧/s`,
+    `重连次数（自页面加载）：${wsQuality.reconnectCount}`,
+    `连接时长：${wsUptimeText.value}`,
+    `最近帧：${wsLastFrameText.value}`,
+  ].join('\n'),
 )
 const trackCount = computed(() => new Set(state.tracks.map((point) => point.track_id)).size)
 
@@ -45,7 +98,7 @@ const userTitle = computed(() =>
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P8.0 值班轮转 / 超时再升级</p>
+        <p>园区三维安防 · P9.0 连接质量 / 性能观测</p>
       </div>
     </div>
 
@@ -108,6 +161,19 @@ const userTitle = computed(() =>
       <div class="ws-state" :class="`ws-${wsTone}`">
         <i class="dot" />
         <span>{{ wsLabel }}</span>
+      </div>
+      <div
+        class="ws-quality"
+        :class="`quality-${wsHealth}`"
+        :data-ws-health="wsHealth"
+        :data-ws-frames="wsQuality.framesTotal"
+        :data-ws-reconnects="wsQuality.reconnectCount"
+        :data-ws-rate="wsRateText"
+        :title="wsQualityTooltip"
+      >
+        <i class="quality-dot" />
+        <span class="quality-rate">{{ wsRateText }}<em>/s</em></span>
+        <span class="quality-reconnect" title="自页面加载以来重连次数">↻{{ wsQuality.reconnectCount }}</span>
       </div>
       <time class="clock">{{ clock }}</time>
 

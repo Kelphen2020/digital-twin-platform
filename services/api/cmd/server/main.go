@@ -36,7 +36,7 @@ func main() {
 	defer closeStore()
 
 	engine := rules.New(cfg.DedupeWindow)
-	hub := realtime.NewHub()
+	hub := realtime.NewHubWithBuffer(cfg.HubClientBuffer)
 	meters := metrics.New()
 	siteConfig, err := loadSite(cfg)
 	if err != nil {
@@ -58,6 +58,8 @@ func main() {
 		log.Printf("api: event bus driver=%s", cfg.BusDriver)
 	}
 	server.SetSite(siteConfig)
+	server.SetTrackSample(cfg.WSTrackSample)
+	server.SetIngestGuard(api.NewRateLimiter(cfg.IngestRateLimit, cfg.IngestBurst), cfg.MaxBodyBytes)
 
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)
@@ -67,6 +69,8 @@ func main() {
 		Addr:              ":" + cfg.Port,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {

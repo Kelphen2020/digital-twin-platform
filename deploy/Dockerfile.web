@@ -1,0 +1,15 @@
+# Static web build + nginx reverse proxy for the P9 deployment story.
+# Build from the repository root:
+#   docker build -f deploy/Dockerfile.web -t digital-twin-web .
+FROM node:20-alpine AS build
+WORKDIR /web
+RUN corepack enable
+COPY apps/web/package.json apps/web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY apps/web/ ./
+RUN pnpm build
+
+FROM nginx:1.27-alpine
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /web/dist /usr/share/nginx/html
+EXPOSE 80

@@ -28,7 +28,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
 | `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 = **133 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation). |
-| `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
+| `../../scripts/load.py` | Threaded load injector: steady or `--ramp` QPS, optional `--read-ratio` event reads, achieved QPS, accepted/dropped, HTTP p50/p95/p99, `/metrics` counter deltas, `--report` Markdown rows + `--json` run records (see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)). |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
 Prerequisite: the Go API must be running on `http://127.0.0.1:8080`
@@ -373,6 +373,13 @@ API_TOKEN="$TOKEN" python3 scripts/load.py --qps 50 --duration 5 --track-ratio 0
 
 # only when the API sets INGEST_TOKEN
 API_TOKEN="$TOKEN" python3 scripts/load.py --qps 50 --duration 5 --ingest-token "$INGEST_TOKEN"
+
+# P9.0: linear ramp 25% -> 200 QPS over 10 s, Markdown + JSON artifacts
+API_TOKEN="$TOKEN" python3 scripts/load.py --qps 200 --duration 10 --ramp \
+  --report /tmp/perf_matrix.md --json /tmp/perf_runs.json
+
+# P9.0: 30% of requests are GET /api/events reads instead of ingest
+API_TOKEN="$TOKEN" python3 scripts/load.py --qps 100 --duration 5 --read-ratio 0.3
 ```
 
 | Flag | Default | Description |
@@ -384,7 +391,11 @@ API_TOKEN="$TOKEN" python3 scripts/load.py --qps 50 --duration 5 --ingest-token 
 | `--track-ratio` | `0.5` | Fraction of detections carrying a `track_id` (drawn from 3 fixed virtual tracks per camera) so the P1 track-point path is exercised; `0` = P0-only |
 | `--timeout` | `5` | Per-request HTTP timeout, seconds |
 | `--seed` | random | Seed for reproducible payloads |
-| `--api-token` | `$API_TOKEN` | Bearer token for the `GET /api/cameras` preflight under `AUTH_MODE=on` |
+| `--ramp` | off | Linear QPS ramp from 25% of `--qps` to 100% over `--duration`; average rate = 62.5% of target (threshold uses the average) |
+| `--read-ratio` | `0` | Fraction (0–1) of requests that are `GET /api/events?limit=20` reads instead of ingest POSTs (reads need `--api-token` under `AUTH_MODE=on`) |
+| `--report` | — | Append one Markdown table row per run to this path (sharing the path builds the benchmark matrix) |
+| `--json` | — | Append this run's full stats + `/metrics` deltas as a JSON object to a list at this path |
+| `--api-token` | `$API_TOKEN` | Bearer token for the camera/read preflight under `AUTH_MODE=on` |
 | `--ingest-token` | `$INGEST_TOKEN` | Optional `X-Ingest-Token` header on ingest (only if the API sets `INGEST_TOKEN`) |
 
 It preloads camera codes from `GET /api/cameras`, paces requests on a shared
@@ -393,26 +404,44 @@ schedule (so threads do not drift), and prints a report like:
 ```
 === load test report ===
 target            : 50 QPS for 5s (250 requests, 10 workers)
-wall elapsed      : 5.04s
-attempted         : 250 (49.60 req/s)  ok=250 failed=0 (100.00% ok)
-achieved QPS      : 49.60 (target 50, threshold 40)
-accepted/dropped  : 183 / 67   events=17
-tracked           : 124/250 detections with track_id (--track-ratio 0.5)
-http latency (ms) : p50=1.31 p95=2.87 p99=4.12 mean=1.55 max=6.20
+mode              : steady
+wall elapsed      : 4.98s
+attempted         : 250 (50.00 req/s)  ok=250 failed=0 (100.00% ok)
+achieved QPS      : 50.00 (avg target 50.00, threshold 40.00)
+accepted/dropped  : 25 / 225   events=25
+tracked           : 126/250 ingest detections with track_id (--track-ratio 0.5)
+read requests     : 0/0 ok (--read-ratio 0)          # only with --read-ratio > 0
+http latency (ms) : p50=0.57 p95=0.77 p99=1.10 mean=0.60 max=1.60
+metrics delta     : ws_frames=+19 ws_dropped=+0 ingest_rejected=+0 bus_published=+25 track_points_written=+126 ingest_count=+250 ingest_sum=+0.012s
 RESULT            : PASS
 ```
 
+`--ramp` runs report the peak `--qps` on the target line and the average target
+on the achieved line; `--report`/`--json` additionally print the paths they
+appended to.
+
+See **[docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)** for the P9.0 benchmark
+matrix (50/100/200 QPS, read-mix, ramp), `/metrics` snapshots, the 429
+`INGEST_RATE_LIMIT` verification and tuning recommendations.
+
 Exit codes:
 
-- `0` — achieved QPS ≥ 80 % of target **and** zero failed requests;
-- `1` — achieved QPS below 80 % of target, or any request failed;
-- `2` — bad arguments or camera inventory unavailable (e.g. missing token with
-  `AUTH_MODE=on`; the error message points at `--api-token`/`API_TOKEN`).
+- `0` — achieved QPS ≥ 80 % of target (average rate for `--ramp`) **and** zero
+  failed requests;
+- `1` — achieved QPS below that threshold, or any request failed. This is also
+  the expected result for the deliberate 429 rate-limit test (see
+  `docs/PERFORMANCE.md` §6: failures > 0 with `HTTP 429 rate_limited`);
+- `2` — bad arguments or camera inventory/read preflight unavailable (e.g.
+  missing token with `AUTH_MODE=on`; the error message points at
+  `--api-token`/`API_TOKEN`, and a read preflight is done when
+  `--read-ratio > 0`).
 
 Compare the `accepted`/`events` numbers with `GET /metrics`
 (`dsh_twin_detections_total`, `dsh_twin_events_total`) as required by
 `docs/P0_SCOPE.md` §4.7; tracked detections additionally show up in
 `GET /api/tracks` (dedup does not drop track points, only events).
+P9.0 performance numbers, the benchmark matrix and the 429 rate-limit
+verification live in [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md).
 
 ---
 

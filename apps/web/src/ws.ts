@@ -1,4 +1,5 @@
 import { getAuthToken } from './auth/token'
+import { noteConnecting, noteFrame, noteOffline, noteOnline, resetWsQuality } from './store/wsQuality'
 import type { WsMessage, WsState } from './types'
 
 /** 指数退避参数：1s、2s、4s……封顶 30s。 */
@@ -79,6 +80,7 @@ export class TwinSocket {
 
   close(): void {
     this.stopped = true
+    resetWsQuality()
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -97,6 +99,7 @@ export class TwinSocket {
 
   private open(): void {
     if (this.stopped) return
+    noteConnecting()
     this.onState('connecting')
 
     let socket: WebSocket
@@ -110,17 +113,20 @@ export class TwinSocket {
 
     socket.onopen = () => {
       this.attempts = 0
+      noteOnline()
       this.onState('online')
     }
 
     socket.onmessage = (event: MessageEvent) => {
       if (typeof event.data !== 'string') return
+      noteFrame()
       const message = parseMessage(event.data)
       if (message) this.onMessage(message)
     }
 
     socket.onclose = () => {
       if (this.socket === socket) this.socket = null
+      noteOffline()
       this.onState('offline')
       this.scheduleReconnect()
     }

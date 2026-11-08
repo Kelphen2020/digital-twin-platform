@@ -154,6 +154,10 @@ export function apiErrorMessage(error: unknown): string {
       }
       return `当前角色无此操作权限（403）：${error.message}`
     }
+    if (error.status === 429) {
+      // P9 ingest 限流：error=rate_limited
+      return '请求过于频繁，已限流'
+    }
     if (error.status === 400) {
       if (error.code === 'self_protected' || error.message.includes('self_protected')) {
         return '不能停用、降级或删除当前登录账号（400 self_protected）'

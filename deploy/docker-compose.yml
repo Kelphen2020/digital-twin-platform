@@ -51,6 +51,16 @@ services:
       postgres:
         condition: service_healthy
 
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    container_name: dtp-web
+    ports:
+      - "8081:80"
+    depends_on:
+      - api
+
   # ---- optional: full profile -------------------------------------------
   redis:
     image: redis:7-alpine
@@ -98,6 +108,7 @@ services:
       - "9090:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

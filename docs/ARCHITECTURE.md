@@ -135,7 +135,18 @@
 | 二次升级 | `ReEscalateStale` + `reEscalateOnce` | second_after_seconds 控制，写 re_escalated_at/审计/指标 |
 | 前端 | 值班班次编辑器、再升级徽标、设置字段 | 保持 8 页签与 P0–P7 功能 |
 
-## 14. P1 建议优先级
+## 14. P9.0 已落地（性能、背压与运维）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| WS 背压 | `realtime.Hub` + `HUB_CLIENT_BUFFER` | 每客户端队列，满则丢弃并计数（`ws_dropped_total`） |
+| 轨迹采样 | `WS_TRACK_SAMPLE` + 原子序列 | 只影响广播不影响落库，指标区分 written/broadcast |
+| 接入限流/体积 | `RateLimiter` + `MaxBytesReader` | 429/413 + `ingest_rejected_total` |
+| 观测 | `/metrics` + alerts.yml + Grafana | WS 帧/丢弃、轨迹、限流、总线、通知指标与告警规则 |
+| 部署 | `deploy/Dockerfile.web` + `nginx.conf` + compose web | 静态站点 + 反代 + WS 升级 + HLS |
+| 运维 | `docs/OPERATIONS.md`、`docs/PERFORMANCE.md` | 启停/备份/升级/排障 + 压测矩阵 |
+
+## 15. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

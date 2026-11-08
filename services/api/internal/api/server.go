@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
@@ -48,6 +49,10 @@ type Server struct {
 	rotation      map[string]int
 	bus           *bus.Bus
 	site          model.Site
+	trackSample   int
+	trackSequence atomic.Uint64
+	ingestLimiter *RateLimiter
+	maxBodyBytes  int64
 }
 
 type userContextKey struct{}
@@ -71,6 +76,7 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		notifySilence: make(map[string]time.Time),
 		rotation:      make(map[string]int),
 		site:          model.DefaultSite(),
+		trackSample:   1,
 	}
 }
 
@@ -837,6 +843,20 @@ func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
 // SetSite replaces the served site configuration (config file override).
 func (s *Server) SetSite(site model.Site) { s.site = site }
 
+// SetTrackSample configures WebSocket sampling for track points (1 = all).
+func (s *Server) SetTrackSample(sample int) {
+	if sample < 1 {
+		sample = 1
+	}
+	s.trackSample = sample
+}
+
+// SetIngestGuard configures the ingest rate limiter and body size cap.
+func (s *Server) SetIngestGuard(limiter *RateLimiter, maxBodyBytes int64) {
+	s.ingestLimiter = limiter
+	s.maxBodyBytes = maxBodyBytes
+}
+
 func (s *Server) handleSite(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.site)
 }
@@ -1220,8 +1240,21 @@ func (s *Server) handleStatsCSV(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	if !s.ingestLimiter.Allow() {
+		s.metrics.IngestRejected.Add(1)
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "ingest rate limit exceeded")
+		return
+	}
+	if s.maxBodyBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+	}
 	var request model.IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body exceeds the configured limit")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
@@ -1272,8 +1305,18 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CreateTrackPoints(r.Context(), points); err != nil {
 		log.Printf("api: persist track points: %v", err)
 	}
+	s.metrics.TrackWritten.Add(int64(len(points)))
+	sample := s.trackSample
+	if sample < 1 {
+		sample = 1
+	}
 	for _, point := range points {
+		sequence := s.trackSequence.Add(1)
+		if sample > 1 && (sequence-1)%uint64(sample) != 0 {
+			continue
+		}
 		s.hub.Broadcast(realtime.Frame{Type: "track_point", Data: point})
+		s.metrics.TrackBroadcast.Add(1)
 	}
 	for _, event := range result.Events {
 		if s.bus != nil {
@@ -1305,6 +1348,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	body := s.metrics.Text(s.hub.Clients(), int(counts.OnlineCameras))
+	body += fmt.Sprintf(`# HELP dsh_twin_ws_frames_total WebSocket frames queued to clients.
+# TYPE dsh_twin_ws_frames_total counter
+dsh_twin_ws_frames_total %d
+# HELP dsh_twin_ws_dropped_total WebSocket frames dropped because a client queue was full.
+# TYPE dsh_twin_ws_dropped_total counter
+dsh_twin_ws_dropped_total %d
+`, s.hub.Frames(), s.hub.Dropped())
 	if s.bus != nil {
 		status := s.bus.Status()
 		lag := status.NextOffset

@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P8.0）
+# 数字孪生安防平台 · Web 前端（P9.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,12 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 连接质量与限流反馈（P9）
+
+- **顶栏连接质量指示器**（WS 状态点旁）：显示最近 **5 秒** WS 帧速率（帧/s）、自页面加载以来的**重连次数**（`↻N`），并以颜色表示健康度——绿色=已连接且最近 5s 有帧/新连接，琥珀色=重连中或超过 5s 无帧，红色=断开等待重连。悬停 tooltip 展示帧总数、5s 速率、重连次数、连接时长、最近帧年龄。
+- **统计口径**：仅计入 WebSocket 文本帧；断线指数退避重连成功后重连计数 +1；登出/销毁时重置统计。断线/重连失败不影响 P0–P8 功能（REST 轮询与离线横幅照常）。
+- **429 限流反馈**：`api.ts` 将 HTTP **429**（P9 ingest 限流 `{"error":"rate_limited"}`）统一映射为中文 Toast「请求过于频繁，已限流」；`INGEST_RATE_LIMIT` 默认 0（关闭），默认行为不变。
+
 ### 通知可靠性与审计（P4）
 
 - 通知设置新增：`max_attempts`（1–5，含首次）、`backoff_seconds`（指数退避基数，≥0）、`silence_seconds`（同相机+类型+严重级别静默窗口 0–3600s）。
@@ -221,6 +227,7 @@ apps/web/
    │  ├─ auth.ts                 # 登录/会话/角色权限矩阵/区域判定
    │  ├─ twin.ts                 # 相机/事件/轨迹/统计/工单/选择状态（含升级 Toast）
    │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递、P5 总线状态/回放、P7 用户管理
+   │  ├─ wsQuality.ts            # P9 WS 帧速率/重连次数/健康度统计
    │  ├─ duty.ts                 # P4 值班组 / 区域当前值班解析
    │  └─ ui.ts                   # Toast 队列
    ├─ components/
@@ -261,6 +268,7 @@ apps/web/
 | 值班组 / 自动派单 | **实时**：`/api/duty/*` + 升级设置 `auto_dispatch` + WS `order_updated` |
 | 事件总线状态 / 回放 | **实时**：`/api/bus/status` + `POST /api/bus/replay` + WS `event_replay`（当前后端驱动为 `jsonl`，路径 `data/bus/events.jsonl`） |
 | 用户与账号 | **实时**：`/api/users` CRUD（密码不返回；角色/区域下次登录生效；停用即禁止登录） |
+| WS 连接质量 / 限流 | **实时**：WS 帧计数（前端统计）、REST 429 `rate_limited` → 中文 Toast；`INGEST_RATE_LIMIT` 默认 0 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -308,6 +316,11 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P9：WS 指标（后端） / 限流（默认关闭）
+curl -s http://localhost:8080/metrics | grep -E 'dsh_twin_ws_(frames|dropped)_total|dsh_twin_ingest_rejected_total'
+# 顶栏 WS 点旁可见「N.N/s ↻M」；悬停显示帧总数/连接时长/最近帧年龄；断线重连后 ↻ 递增
+# 若设置 INGEST_RATE_LIMIT>0，超限 ingest 返回 429 {error:"rate_limited"}，前端 Toast「请求过于频繁，已限流」
 
 # P8：值班班次 + 轮转（admin 创建含班次的值班组；GET current 可见 shift）
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -383,3 +396,5 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P8 班次时间按服务端 Asia/Shanghai 解释（`at` 可选）；跨夜班次以 `end <= start` 表示；无人班次不派单。
 - `rotation=operator` 的轮转为后端进程内轮询（按班组+班次），重启后轮转位置重置；工单去重仅针对同事件未关闭工单。
 - 二次升级需 `second_after_seconds > 0`，由后端升级 worker 周期扫描（约 15s）触发；`re_escalated_at` 写入后不可撤销。
+- P9 连接质量速率为前端滚动 5s 窗口统计（非后端指标）；空闲超过 5s 会显示琥珀色（属正常，不代表断线）。
+- 重连次数自页面加载/上次登录起算；`INGEST_RATE_LIMIT` 默认 0（关闭），未开启时不会出现 429。

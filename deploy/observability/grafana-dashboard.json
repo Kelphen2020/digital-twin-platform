@@ -206,6 +206,55 @@
           "legendFormat": "lag"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "WebSocket 帧 / 丢弃",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(dsh_twin_ws_frames_total[1m]))",
+          "refId": "A",
+          "legendFormat": "frames/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_ws_dropped_total[1m]))",
+          "refId": "B",
+          "legendFormat": "dropped/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "轨迹写入 / 广播 / 限流",
+      "gridPos": {
+        "x": 12,
+        "y": 27,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(dsh_twin_track_points_written_total[1m]))",
+          "refId": "A",
+          "legendFormat": "written/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_track_points_broadcast_total[1m]))",
+          "refId": "B",
+          "legendFormat": "broadcast/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_ingest_rejected_total[1m]))",
+          "refId": "C",
+          "legendFormat": "rejected/s"
+        }
+      ]
     }
   ]
 }

@@ -34,6 +34,10 @@ type Hub struct {
 	mu      sync.RWMutex
 	clients map[*client]struct{}
 	count   atomic.Int64
+	// buffer is the per-client send queue length.
+	buffer  int
+	frames  atomic.Int64
+	dropped atomic.Int64
 }
 
 type client struct {
@@ -41,10 +45,22 @@ type client struct {
 	send chan []byte
 }
 
-// NewHub creates an empty hub.
-func NewHub() *Hub {
-	return &Hub{clients: make(map[*client]struct{})}
+// NewHub creates an empty hub with the default per-client buffer.
+func NewHub() *Hub { return NewHubWithBuffer(256) }
+
+// NewHubWithBuffer creates a hub with an explicit per-client send queue length.
+func NewHubWithBuffer(buffer int) *Hub {
+	if buffer < 16 {
+		buffer = 16
+	}
+	return &Hub{clients: make(map[*client]struct{}), buffer: buffer}
 }
+
+// Frames is the number of frames queued to clients since start.
+func (h *Hub) Frames() int64 { return h.frames.Load() }
+
+// Dropped is the number of frames dropped because a client queue was full.
+func (h *Hub) Dropped() int64 { return h.dropped.Load() }
 
 // Clients is the current number of live WebSocket clients.
 func (h *Hub) Clients() int { return int(h.count.Load()) }
@@ -62,7 +78,9 @@ func (h *Hub) Broadcast(frame Frame) {
 	for c := range h.clients {
 		select {
 		case c.send <- payload:
+			h.frames.Add(1)
 		default:
+			h.dropped.Add(1)
 		}
 	}
 }
@@ -81,7 +99,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("realtime: upgrade: %v", err)
 		return
 	}
-	c := &client{conn: conn, send: make(chan []byte, 256)}
+	c := &client{conn: conn, send: make(chan []byte, h.buffer)}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()

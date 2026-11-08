@@ -3401,3 +3401,68 @@ dd {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+
+/* ============================================================
+   P9.0 扩展：WS 连接质量指示器
+   ============================================================ */
+
+.ws-quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(8, 20, 38, 0.6);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.ws-quality.quality-green {
+  border-color: rgba(34, 197, 94, 0.45);
+  color: #86efac;
+}
+
+.ws-quality.quality-amber {
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #fcd34d;
+}
+
+.ws-quality.quality-red {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fca5a5;
+}
+
+.quality-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.quality-rate em {
+  font-style: normal;
+  font-size: 9px;
+  opacity: 0.65;
+}
+
+.quality-reconnect {
+  opacity: 0.75;
+}
+
+@media (max-width: 1500px) {
+  .ws-quality {
+    gap: 4px;
+    padding: 1px 5px;
+    font-size: 9.5px;
+  }
+
+  .quality-rate em {
+    display: none;
+  }
+}

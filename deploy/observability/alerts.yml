@@ -1,0 +1,59 @@
+# Prometheus alert rules for the digital-twin platform (P9.0).
+groups:
+  - name: digital-twin
+    rules:
+      - alert: ApiDown
+        expr: up{job="digital-twin-api"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "数字孪生 API 不可用"
+          description: "Prometheus 连续 1 分钟无法抓取 API。"
+
+      - alert: NoOnlineCameras
+        expr: dsh_twin_cameras_online == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "无在线相机"
+          description: "所有摄像机离线，检查接入层或网络。"
+
+      - alert: WebSocketDrops
+        expr: increase(dsh_twin_ws_dropped_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "WebSocket 出现丢弃帧"
+          description: "客户端发送队列满，考虑调大 HUB_CLIENT_BUFFER 或降低 WS_TRACK_SAMPLE。"
+
+      - alert: BusLagHigh
+        expr: dsh_twin_bus_lag > 500
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "事件总线积压"
+          description: "总线 lag 超过 500，检查消费者/通知链路。"
+
+      - alert: NotificationFailures
+        expr: increase(dsh_twin_notifications_total{result="failed"}[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Webhook 通知失败"
+          description: "检查 webhook 地址与网络，查看 /api/notifications 投递日志。"
+
+      - alert: IngestRateLimited
+        expr: increase(dsh_twin_ingest_rejected_total[5m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "ingest 被限流"
+          description: "INGEST_RATE_LIMIT 低于实际负载，评估扩容或调高阈值。"
+
+      - alert: EscalationBurst
+        expr: increase(dsh_twin_escalations_total[10m]) > 50
+        for: 5m
+        labels: { severity: info }
+        annotations:
+          summary: "升级告警激增"
+          description: "10 分钟内升级事件超过 50，检查现场或阈值配置。"
