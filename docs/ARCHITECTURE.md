@@ -106,7 +106,17 @@
 
 演进：`jsonl` 是单机可回放的中间形态；P6 把 `Driver` 换成 Kafka/Redpanda 生产者-消费者（接口不变），并拆出独立规则服务消费总线。回放默认不重复通知，避免告警风暴。
 
-## 11. P1 建议优先级
+## 11. P6.0 已落地（三维增强）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 站点配置 | `model.Site` + `GET /api/site` | ENU 范围/模型清单/底图样式；`SITE_CONFIG_FILE` 覆盖 |
+| 2.5D 底图 | `apps/web` CanvasTexture | 建筑轮廓/道路/区域/相机标注/指北针/比例尺 |
+| LOD | `apps/web` THREE.LOD | 近/中/远三级，距离阈值切换 |
+| glTF | `apps/web` GLTFLoader | 示例模型 `tools/make_site_model.py` → `public/models/site.gltf` |
+| 视频融合 | `apps/web` VideoTexture | 选中相机 HLS 流贴到视锥内视频面 |
+
+## 12. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

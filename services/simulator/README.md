@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -12,7 +12,9 @@ webhook notifications, settings), the P4.0 additions in
 [`docs/API_P4.md`](../../docs/API_P4.md) (duty groups, auto-dispatch,
 notification retry/silence, extra metrics) and the P5.0 additions in
 [`docs/API_P5.md`](../../docs/API_P5.md) (replayable event bus: bus status,
-replay, bus metrics).
+replay, bus metrics) and the P6.0 addition in
+[`docs/API_P6.md`](../../docs/API_P6.md) (`GET /api/site`: site name, ENU
+extent, glTF model manifest, map style for the 2.5D/3D scene).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -21,7 +23,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 = **94 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 = **97 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config). |
 | `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -194,7 +196,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**94 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0):
+(**97 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -293,6 +295,14 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
 33. bus metrics: `/metrics` exposes `dsh_twin_bus_published_total` and
     `dsh_twin_bus_replayed_total` (plus `dsh_twin_bus_errors_total` /
     `dsh_twin_bus_lag`).
+
+**P6.0 (step 34, 3 checks)**
+
+34. site config: admin `GET /api/site` → 200 with a non-empty `name`, numeric
+    ENU `extent` (`min_x/max_x/min_y/max_y`), ≥1 model entry carrying
+    `id`/`format` (`gltf`|`glb`)/`url`, and `map.style`; viewer `GET
+    /api/site` → 200 (authenticated read); unauthenticated `GET /api/site`
+    → `401 unauthorized`.
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -515,7 +525,40 @@ dsh_twin_bus_lag 0
 
 ---
 
-## 7. Typical demo sequence
+## 7. P6.0 site config (`GET /api/site`)
+
+The P6 backend exposes the site/model manifest consumed by the 2.5D base map,
+building LOD, glTF loader and video-fusion plane in the web client:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/site
+```
+
+```json
+{
+  "name": "示范园区",
+  "origin": {"lat": 30.2741, "lng": 120.1551, "alt": 0},
+  "extent": {"min_x": -200, "max_x": 200, "min_y": -200, "max_y": 200, "min_z": 0, "max_z": 60},
+  "models": [{"id": "site-overview", "name": "园区总览模型", "format": "gltf",
+              "url": "/models/site.gltf",
+              "transform": {"x": 0, "y": 0, "z": 0, "rotation_y": 0, "scale": 1}}],
+  "map": {"style": "vector", "image_url": null}
+}
+```
+
+- Authenticated (viewer/operator/admin) read; no token → `401`.
+- `extent` is the local ENU metre range used to size the ground grid and the
+  procedural 2.5D base map.
+- `models[].url` is a static front-end asset path (`public/models/...`) or an
+  absolute URL; `format` is `gltf` or `glb`.
+- `map.style = "vector"` → procedural canvas base map; `map.image_url` can
+  carry an orthophoto when present.
+- Override the built-in defaults with `SITE_CONFIG_FILE=/path/site.json` on the
+  API process (missing fields fall back to defaults).
+- `smoke.sh` validates this payload shape plus the viewer/no-token permission
+  behaviour (step 34).
+
+## 8. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"digital-twin-platform/api/internal/bus"
 	"digital-twin-platform/api/internal/config"
 	"digital-twin-platform/api/internal/metrics"
+	"digital-twin-platform/api/internal/model"
 	"digital-twin-platform/api/internal/realtime"
 	"digital-twin-platform/api/internal/rules"
 	"digital-twin-platform/api/internal/store"
@@ -36,6 +38,11 @@ func main() {
 	engine := rules.New(cfg.DedupeWindow)
 	hub := realtime.NewHub()
 	meters := metrics.New()
+	siteConfig, err := loadSite(cfg)
+	if err != nil {
+		log.Fatalf("api: load site config: %v", err)
+	}
+
 	authService := auth.New(cfg.AuthMode, cfg.JWTSecret)
 	server := api.New(database, engine, hub, meters, cfg.Version, authService, cfg.IngestToken)
 
@@ -47,6 +54,7 @@ func main() {
 		server.AttachBus(eventBus)
 		log.Printf("api: event bus driver=%s", cfg.BusDriver)
 	}
+	server.SetSite(siteConfig)
 
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)
@@ -87,6 +95,25 @@ func openStore(ctx context.Context, cfg config.Config) (store.Store, func(), err
 	memory.Seed(store.SeedCameras(), store.SeedAreas())
 	log.Printf("api: in-memory store ready (6 demo cameras)")
 	return memory, func() {}, nil
+}
+
+func loadSite(cfg config.Config) (model.Site, error) {
+	site := model.DefaultSite()
+	if cfg.SiteConfigFile == "" {
+		return site, nil
+	}
+	data, err := os.ReadFile(cfg.SiteConfigFile)
+	if err != nil {
+		return site, err
+	}
+	if err := json.Unmarshal(data, &site); err != nil {
+		return site, err
+	}
+	if site.Name == "" {
+		site.Name = model.DefaultSite().Name
+	}
+	log.Printf("api: site config loaded from %s", cfg.SiteConfigFile)
+	return site, nil
 }
 
 func openBus(cfg config.Config) (*bus.Bus, error) {

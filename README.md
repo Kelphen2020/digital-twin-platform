@@ -124,6 +124,16 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P5.md`](docs/API_P5.md)。
 
+## P6.0 能力（三维增强）
+
+- **站点配置**：`GET /api/site` 下发站点名称、ENU 范围、模型清单与底图样式；`SITE_CONFIG_FILE` 可覆盖。
+- **2.5D 矢量底图**：前端按站点范围程序化绘制建筑轮廓/道路/区域/相机标注/指北针/比例尺（CanvasTexture），可开关。
+- **建筑 LOD**：近景细节体块、中景简化盒子、远景轮廓，按距离切换；可开关「模型细节」。
+- **glTF 模型**：GLTFLoader 加载 `site.models`（示例模型由 `tools/make_site_model.py` 生成），失败自动回退到程序化建筑。
+- **视频纹理融合**：选中相机的 HLS 流作为 THREE.VideoTexture 贴在视锥内视频面，可开关。
+
+契约见 [`docs/API_P6.md`](docs/API_P6.md)。
+
 ## 目录
 
 ```

@@ -45,6 +45,7 @@ type Server struct {
 	notifyMu      sync.Mutex
 	notifySilence map[string]time.Time
 	bus           *bus.Bus
+	site          model.Site
 }
 
 type userContextKey struct{}
@@ -66,6 +67,7 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		notify:        model.DefaultNotificationSettings(),
 		escalation:    model.DefaultEscalationSettings(),
 		notifySilence: make(map[string]time.Time),
+		site:          model.DefaultSite(),
 	}
 }
 
@@ -101,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/duty/groups/{id}", s.handleUpdateDutyGroup)
 	mux.HandleFunc("DELETE /api/duty/groups/{id}", s.handleDeleteDutyGroup)
 	mux.HandleFunc("GET /api/duty/current", s.handleCurrentDuty)
+	mux.HandleFunc("GET /api/site", s.handleSite)
 	mux.HandleFunc("GET /api/bus/status", s.handleBusStatus)
 	mux.HandleFunc("POST /api/bus/replay", s.handleBusReplay)
 	mux.HandleFunc("POST /api/orders", s.handleCreateOrder)
@@ -673,6 +676,13 @@ func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "replayed": len(envelopes),
 		"from_offset": body.FromOffset, "to_offset": lastOffset,
 	})
+}
+
+// SetSite replaces the served site configuration (config file override).
+func (s *Server) SetSite(site model.Site) { s.site = site }
+
+func (s *Server) handleSite(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.site)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

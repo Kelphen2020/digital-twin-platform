@@ -10,35 +10,37 @@ import (
 // Config is the process configuration. Every field has a safe default so the
 // API can run with no environment variables at all (in-memory store).
 type Config struct {
-	Port         string
-	DatabaseURL  string
-	DedupeWindow time.Duration
-	MaxEvents    int
-	Version      string
-	AuthToken    string
-	AuthMode     string
-	JWTSecret    string
-	IngestToken  string
-	BusDriver    string
-	BusDir       string
-	BusBuffer    int
+	Port           string
+	DatabaseURL    string
+	DedupeWindow   time.Duration
+	MaxEvents      int
+	Version        string
+	AuthToken      string
+	AuthMode       string
+	JWTSecret      string
+	IngestToken    string
+	BusDriver      string
+	BusDir         string
+	BusBuffer      int
+	SiteConfigFile string
 }
 
 // Load reads the environment, falling back to P0 defaults.
 func Load() Config {
 	cfg := Config{
-		Port:         env("PORT", "8080"),
-		DatabaseURL:  env("DATABASE_URL", ""),
-		DedupeWindow: time.Duration(envInt("DEDUPE_WINDOW_SECONDS", 5)) * time.Second,
-		MaxEvents:    envInt("MAX_EVENTS", 20000),
-		Version:      env("VERSION", "0.1.0"),
-		AuthToken:    env("AUTH_TOKEN", ""),
-		AuthMode:     env("AUTH_MODE", "on"),
-		JWTSecret:    env("JWT_SECRET", "dev-secret-change-me"),
-		IngestToken:  env("INGEST_TOKEN", ""),
-		BusDriver:    env("BUS_DRIVER", "memory"),
-		BusDir:       env("BUS_DIR", "data/bus"),
-		BusBuffer:    envInt("BUS_BUFFER", 10000),
+		Port:           env("PORT", "8080"),
+		DatabaseURL:    env("DATABASE_URL", ""),
+		DedupeWindow:   time.Duration(envInt("DEDUPE_WINDOW_SECONDS", 5)) * time.Second,
+		MaxEvents:      envInt("MAX_EVENTS", 20000),
+		Version:        env("VERSION", "0.1.0"),
+		AuthToken:      env("AUTH_TOKEN", ""),
+		AuthMode:       env("AUTH_MODE", "on"),
+		JWTSecret:      env("JWT_SECRET", "dev-secret-change-me"),
+		IngestToken:    env("INGEST_TOKEN", ""),
+		BusDriver:      env("BUS_DRIVER", "memory"),
+		BusDir:         env("BUS_DIR", "data/bus"),
+		BusBuffer:      envInt("BUS_BUFFER", 10000),
+		SiteConfigFile: env("SITE_CONFIG_FILE", ""),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

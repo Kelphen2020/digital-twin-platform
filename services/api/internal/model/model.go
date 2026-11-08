@@ -330,3 +330,67 @@ type OrderUpdate struct {
 	Assignee *string `json:"assignee,omitempty"`
 	Note     *string `json:"note,omitempty"`
 }
+
+// SiteOrigin is the ENU origin in WGS84 (for future GIS integration).
+type SiteOrigin struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+	Alt float64 `json:"alt"`
+}
+
+// SiteExtent bounds the scene in local ENU metres.
+type SiteExtent struct {
+	MinX float64 `json:"min_x"`
+	MaxX float64 `json:"max_x"`
+	MinY float64 `json:"min_y"`
+	MaxY float64 `json:"max_y"`
+	MinZ float64 `json:"min_z"`
+	MaxZ float64 `json:"max_z"`
+}
+
+// SiteModel is one optional 3D asset the client may load.
+type SiteModel struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Format    string         `json:"format"`
+	URL       string         `json:"url"`
+	Transform SiteModelXform `json:"transform"`
+}
+
+// SiteModelXform places a model in the scene (three.js axes after ENU mapping).
+type SiteModelXform struct {
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	Z         float64 `json:"z"`
+	RotationY float64 `json:"rotation_y"`
+	Scale     float64 `json:"scale"`
+}
+
+// SiteMap describes the 2.5D base map style.
+type SiteMap struct {
+	Style    string  `json:"style"`
+	ImageURL *string `json:"image_url"`
+}
+
+// Site is the P6.0 site/scene configuration served to the client.
+type Site struct {
+	Name   string      `json:"name"`
+	Origin SiteOrigin  `json:"origin"`
+	Extent SiteExtent  `json:"extent"`
+	Models []SiteModel `json:"models"`
+	Map    SiteMap     `json:"map"`
+}
+
+// DefaultSite returns the built-in demo site matching the seeded cameras.
+func DefaultSite() Site {
+	return Site{
+		Name:   "示范园区",
+		Origin: SiteOrigin{Lat: 30.2741, Lng: 120.1551, Alt: 0},
+		Extent: SiteExtent{MinX: -200, MaxX: 200, MinY: -200, MaxY: 200, MinZ: 0, MaxZ: 60},
+		Models: []SiteModel{{
+			ID: "site-overview", Name: "园区总览模型", Format: "gltf", URL: "/models/site.gltf",
+			Transform: SiteModelXform{X: 0, Y: 0, Z: 0, RotationY: 0, Scale: 1},
+		}},
+		Map: SiteMap{Style: "vector", ImageURL: nil},
+	}
+}

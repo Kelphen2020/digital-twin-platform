@@ -13,7 +13,7 @@ QPS ?= 100
 DURATION ?= 5
 ARGS ?=
 
-.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web hls db-up db-down up down obs-up sim sim-status smoke load test fmt status stop
+.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web hls model db-up db-down up down obs-up sim sim-status smoke load test fmt status stop
 
 help:
 	@echo "P0 targets:"
@@ -24,6 +24,7 @@ help:
 	@echo "  make install-web  pnpm install for apps/web"
 	@echo "  make build-web    pnpm build for apps/web"
 	@echo "  make hls          regenerate the local HLS test stream (ffmpeg)"
+	@echo "  make model        regenerate the demo glTF site model"
 	@echo "  make db-up        start PostgreSQL/PostGIS (docker compose)"
 	@echo "  make up / down    full docker compose stack (API + PostgreSQL)"
 	@echo "  make sim          run the detection simulator (ARGS=\"--qps 10 --duration 30\")"
@@ -55,6 +56,9 @@ build-web:
 
 hls:
 	bash scripts/make_hls.sh
+
+model:
+	python3 tools/make_site_model.py
 
 db-up:
 	$(COMPOSE) up -d postgres
