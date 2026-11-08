@@ -242,3 +242,54 @@ API_TOKEN=<admin token> python3 scripts/load.py --qps 50 --duration 5
 - 通知为异步尽力投递：失败只记录不重试；飞书负载仅按自定义机器人文本格式实现，未接真实机器人验证。
 - 升级采用 15s 扫描，最坏延迟约 15s；`escalated_at` 只标记不升级严重级别。
 - 数据级过滤作用于读取；写操作仍由 P2 的区域校验保证。真实 GPU 帧率/画布手势/真实视频源仍需人工验收。
+
+---
+
+# P4.0 验收记录（2026-11-08 上午）
+
+## 22. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增 P4 测试：值班组 CRUD/解析/权限、升级自动派单（订单 assignee=值班组、audit、指标）、通知重试（失败两次后成功、attempts=3）、静默窗口（同键仅 1 次投递 + 抑制指标）、指标输出 |
+
+## 23. smoke.sh（P0 8 + P1 13 + P2 18 + P3 21 + P4 25 = 85 项 / 28 步）
+
+```
+smoke: PASS (85 checks passed)
+```
+
+P4 覆盖：
+- 值班：admin 建组 201 → 列表/`/api/duty/current` 解析 → PATCH → operator POST 403 → DELETE 204；重建立用于派单测试。
+- 自动派单：escalation `{after_seconds:1, auto_dispatch:true}` + 回填 10s 的 warn 事件 → 约 3–16s 内生成 `{status:open, priority:urgent, assignee:东门值班组, note:系统自动派单（告警升级）}`；审计 `order.auto_dispatch` actor=system；恢复默认。
+- 通知重试：接收器 `--fail-first 2`，`max_attempts=3/backoff=1s` → 投递记录 `ok=true attempts=3 status_code=200`，接收器日志 `[500,500,200]`。
+- 静默：`silence_seconds=60`，同相机+类型+严重级别两条事件仅 1 次投递；`dsh_twin_notifications_suppressed_total > 0`。
+- 指标：`dsh_twin_notifications_total{result=...}`、`..._escalations_total`、`..._orders_total`、`..._duty_dispatches_total`、`..._duty_skipped_total` 均存在。
+- 并发：模拟器 8 det/s 下 85/85 PASS；测试后恢复全部设置与规则。
+
+## 24. 前端 P4 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 值班 tab | ✅ admin 六页签（事件流/统计/工单/值班/设置/审计）；当前值班解析、建组/改名/删除（两步确认）UI 全流程，API 校验一致；operator/viewer 只读并显示角色提示 |
+| 设置 P4 字段 | ✅ 通知 max_attempts/backoff_seconds/silence_seconds 与升级 auto_dispatch 加载、保存、回读 |
+| 通知投递 | ✅ 审计→通知投递显示「尝试 N 次」；失败端点 `attempts=3 ok=false`，成功 `attempts=1/3` |
+| 自动派单 UX | ✅ WS `order_updated` → toast「系统自动派单：东门值班组」；工单页出现 `紧急优先 / 负责人：东门值班组` 的升级工单；升级 toast 同时出现 |
+| 稳定性 | ✅ 升级风暴下 toast 上限 5 条防刷屏；console errors=[]、exceptions=[]、bad responses=[] |
+| 截图 | `docs/screenshots/p4-admin-duty.png`、`p4-duty-form.png`、`p4-admin-settings.png`、`p4-audit-attempts.png`、`p4-auto-dispatch-toast.png`、`p4-operator-duty.png` |
+
+## 25. 可观测性
+
+- `deploy/observability/prometheus.yml`（抓取 api:8080 与 host.docker.internal:8080）+ `grafana-dashboard.json`（事件速率、通知成功/失败、升级、派单、注入延迟、工单/抑制）。
+- `make obs-up` 启动 Prometheus(9090)/Grafana(3000)（镜像源受限时可用 `PROM_IMAGE`/`GRAFANA_IMAGE` 指向镜像）。
+
+## 26. 已知限制（P4.0）
+
+- 值班无排班（班次/时间窗）；同区域多组按创建顺序取第一个（已在契约注明）。
+- 自动派单只做「升级 → 建单」，不做重复工单去重与接手人二次分配。
+- 通知静默为单实例内存状态；重启后窗口重置；多实例需共享状态。
+- 真实机器人/HTTP 接收器验证用本地服务；真实视频源、GPU 帧率与画布手势仍需人工验收。

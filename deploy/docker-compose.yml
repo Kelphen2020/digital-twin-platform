@@ -85,6 +85,33 @@ services:
     ports:
       - "9092:9092"
 
+  # ---- observability profile (make obs-up) ------------------------------
+  prometheus:
+    image: ${PROM_IMAGE:-prom/prometheus:latest}
+    container_name: dtp-prometheus
+    profiles: ["obs", "full"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:latest}
+    container_name: dtp-grafana
+    profiles: ["obs", "full"]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana-dashboard.json:/var/lib/grafana/dashboards/dtp-overview.json:ro
+    depends_on:
+      - prometheus
+
 volumes:
   postgres-data:
   minio-data:

@@ -301,20 +301,28 @@ export interface EventFilters {
 
 export type NotificationFormat = 'generic' | 'feishu'
 
-/** GET/PUT /api/settings/notifications（admin）。 */
+/** GET/PUT /api/settings/notifications（admin；P4 增加重试/去抖字段）。 */
 export interface NotificationSettings {
   enabled: boolean
   webhook_url: string
   format: NotificationFormat
   min_severity: Severity
   timeout_seconds: number
+  /** 最大尝试次数（1–5，含首次）。 */
+  max_attempts: number
+  /** 指数退避基数秒：第 n 次重试等待 backoff_seconds × 2^(n-1)。 */
+  backoff_seconds: number
+  /** 同相机+类型+严重级别的通知静默窗口（0–3600s）。 */
+  silence_seconds: number
 }
 
-/** GET/PUT /api/settings/escalation（admin）。 */
+/** GET/PUT /api/settings/escalation（admin；P4 增加自动派单）。 */
 export interface EscalationSettings {
   enabled: boolean
   after_seconds: number
   severities: Severity[]
+  /** 升级时是否按相机区域解析值班组并自动创建工单。 */
+  auto_dispatch: boolean
 }
 
 /** GET /api/audit 审计条目。 */
@@ -342,13 +350,59 @@ export interface NotificationLogEntry {
   ok: boolean
   status_code: number
   error: string
+  /** 实际尝试次数（P4，成功或最终失败）。 */
+  attempts: number
 }
 
 export interface NotificationListResponse {
   items: NotificationLogEntry[]
 }
 
-export type SidebarTab = 'events' | 'stats' | 'orders' | 'settings' | 'audit'
+// ---------------- P4：值班组 / 区域 ----------------
+
+/** GET /api/areas 区域（P0 契约，P4 值班组区域下拉使用）。 */
+export interface Area {
+  id: string
+  name: string
+  type: string
+  polygon?: number[][]
+}
+
+export interface AreaListResponse {
+  items: Area[]
+}
+
+export interface DutyGroup {
+  id: string
+  name: string
+  /** 负责区域；空数组表示全局兜底值班组。 */
+  areas: string[]
+  /** 值班人员用户名（须为已知用户）。 */
+  operators: string[]
+  active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface DutyGroupPayload {
+  name: string
+  areas: string[]
+  operators: string[]
+  active: boolean
+}
+
+export interface DutyListResponse {
+  items: DutyGroup[]
+}
+
+/** GET /api/duty/current?area_id= */
+export interface DutyCurrent {
+  area_id: string
+  group: DutyGroup | null
+  operators: string[]
+}
+
+export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit'
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

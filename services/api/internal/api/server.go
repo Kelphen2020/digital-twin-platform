@@ -38,9 +38,11 @@ type Server struct {
 	ingestToken string
 	started     time.Time
 
-	settingsMu sync.RWMutex
-	notify     model.NotificationSettings
-	escalation model.EscalationSettings
+	settingsMu    sync.RWMutex
+	notify        model.NotificationSettings
+	escalation    model.EscalationSettings
+	notifyMu      sync.Mutex
+	notifySilence map[string]time.Time
 }
 
 type userContextKey struct{}
@@ -51,16 +53,17 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		authService = auth.New("off", "")
 	}
 	return &Server{
-		store:       database,
-		rules:       engine,
-		hub:         hub,
-		metrics:     meters,
-		version:     version,
-		auth:        authService,
-		ingestToken: ingestToken,
-		started:     time.Now().UTC(),
-		notify:      model.DefaultNotificationSettings(),
-		escalation:  model.DefaultEscalationSettings(),
+		store:         database,
+		rules:         engine,
+		hub:           hub,
+		metrics:       meters,
+		version:       version,
+		auth:          authService,
+		ingestToken:   ingestToken,
+		started:       time.Now().UTC(),
+		notify:        model.DefaultNotificationSettings(),
+		escalation:    model.DefaultEscalationSettings(),
+		notifySilence: make(map[string]time.Time),
 	}
 }
 
@@ -90,6 +93,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings/escalation", s.handleGetEscalationSettings)
 	mux.HandleFunc("PUT /api/settings/escalation", s.handlePutEscalationSettings)
 	mux.HandleFunc("GET /api/notifications", s.handleListNotifications)
+	mux.HandleFunc("GET /api/users", s.handleListUsers)
+	mux.HandleFunc("GET /api/duty/groups", s.handleListDutyGroups)
+	mux.HandleFunc("POST /api/duty/groups", s.handleCreateDutyGroup)
+	mux.HandleFunc("PATCH /api/duty/groups/{id}", s.handleUpdateDutyGroup)
+	mux.HandleFunc("DELETE /api/duty/groups/{id}", s.handleDeleteDutyGroup)
+	mux.HandleFunc("GET /api/duty/current", s.handleCurrentDuty)
 	mux.HandleFunc("POST /api/orders", s.handleCreateOrder)
 	mux.HandleFunc("GET /api/orders", s.handleListOrders)
 	mux.HandleFunc("GET /api/orders/{id}", s.handleGetOrder)
@@ -334,18 +343,23 @@ func (s *Server) escalateOnce(ctx context.Context) {
 		return
 	}
 	for _, event := range events {
+		s.metrics.Escalations.Add(1)
 		s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: event})
 		_ = s.store.AddAudit(ctx, model.AuditEntry{
 			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
 			Action: "event.escalate", Resource: event.ID,
 			Detail: map[string]any{"severity": event.Severity, "after_seconds": cfg.AfterSeconds},
 		})
-		go s.deliverNotification(context.Background(), "escalation", event)
+		go s.deliverNotification(context.Background(), "escalation", event, nil)
+		if cfg.AutoDispatch {
+			s.autoDispatch(ctx, event)
+		}
 	}
 }
 
-// deliverNotification posts one event/escalation to the configured webhook.
-func (s *Server) deliverNotification(ctx context.Context, kind string, event model.Event) {
+// deliverNotification posts one event/escalation/dispatch to the configured
+// webhook, with a silence window and bounded exponential-backoff retries.
+func (s *Server) deliverNotification(ctx context.Context, kind string, event model.Event, order *model.Order) {
 	cfg := s.currentNotify()
 	if !cfg.Enabled || strings.TrimSpace(cfg.WebhookURL) == "" {
 		return
@@ -353,47 +367,165 @@ func (s *Server) deliverNotification(ctx context.Context, kind string, event mod
 	if model.SeverityRank(event.Severity) < model.SeverityRank(cfg.MinSeverity) {
 		return
 	}
+	silenceKey := event.CameraID + "|" + event.Type + "|" + event.Severity
+	s.notifyMu.Lock()
+	last, seen := s.notifySilence[silenceKey]
+	suppressed := cfg.SilenceSeconds > 0 && seen && time.Since(last) < time.Duration(cfg.SilenceSeconds)*time.Second
+	if !suppressed {
+		s.notifySilence[silenceKey] = time.Now()
+	}
+	s.notifyMu.Unlock()
+	if suppressed {
+		s.metrics.NotificationsSuppressed.Add(1)
+		return
+	}
+
 	var payload []byte
 	if cfg.Format == "feishu" {
+		label := map[string]string{"event": "告警", "escalation": "告警升级", "dispatch": "自动派单"}[kind]
 		text := fmt.Sprintf("[%s] %s · %s %s（置信度 %.2f）\n事件 %s",
-			map[string]string{"event": "告警", "escalation": "告警升级"}[kind],
-			event.Severity, event.CameraCode, event.CameraName, event.Confidence, event.ID)
+			label, event.Severity, event.CameraCode, event.CameraName, event.Confidence, event.ID)
+		if order != nil {
+			text += fmt.Sprintf("\n工单 %s → %s", order.ID, order.Assignee)
+		}
 		payload, _ = json.Marshal(map[string]any{"msg_type": "text", "content": map[string]string{"text": text}})
 	} else {
-		payload, _ = json.Marshal(map[string]any{
-			"kind": kind, "event": event, "source": "digital-twin-platform",
-		})
+		body := map[string]any{"kind": kind, "event": event, "source": "digital-twin-platform"}
+		if order != nil {
+			body["order"] = order
+		}
+		payload, _ = json.Marshal(body)
 	}
+
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if maxAttempts > 5 {
+		maxAttempts = 5
+	}
 	entry := model.NotificationLog{
 		ID: newID("ntf"), At: time.Now().UTC(), Kind: kind, EventID: event.ID,
 		URL: cfg.WebhookURL, Format: cfg.Format,
 	}
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, cfg.WebhookURL, strings.NewReader(string(payload)))
-	if err == nil {
-		request.Header.Set("Content-Type", "application/json")
-		var response *http.Response
-		response, err = (&http.Client{Timeout: timeout}).Do(request)
-		if err == nil {
-			entry.StatusCode = response.StatusCode
-			entry.OK = response.StatusCode >= 200 && response.StatusCode < 300
-			if !entry.OK {
-				entry.Error = fmt.Sprintf("webhook returned HTTP %d", response.StatusCode)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		entry.Attempts = attempt
+		entry.Error = ""
+		entry.OK = false
+		entry.StatusCode = 0
+		requestCtx, cancel := context.WithTimeout(ctx, timeout)
+		request, buildErr := http.NewRequestWithContext(requestCtx, http.MethodPost, cfg.WebhookURL, strings.NewReader(string(payload)))
+		if buildErr != nil {
+			entry.Error = buildErr.Error()
+		} else {
+			request.Header.Set("Content-Type", "application/json")
+			response, err := (&http.Client{Timeout: timeout}).Do(request)
+			if err != nil {
+				entry.Error = err.Error()
+			} else {
+				entry.StatusCode = response.StatusCode
+				entry.OK = response.StatusCode >= 200 && response.StatusCode < 300
+				if !entry.OK {
+					entry.Error = fmt.Sprintf("webhook returned HTTP %d", response.StatusCode)
+				}
+				_ = response.Body.Close()
 			}
-			_ = response.Body.Close()
+		}
+		cancel()
+		if entry.OK {
+			break
+		}
+		if attempt < maxAttempts {
+			backoff := time.Duration(cfg.BackoffSeconds) * time.Second
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+				case <-time.After(backoff * time.Duration(1<<(attempt-1))):
+				}
+			}
 		}
 	}
-	if err != nil {
-		entry.Error = err.Error()
+	if entry.OK {
+		s.metrics.NotificationsOK.Add(1)
+	} else {
+		s.metrics.NotificationsFailed.Add(1)
 	}
 	if err := s.store.CreateNotificationLog(context.Background(), entry); err != nil {
 		log.Printf("api: notification log: %v", err)
 	}
+}
+
+// resolveDutyGroup finds the active group for an area, then the global fallback.
+func (s *Server) resolveDutyGroup(ctx context.Context, areaID string) *model.DutyGroup {
+	groups, err := s.store.ListDutyGroups(ctx)
+	if err != nil {
+		return nil
+	}
+	var global *model.DutyGroup
+	for i := range groups {
+		group := &groups[i]
+		if !group.Active {
+			continue
+		}
+		if len(group.Areas) == 0 {
+			if global == nil {
+				global = group
+			}
+			continue
+		}
+		for _, area := range group.Areas {
+			if area == areaID {
+				return group
+			}
+		}
+	}
+	return global
+}
+
+// autoDispatch creates an urgent work order for the area's on-duty group.
+func (s *Server) autoDispatch(ctx context.Context, event model.Event) {
+	camera, err := s.store.GetCamera(ctx, event.CameraID)
+	if err != nil {
+		return
+	}
+	group := s.resolveDutyGroup(ctx, camera.AreaID)
+	if group == nil {
+		s.metrics.DutySkipped.Add(1)
+		_ = s.store.AddAudit(ctx, model.AuditEntry{
+			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
+			Action: "order.auto_dispatch_skipped", Resource: event.ID,
+			Detail: map[string]any{"area_id": camera.AreaID},
+		})
+		return
+	}
+	now := time.Now().UTC()
+	order := model.Order{
+		ID: newID("ord"), EventID: event.ID, CameraID: event.CameraID,
+		Title:     "告警升级 · " + event.Type + " · " + event.CameraCode + " " + event.CameraName,
+		Status:    "open",
+		Priority:  "urgent",
+		Assignee:  group.Name,
+		Note:      "系统自动派单（告警升级）",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.store.CreateOrder(ctx, order); err != nil {
+		log.Printf("api: auto dispatch order: %v", err)
+		return
+	}
+	s.metrics.Orders.Add(1)
+	s.metrics.DutyDispatches.Add(1)
+	_ = s.store.AddAudit(ctx, model.AuditEntry{
+		ID: newID("aud"), At: now, Actor: "system",
+		Action: "order.auto_dispatch", Resource: order.ID,
+		Detail: map[string]any{"event_id": event.ID, "group": group.Name, "area_id": camera.AreaID},
+	})
+	s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
+	go s.deliverNotification(context.Background(), "dispatch", event, &order)
 }
 
 // visibleCameras returns the camera ids a user may read. restricted=false means
@@ -865,7 +997,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, event := range result.Events {
 		s.hub.Broadcast(realtime.Frame{Type: "event", Data: event})
-		go s.deliverNotification(context.Background(), "event", event)
+		go s.deliverNotification(context.Background(), "event", event, nil)
 	}
 	s.metrics.ObserveIngest(time.Since(started).Microseconds())
 	events := result.Events
@@ -1024,6 +1156,7 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	s.metrics.Orders.Add(1)
 	s.audit(r, "order.create", order.ID, map[string]any{"event_id": order.EventID, "priority": order.Priority})
 	s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
 	writeJSON(w, http.StatusCreated, order)
@@ -1184,6 +1317,21 @@ func (s *Server) handlePutNotificationSettings(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "bad_request", "timeout_seconds must be within [1,30]")
 		return
 	}
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = 3
+	}
+	if cfg.MaxAttempts < 1 || cfg.MaxAttempts > 5 {
+		writeError(w, http.StatusBadRequest, "bad_request", "max_attempts must be within [1,5]")
+		return
+	}
+	if cfg.BackoffSeconds < 0 || cfg.BackoffSeconds > 60 {
+		writeError(w, http.StatusBadRequest, "bad_request", "backoff_seconds must be within [0,60]")
+		return
+	}
+	if cfg.SilenceSeconds < 0 || cfg.SilenceSeconds > 3600 {
+		writeError(w, http.StatusBadRequest, "bad_request", "silence_seconds must be within [0,3600]")
+		return
+	}
 	if cfg.WebhookURL != "" && !strings.HasPrefix(cfg.WebhookURL, "http://") && !strings.HasPrefix(cfg.WebhookURL, "https://") {
 		writeError(w, http.StatusBadRequest, "bad_request", "webhook_url must be http(s)")
 		return
@@ -1268,6 +1416,173 @@ func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request)
 
 func validSeverity(severity string) bool {
 	return severity == "info" || severity == "warn" || severity == "critical"
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.auth.Users()})
+}
+
+func (s *Server) handleListDutyGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := s.store.ListDutyGroups(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if groups == nil {
+		groups = []model.DutyGroup{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": groups})
+}
+
+type dutyGroupBody struct {
+	Name      string    `json:"name"`
+	Areas     *[]string `json:"areas,omitempty"`
+	Operators *[]string `json:"operators,omitempty"`
+	Active    *bool     `json:"active,omitempty"`
+}
+
+func (s *Server) handleCreateDutyGroup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	var body dutyGroupBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
+		return
+	}
+	if err := s.validateDutyGroups(r.Context(), body.Areas, body.Operators); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	active := true
+	if body.Active != nil {
+		active = *body.Active
+	}
+	now := time.Now().UTC()
+	group := model.DutyGroup{
+		ID: newID("duty"), Name: body.Name, Active: active,
+		Areas: []string{}, Operators: []string{}, CreatedAt: now, UpdatedAt: now,
+	}
+	if body.Areas != nil {
+		group.Areas = *body.Areas
+	}
+	if body.Operators != nil {
+		group.Operators = *body.Operators
+	}
+	if err := s.store.CreateDutyGroup(r.Context(), group); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "duty.create", group.ID, map[string]any{"name": group.Name, "areas": group.Areas})
+	writeJSON(w, http.StatusCreated, group)
+}
+
+func (s *Server) handleUpdateDutyGroup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	existing, err := s.store.GetDutyGroup(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeDutyError(w, err)
+		return
+	}
+	var body dutyGroupBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if err := s.validateDutyGroups(r.Context(), body.Areas, body.Operators); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if body.Name != "" {
+		existing.Name = strings.TrimSpace(body.Name)
+	}
+	if body.Areas != nil {
+		existing.Areas = *body.Areas
+	}
+	if body.Operators != nil {
+		existing.Operators = *body.Operators
+	}
+	if body.Active != nil {
+		existing.Active = *body.Active
+	}
+	updated, err := s.store.UpdateDutyGroup(r.Context(), existing.ID, existing)
+	if err != nil {
+		s.writeDutyError(w, err)
+		return
+	}
+	s.audit(r, "duty.update", updated.ID, map[string]any{"active": updated.Active, "areas": updated.Areas})
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDeleteDutyGroup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteDutyGroup(r.Context(), id); err != nil {
+		s.writeDutyError(w, err)
+		return
+	}
+	s.audit(r, "duty.delete", id, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCurrentDuty(w http.ResponseWriter, r *http.Request) {
+	areaID := r.URL.Query().Get("area_id")
+	if areaID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "area_id is required")
+		return
+	}
+	group := s.resolveDutyGroup(r.Context(), areaID)
+	if group == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"area_id": areaID, "group": nil, "operators": []string{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"area_id": areaID, "group": group, "operators": group.Operators})
+}
+
+func (s *Server) validateDutyGroups(ctx context.Context, areas, operators *[]string) error {
+	if areas != nil {
+		known, err := s.store.ListAreas(ctx)
+		if err != nil {
+			return err
+		}
+		valid := make(map[string]struct{}, len(known))
+		for _, area := range known {
+			valid[area.ID] = struct{}{}
+		}
+		for _, area := range *areas {
+			if _, ok := valid[area]; !ok {
+				return fmt.Errorf("unknown area %q", area)
+			}
+		}
+	}
+	if operators != nil {
+		for _, username := range *operators {
+			if !s.auth.UserExists(username) {
+				return fmt.Errorf("unknown operator %q", username)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) writeDutyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "duty_not_found", "duty group not found")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 }
 
 func (s *Server) writeCameraError(w http.ResponseWriter, err error) {

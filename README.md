@@ -102,6 +102,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P3.md`](docs/API_P3.md)。
 
+![P4.0 值班与自动派单](docs/screenshots/p4-auto-dispatch-toast.png)
+
+## P4.0 能力（值班 / 自动派单 / 通知可靠性 / 可观测性）
+
+- **值班组**：admin 维护值班组（名称、负责区域、成员、启停）；按相机区域解析当前值班组（区域优先，`areas` 为空的全局组兜底）。
+- **升级自动派单**：告警升级时按区域找值班组，自动创建 `urgent` 工单（assignee=值班组），WS 推送、审计 `order.auto_dispatch`；无值班组则记 `order.auto_dispatch_skipped`。
+- **通知可靠性**：失败按指数退避重试（`max_attempts`/`backoff_seconds`），同相机+类型+严重级别在 `silence_seconds` 内只投递一次（抑制计数进指标）；投递记录含实际尝试次数。
+- **可观测性**：`/metrics` 新增通知成功/失败/抑制、升级、工单、自动派单/跳过等指标；`deploy/observability/` 提供 Prometheus 抓取配置与 Grafana 看板 JSON（`make obs-up` 启动）。
+
+契约见 [`docs/API_P4.md`](docs/API_P4.md)。
+
 ## 目录
 
 ```

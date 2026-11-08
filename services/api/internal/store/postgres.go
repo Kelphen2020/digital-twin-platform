@@ -765,3 +765,84 @@ func (p *Postgres) EscalateStale(ctx context.Context, before time.Time, severiti
 	}
 	return events, rows.Err()
 }
+
+func (p *Postgres) CreateDutyGroup(ctx context.Context, group model.DutyGroup) error {
+	areas, _ := json.Marshal(group.Areas)
+	operators, _ := json.Marshal(group.Operators)
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO duty_groups (id, name, areas, operators, active, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		group.ID, group.Name, areas, operators, group.Active, group.CreatedAt, group.UpdatedAt)
+	return err
+}
+
+func (p *Postgres) GetDutyGroup(ctx context.Context, id string) (model.DutyGroup, error) {
+	return scanDutyGroup(p.pool.QueryRow(ctx, dutySelect+` WHERE id=$1`, id))
+}
+
+func (p *Postgres) ListDutyGroups(ctx context.Context) ([]model.DutyGroup, error) {
+	rows, err := p.pool.Query(ctx, dutySelect+` ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := make([]model.DutyGroup, 0, 4)
+	for rows.Next() {
+		group, err := scanDutyGroup(rows)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+func (p *Postgres) UpdateDutyGroup(ctx context.Context, id string, group model.DutyGroup) (model.DutyGroup, error) {
+	areas, _ := json.Marshal(group.Areas)
+	operators, _ := json.Marshal(group.Operators)
+	_, err := p.pool.Exec(ctx, `
+        UPDATE duty_groups SET name=$2, areas=$3, operators=$4, active=$5, updated_at=now()
+        WHERE id=$1`, id, group.Name, areas, operators, group.Active)
+	if err != nil {
+		return model.DutyGroup{}, err
+	}
+	return p.GetDutyGroup(ctx, id)
+}
+
+func (p *Postgres) DeleteDutyGroup(ctx context.Context, id string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM duty_groups WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const dutySelect = `SELECT id, name, areas, operators, active, created_at, updated_at FROM duty_groups`
+
+type dutyScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
+	var group model.DutyGroup
+	var areas, operators []byte
+	err := row.Scan(&group.ID, &group.Name, &areas, &operators, &group.Active, &group.CreatedAt, &group.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.DutyGroup{}, ErrNotFound
+		}
+		return model.DutyGroup{}, err
+	}
+	if len(areas) > 0 {
+		_ = json.Unmarshal(areas, &group.Areas)
+	}
+	if len(operators) > 0 {
+		_ = json.Unmarshal(operators, &group.Operators)
+	}
+	group.CreatedAt = group.CreatedAt.UTC()
+	group.UpdatedAt = group.UpdatedAt.UTC()
+	return group, nil
+}

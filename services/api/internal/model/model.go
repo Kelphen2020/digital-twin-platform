@@ -77,11 +77,17 @@ type NotificationSettings struct {
 	Format         string `json:"format"`
 	MinSeverity    string `json:"min_severity"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	MaxAttempts    int    `json:"max_attempts"`
+	BackoffSeconds int    `json:"backoff_seconds"`
+	SilenceSeconds int    `json:"silence_seconds"`
 }
 
 // DefaultNotificationSettings is the disabled-by-default webhook configuration.
 func DefaultNotificationSettings() NotificationSettings {
-	return NotificationSettings{Enabled: false, WebhookURL: "", Format: "generic", MinSeverity: "warn", TimeoutSeconds: 5}
+	return NotificationSettings{
+		Enabled: false, WebhookURL: "", Format: "generic", MinSeverity: "warn",
+		TimeoutSeconds: 5, MaxAttempts: 3, BackoffSeconds: 2, SilenceSeconds: 30,
+	}
 }
 
 // EscalationSettings controls the stale-alert escalation worker.
@@ -89,11 +95,12 @@ type EscalationSettings struct {
 	Enabled      bool     `json:"enabled"`
 	AfterSeconds int      `json:"after_seconds"`
 	Severities   []string `json:"severities"`
+	AutoDispatch bool     `json:"auto_dispatch"`
 }
 
 // DefaultEscalationSettings escalates warn/critical alerts after five minutes.
 func DefaultEscalationSettings() EscalationSettings {
-	return EscalationSettings{Enabled: true, AfterSeconds: 300, Severities: []string{"warn", "critical"}}
+	return EscalationSettings{Enabled: true, AfterSeconds: 300, Severities: []string{"warn", "critical"}, AutoDispatch: true}
 }
 
 // NotificationLog is one webhook delivery attempt.
@@ -106,7 +113,20 @@ type NotificationLog struct {
 	Format     string    `json:"format"`
 	OK         bool      `json:"ok"`
 	StatusCode int       `json:"status_code"`
+	Attempts   int       `json:"attempts"`
 	Error      string    `json:"error"`
+}
+
+// DutyGroup is one on-duty roster bound to a set of areas. An empty area list
+// is the global fallback group.
+type DutyGroup struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Areas     []string  `json:"areas"`
+	Operators []string  `json:"operators"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // SeverityRank orders severities for notification thresholds.

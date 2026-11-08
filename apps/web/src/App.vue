@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import AuditPanel from './components/AuditPanel.vue'
 import CameraDetail from './components/CameraDetail.vue'
+import DutyPanel from './components/DutyPanel.vue'
 import EventDetail from './components/EventDetail.vue'
 import EventFeed from './components/EventFeed.vue'
 import LoginView from './components/LoginView.vue'
@@ -15,11 +16,13 @@ import { formatArea } from './labels'
 import TwinScene from './scene/TwinScene.vue'
 import { useAdminStore } from './store/admin'
 import { useAuthStore } from './store/auth'
+import { useDutyStore } from './store/duty'
 import { useTwinStore } from './store/twin'
 
 const { state: authState, isAuthenticated, restoreSession } = useAuthStore()
 const { state, start, stop, reset, selectCamera, selectEvent, setFps, setSidebarTab } = useTwinStore()
 const admin = useAdminStore()
+const duty = useDutyStore()
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
 
@@ -48,6 +51,7 @@ watch(isAuthenticated, (authenticated) => {
   else {
     reset()
     admin.reset()
+    duty.reset()
   }
 })
 </script>
@@ -118,6 +122,15 @@ watch(isAuthenticated, (authenticated) => {
             <span v-if="openOrders > 0" class="tab-badge">{{ openOrders }}</span>
           </button>
           <button
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'duty' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'duty'"
+            @click="setSidebarTab('duty')"
+          >
+            值班
+          </button>
+          <button
             v-if="isAdmin"
             class="sidebar-tab"
             :class="{ active: state.sidebarTab === 'settings' }"
@@ -141,6 +154,7 @@ watch(isAuthenticated, (authenticated) => {
         <EventFeed v-if="state.sidebarTab === 'events'" />
         <StatsPanel v-else-if="state.sidebarTab === 'stats'" />
         <OrdersPanel v-else-if="state.sidebarTab === 'orders'" />
+        <DutyPanel v-else-if="state.sidebarTab === 'duty'" />
         <SettingsPanel v-else-if="state.sidebarTab === 'settings' && isAdmin" />
         <AuditPanel v-else-if="state.sidebarTab === 'audit' && isAdmin" />
         <EventFeed v-else />

@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -6,9 +6,11 @@ verify the detection → rule engine → event → WebSocket chain described in
 the P1.0 additions in [`docs/API_P1.md`](../../docs/API_P1.md) (tracks,
 calibration, alarm workflow, audit, stats/CSV export), the P2.0 additions in
 [`docs/API_P2.md`](../../docs/API_P2.md) (JWT auth + RBAC, per-camera rules,
-work orders) and the P3.0 additions in
+work orders), the P3.0 additions in
 [`docs/API_P3.md`](../../docs/API_P3.md) (data-level filtering, escalation,
-webhook notifications, settings).
+webhook notifications, settings) and the P4.0 additions in
+[`docs/API_P4.md`](../../docs/API_P4.md) (duty groups, auto-dispatch,
+notification retry/silence, extra metrics).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -17,9 +19,9 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 = **60 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 = **85 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics). |
 | `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
-| `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness. |
+| `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
 Prerequisite: the Go API must be running on `http://127.0.0.1:8080`
 (`make dev-api`) with the seeded camera inventory (`CAM-001` … `CAM-006`).
@@ -190,7 +192,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**60 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0):
+(**85 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -246,6 +248,33 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
 23. cleanup: escalation defaults restored (`after_seconds=300`), notifications
     disabled with empty URL, receiver stopped cleanly (also on Ctrl-C/failure
     via the EXIT trap).
+
+**P4.0 (steps 24–28, 25 checks)**
+
+24. duty groups: admin POST (areas `area_gate`+`area_parking`, operator) → 201,
+    `GET /api/duty/groups` contains it, `GET /api/duty/current?area_id=area_gate`
+    resolves a valid active group with its operators, PATCH `active` toggle →
+    200, operator GET → 200 (logged-in read) but operator POST → `403`,
+    DELETE → 204, then the group is re-created for the auto-dispatch test;
+25. auto-dispatch: escalation settings `{after_seconds:1, auto_dispatch:true}`
+    → 200; a stale warn event (`ts=now-10s`, CAM-001/area_gate) is injected and
+    an order appears (≤30 s, observed ~3–16 s) whose `assignee` is a duty group
+    name and whose `note` contains `自动派单`; audit contains
+    `order.auto_dispatch` (`actor=system`); escalation defaults restored;
+26. notification retry: receiver started with `--fail-first 2`; notifications
+    `max_attempts=3, backoff_seconds=1` saved; a warn event is delivered with
+    `ok=true, attempts=3, status_code=200` and the receiver JSONL log shows
+    exactly 3 POSTs with statuses `[500, 500, 200]`;
+27. notification silence: `silence_seconds=60` saved; two identical events
+    (camera+type+severity, dedupe disabled for the injection) produce exactly
+    1 delivery and `dsh_twin_notifications_suppressed_total > 0`;
+28. metrics + cleanup: `/metrics` contains the P4 counters
+    (`dsh_twin_notifications_total{result=ok|failed}`,
+    `dsh_twin_escalations_total`, `dsh_twin_orders_total`,
+    `dsh_twin_duty_dispatches_total > 0`, `dsh_twin_duty_skipped_total`,
+    `dsh_twin_notifications_suppressed_total`), the duty group is deleted
+    (204), notifications disabled and escalation defaults
+    (`after_seconds=300, auto_dispatch=true`) verified.
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -358,11 +387,66 @@ curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/j
 ```
 
 `webhook_receiver.py` flags: `--port` (default `8099`), `--host` (default
-`127.0.0.1`), `--out` (default `/tmp/webhook.log`). Each request becomes one
-JSON line with `at`, `method`, `path`, `headers` and the parsed `body`; the
-server logs one line per delivery to stderr and shuts down cleanly on Ctrl-C.
-Set `format=feishu` to receive Feishu custom-bot payloads instead of the raw
-event JSON.
+`127.0.0.1`), `--out` (default `/tmp/webhook.log`) and `--fail-first N`
+(answer the first N POSTs with HTTP 500, still logging them). Each request
+becomes one JSON line with `at`, `method`, `path`, `status`, `headers` and the
+parsed `body`; the server logs one line per delivery to stderr and shuts down
+cleanly on Ctrl-C. Set `format=feishu` to receive Feishu custom-bot payloads
+instead of the raw event JSON.
+
+### P4.0 duty / auto-dispatch / reliability demo
+
+```bash
+ADMIN="$TOKEN"
+
+# 1) create a duty group for the gate + parking areas
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"name":"东门值班组","areas":["area_gate","area_parking"],"operators":["operator"],"active":true}' \
+  http://127.0.0.1:8080/api/duty/groups
+curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:8080/api/duty/current?area_id=area_gate'
+
+# 2) enable fast escalation with auto-dispatch, then create a stale warn event
+#    (ts 10 s in the past) — the escalation worker auto-creates an urgent order
+#    assigned to the duty group with note 系统自动派单（告警升级）
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}' \
+  http://127.0.0.1:8080/api/settings/escalation
+STALE=$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc)-timedelta(seconds=10)).isoformat(timespec="milliseconds").replace("+00:00","Z"))')
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"camera_code\":\"CAM-001\",\"ts\":\"$STALE\",\"detections\":[{\"class\":\"intrusion\",\"confidence\":0.93}]}" \
+  http://127.0.0.1:8080/api/ingest/detections
+curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:8080/api/orders?limit=10'
+
+# 3) notification retry + silence: start the receiver so the first 2 POSTs fail
+python3 scripts/webhook_receiver.py --port 8099 --out /tmp/webhook.log --fail-first 2 &
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"webhook_url":"http://127.0.0.1:8099/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":1,"silence_seconds":60}' \
+  http://127.0.0.1:8080/api/settings/notifications
+# trigger a warn event; after ~3 s /api/notifications shows ok=true attempts=3,
+# and /tmp/webhook.log contains 3 POST lines (500, 500, 200). Repeat the same
+# camera/type/severity event within 60 s -> suppressed (metric
+# dsh_twin_notifications_suppressed_total), only one delivery recorded.
+
+# 4) restore defaults and delete the demo duty group
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":false,"webhook_url":"","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":2,"silence_seconds":30}' \
+  http://127.0.0.1:8080/api/settings/notifications
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' \
+  http://127.0.0.1:8080/api/settings/escalation
+```
+
+P4.0 metrics to watch in `GET /metrics`:
+
+```
+dsh_twin_notifications_total{result="ok"} 3
+dsh_twin_notifications_total{result="failed"} 2
+dsh_twin_notifications_suppressed_total 1
+dsh_twin_escalations_total 2
+dsh_twin_orders_total 4
+dsh_twin_duty_dispatches_total 1
+dsh_twin_duty_skipped_total 1
+```
 
 ---
 
@@ -387,8 +471,9 @@ API_TOKEN="$TOKEN" python3 services/simulator/simulator.py
 # terminal 4 (optional): camera status broadcast demo
 python3 services/simulator/run_camera_status.py --once --interval 5 --token "$TOKEN"
 
-# terminal 5 (optional): P3.0 webhook notifications (see section 5)
+# terminal 5 (optional): P3.0/P4.0 webhook notifications (see section 5)
 python3 scripts/webhook_receiver.py --port 8099 --out /tmp/webhook.log
+# optional retry demo: --fail-first 2 makes the backend retry (max_attempts)
 
 # terminal 4: acceptance + load
 make smoke                                          # logs in internally

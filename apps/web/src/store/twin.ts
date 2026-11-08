@@ -613,7 +613,12 @@ function handleWsMessage(message: WsMessage): void {
       break
     }
     case 'order_updated': {
+      const isNewOrder = !state.orders.some((order) => order.id === message.data.id)
       applyOrderUpdate(message.data)
+      // 升级自动派单：note 含「自动派单」的新工单浮层提示
+      if (isNewOrder && message.data.note.includes('自动派单')) {
+        pushToast(`系统自动派单：${message.data.assignee || '值班组'}`, 'warning')
+      }
       break
     }
     case 'stats': {

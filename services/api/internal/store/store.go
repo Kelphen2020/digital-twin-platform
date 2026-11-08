@@ -46,6 +46,11 @@ type Store interface {
 	CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error
 	ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error)
 	EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
+	CreateDutyGroup(ctx context.Context, group model.DutyGroup) error
+	GetDutyGroup(ctx context.Context, id string) (model.DutyGroup, error)
+	ListDutyGroups(ctx context.Context) ([]model.DutyGroup, error)
+	UpdateDutyGroup(ctx context.Context, id string, group model.DutyGroup) (model.DutyGroup, error)
+	DeleteDutyGroup(ctx context.Context, id string) error
 	Stats(ctx context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error)
 	Counts(ctx context.Context) (model.Counts, error)
 }
@@ -61,6 +66,7 @@ type Memory struct {
 	orders    []model.Order
 	settings  map[string][]byte
 	logs      []model.NotificationLog
+	duty      []model.DutyGroup
 	tracks    []model.TrackPoint
 	actions   map[string][]model.EventAction
 	audit     []model.AuditEntry
@@ -490,6 +496,58 @@ func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (m *Memory) CreateDutyGroup(_ context.Context, group model.DutyGroup) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.duty = append(m.duty, group)
+	return nil
+}
+
+func (m *Memory) GetDutyGroup(_ context.Context, id string) (model.DutyGroup, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.duty {
+		if m.duty[i].ID == id {
+			return m.duty[i], nil
+		}
+	}
+	return model.DutyGroup{}, ErrNotFound
+}
+
+func (m *Memory) ListDutyGroups(_ context.Context) ([]model.DutyGroup, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]model.DutyGroup(nil), m.duty...), nil
+}
+
+func (m *Memory) UpdateDutyGroup(_ context.Context, id string, group model.DutyGroup) (model.DutyGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.duty {
+		if m.duty[i].ID != id {
+			continue
+		}
+		group.ID = id
+		group.CreatedAt = m.duty[i].CreatedAt
+		group.UpdatedAt = time.Now().UTC()
+		m.duty[i] = group
+		return group, nil
+	}
+	return model.DutyGroup{}, ErrNotFound
+}
+
+func (m *Memory) DeleteDutyGroup(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.duty {
+		if m.duty[i].ID == id {
+			m.duty = append(m.duty[:i], m.duty[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (m *Memory) GetSetting(_ context.Context, key string) ([]byte, bool, error) {

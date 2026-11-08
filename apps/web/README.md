@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P3.0）
+# 数字孪生安防平台 · Web 前端（P4.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4，均为固定契约）。
 
 ## 快速开始
 
@@ -58,7 +58,8 @@ pnpm dev          # http://127.0.0.1:5173
 | 相机状态/坐标/朝向修改 | ❌ | ✅ 仅负责区域内（区域外后端返回 `403 out_of_scope`，前端浮层提示） | ✅ 任意相机 |
 | 相机规则配置 | ❌（只读） | ❌（只读） | ✅ |
 | 相机标定 | ❌ | ❌ | ✅ |
-| 平台设置（通知/升级）与审计/通知投递 | ❌ | ❌ | ✅ |
+| 平台设置（通知/升级/自动派单）与审计/通知投递 | ❌ | ❌ | ✅ |
+| 值班组 | 只读（值班 tab） | 只读（值班 tab） | ✅ 新建/编辑/删除 |
 
 权限错误统一以顶部 Toast 提示（`403 out_of_scope` / 无权限 / 登录过期）。
 
@@ -114,6 +115,21 @@ pnpm dev          # http://127.0.0.1:5173
   - **通知投递**：`GET /api/notifications?limit=50`，展示 kind / event_id / 格式 / 成功或失败 / `status_code` / 错误 / url。
 - 刷新按钮同时拉取两类数据；操作审计与通知投递均有空态与错误重试。
 
+### 值班组与自动派单（P4）
+
+- 所有登录用户可在右侧「值班」页签查看：
+  - **当前值班**：按所选相机区域解析（`GET /api/duty/current?area_id=`），展示值班组与值班人员（当前用户高亮）。
+  - **值班组列表**：名称、负责区域、值班人员、启用状态与更新时间；operator/viewer 只读。
+- admin 可在同一页签内新建/编辑/删除值班组（名称、区域多选（`GET /api/areas`）、值班人员勾选、启用开关），删除为两步确认；保存/删除后自动刷新当前值班解析。
+- 值班解析规则：优先匹配包含相机区域且启用的值班组，其次使用 `areas=[]` 的全局兜底组；无匹配时升级不自动派单。
+- 升级设置新增 `auto_dispatch`：开启后告警升级时按相机区域解析值班组并自动创建紧急工单（`status=open`、`priority=urgent`、`assignee=<值班组名>`、`note=系统自动派单（告警升级）`）。前端通过 WS `order_updated` 收到新工单时提示「系统自动派单：<值班组>」并出现在「工单」页签。
+
+### 通知可靠性与审计（P4）
+
+- 通知设置新增：`max_attempts`（1–5，含首次）、`backoff_seconds`（指数退避基数，≥0）、`silence_seconds`（同相机+类型+严重级别静默窗口 0–3600s）。
+- 「审计 → 通知投递」展示每条记录的 `attempts`（实际尝试次数，如“尝试 2 次”）。
+- 相关指标由后端 `/metrics` 暴露（`dsh_twin_notifications_*`、`dsh_twin_escalations_total`、`dsh_twin_orders_total`、`dsh_twin_duty_dispatches_total`、`dsh_twin_duty_skipped_total`）。
+
 ## 后端契约（前端实际调用）
 
 | 方法 | 路径 | 角色 | 用途 |
@@ -134,7 +150,11 @@ pnpm dev          # http://127.0.0.1:5173
 | GET/PUT | `/api/settings/notifications` | admin | 通知（Webhook）设置 |
 | GET/PUT | `/api/settings/escalation` | admin | 告警升级设置 |
 | GET | `/api/audit?limit=100` | admin | 操作审计 |
-| GET | `/api/notifications?limit=50` | admin | 通知投递记录 |
+| GET | `/api/notifications?limit=50` | admin | 通知投递记录（含 `attempts`） |
+| GET | `/api/areas` | 已登录 | 区域列表（值班组区域多选） |
+| GET | `/api/duty/groups` | 已登录 | 值班组列表 |
+| POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删 |
+| GET | `/api/duty/current?area_id=` | 已登录 | 区域当前值班组 |
 | WS | `/ws?token=` | 已登录 | `hello/event/event_updated/camera_status/track_point/order_updated/stats` |
 
 ## 坐标与渲染约定
@@ -160,13 +180,15 @@ apps/web/
    │  ├─ auth.ts                 # 登录/会话/角色权限矩阵/区域判定
    │  ├─ twin.ts                 # 相机/事件/轨迹/统计/工单/选择状态（含升级 Toast）
    │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递记录
+   │  ├─ duty.ts                 # P4 值班组 / 区域当前值班解析
    │  └─ ui.ts                   # Toast 队列
    ├─ components/
    │  ├─ LoginView.vue / ToastHost.vue / TopBar.vue / OfflineBanner.vue
    │  ├─ CameraDetail.vue / CameraVideo.vue / CalibrationDialog.vue / CameraRulesPanel.vue
    │  ├─ EventFeed.vue / EventDetail.vue / StatsPanel.vue / OrdersPanel.vue
    │  ├─ SettingsPanel.vue       # P3 通知/升级设置（admin）
-   │  ├─ AuditPanel.vue          # P3 操作审计 + 通知投递（admin）
+   │  ├─ AuditPanel.vue          # P3 操作审计 + 通知投递（admin，P4 显示 attempts）
+   │  ├─ DutyPanel.vue           # P4 值班组（admin 增改删；其他角色只读）
    │  └─ （其余见代码）
    ├─ scene/                     # TwinScene + 环境/相机标记/事件标记/轨迹/坐标/资源释放
    └─ styles/main.css            # 深蓝指挥中心风格（1280–1920）
@@ -187,7 +209,8 @@ apps/web/
 | 告警升级 | **实时**：服务端升级 worker + WS `event_updated`（`escalated_at`） |
 | 通知设置 / 投递记录 | **实时**：`/api/settings/notifications`、`/api/notifications`；投递需要可达的 Webhook 接收端 |
 | 升级设置 | **实时**：`/api/settings/escalation` |
-| 操作审计 | **实时**：`/api/audit` |
+| 操作审计 | **实时**：`/api/audit`（含 `duty.*`、`order.auto_dispatch*`） |
+| 值班组 / 自动派单 | **实时**：`/api/duty/*` + 升级设置 `auto_dispatch` + WS `order_updated` |
 | AI 推理 | **未接入**，由 `services/simulator` 按 `/api/ingest/detections` 契约模拟 |
 
 ## 验证方式
@@ -221,6 +244,18 @@ OP_TOKEN=$(curl -s -X POST http://localhost:5173/api/auth/login -H 'Content-Type
 curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $OP_TOKEN" http://localhost:5173/api/settings/escalation
 curl -s -H "Authorization: Bearer $OP_TOKEN" http://localhost:5173/api/cameras | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["items"]))'
 
+# P4：值班组与自动派单
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/areas
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/duty/groups
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:5173/api/duty/current?area_id=area_gate"
+# admin 创建值班组（operator 只读）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"东门值班组","areas":["area_gate"],"operators":["operator"],"active":true}' \
+  http://localhost:5173/api/duty/groups
+# 通知可靠性字段
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
 # 升级链路手工验证：把 after_seconds 设为 0 并注入一条 critical 检测，等待 ≤15s
 # curl -X PUT .../api/settings/escalation -d '{"enabled":true,"after_seconds":0,"severities":["critical"]}'
 # curl -X POST .../api/ingest/detections -d '{"camera_code":"CAM-001","detections":[{"class":"smoke","confidence":0.9}]}'
@@ -246,3 +281,5 @@ curl -s -H "Authorization: Bearer $OP_TOKEN" http://localhost:5173/api/cameras |
 - P2 不做多租户/权限管理后台/审批流；这些留在后续阶段。
 - P3 通知投递依赖可达的 Webhook 接收端（默认示例 `http://127.0.0.1:8099/hook`），失败会记入通知投递记录；升级 worker 扫描周期 15 s，前端不提供手动升级入口。
 - 已升级事件的 `escalated_at` 由服务端写入后不可撤销（P3 契约），仅用于展示与通知。
+- 值班人员勾选目前使用 P4 种子用户（`admin/operator/viewer`）；后端校验必须是已知用户名，新增用户后需同步前端列表。
+- 自动派单依赖升级设置 `enabled + auto_dispatch` 与区域/全局值班组；无匹配值班组时后端审计 `order.auto_dispatch_skipped`，前端不显示工单。

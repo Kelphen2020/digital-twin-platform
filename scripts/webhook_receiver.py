@@ -12,11 +12,16 @@ demos) to prove that the backend delivers notification webhooks:
 3. Prints a ready line to stdout once listening (smoke polls ``GET /health``
    or reads this line) and exits cleanly on Ctrl-C / SIGTERM.
 
+``--fail-first N`` answers the first N POSTs with HTTP 500 (still recording them
+in the JSONL log) and 200 afterwards, so notification retry/backoff behaviour
+(P4.0) can be tested deterministically.
+
 Only intended for local demos/tests.
 
 Examples::
 
     python3 scripts/webhook_receiver.py --port 8099 --out /tmp/webhook.log
+    python3 scripts/webhook_receiver.py --port 8099 --out /tmp/webhook.log --fail-first 2
     curl -s http://127.0.0.1:8099/health
     tail -n 3 /tmp/webhook.log
 
@@ -90,7 +95,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/health":
             with _lock:
                 received = _received
-            self._send_json(200, {"ok": True, "received": received, "time": utc_now_rfc3339()})
+            fail_first = int(getattr(self.server, "fail_first", 0) or 0)  # type: ignore[attr-defined]
+            self._send_json(200, {
+                "ok": True,
+                "received": received,
+                "failed": min(received, fail_first),
+                "fail_first": fail_first,
+                "time": utc_now_rfc3339(),
+            })
             return
         self._send_json(404, {"error": "not_found"})
 
@@ -107,18 +119,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         except ValueError:
             body = text
 
-        record = {
-            "at": utc_now_rfc3339(),
-            "method": "POST",
-            "path": self.path,
-            "headers": {str(key): str(value) for key, value in self.headers.items()},
-            "body": body,
-        }
-        line = json.dumps(record, ensure_ascii=False)
-
         with _lock:
             _received += 1
             received = _received
+            fail_first = int(getattr(self.server, "fail_first", 0) or 0)  # type: ignore[attr-defined]
+            status = 500 if received <= fail_first else 200
+            record = {
+                "at": utc_now_rfc3339(),
+                "method": "POST",
+                "path": self.path,
+                "status": status,
+                "headers": {str(key): str(value) for key, value in self.headers.items()},
+                "body": body,
+            }
+            line = json.dumps(record, ensure_ascii=False)
             out_path = self.server.out_path  # type: ignore[attr-defined]
             try:
                 with open(out_path, "a", encoding="utf-8") as handle:
@@ -126,8 +140,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             except OSError as exc:
                 log(f"[webhook] error: could not append to {out_path}: {exc}")
 
-        log(f"[webhook] POST {self.path} from {self.client_address[0]} -> 200 (#{received})")
-        self._send_json(200, {"ok": True, "received": received})
+        if status == 500:
+            log(f"[webhook] POST {self.path} from {self.client_address[0]} -> 500 injected failure (#{received})")
+            self._send_json(500, {"ok": False, "error": "injected_failure", "received": received})
+        else:
+            log(f"[webhook] POST {self.path} from {self.client_address[0]} -> 200 (#{received})")
+            self._send_json(200, {"ok": True, "received": received})
 
     def log_message(self, format, *args):  # noqa: A002 - silence default access log
         # Keep stderr for our own one-line-per-delivery logs.
@@ -147,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="TCP port to listen on")
     parser.add_argument("--host", default=DEFAULT_HOST, help="bind address")
     parser.add_argument("--out", default=DEFAULT_OUT, help="JSONL file to append received requests to")
+    parser.add_argument(
+        "--fail-first",
+        type=int,
+        default=0,
+        metavar="N",
+        help="answer the first N POSTs with HTTP 500 (still logged), then 200 (retry testing)",
+    )
     return parser
 
 
@@ -155,6 +180,9 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if not 1 <= args.port <= 65535:
         log(f"[webhook] error: --port must be 1-65535 (got {args.port})")
+        return 2
+    if args.fail_first < 0:
+        log(f"[webhook] error: --fail-first must be >= 0 (got {args.fail_first})")
         return 2
 
     out_path = os.path.abspath(args.out)
@@ -176,6 +204,7 @@ def main(argv=None) -> int:
 
     server = WebhookServer((args.host, args.port), WebhookHandler)
     server.out_path = out_path  # type: ignore[attr-defined]
+    server.fail_first = args.fail_first  # type: ignore[attr-defined]
 
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
@@ -183,7 +212,8 @@ def main(argv=None) -> int:
     thread = threading.Thread(target=server.serve_forever, name="webhook-receiver", daemon=True)
     thread.start()
     print(
-        f"webhook_receiver ready: http://{args.host}:{args.port} (out={out_path}, received={_received})",
+        f"webhook_receiver ready: http://{args.host}:{args.port} "
+        f"(out={out_path}, received={_received}, fail_first={args.fail_first})",
         flush=True,
     )
 

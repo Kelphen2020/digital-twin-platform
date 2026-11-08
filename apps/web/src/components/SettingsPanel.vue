@@ -12,12 +12,16 @@ const notificationForm = reactive<NotificationSettings>({
   format: 'generic',
   min_severity: 'warn',
   timeout_seconds: 5,
+  max_attempts: 3,
+  backoff_seconds: 2,
+  silence_seconds: 30,
 })
 
 const escalationForm = reactive<EscalationSettings>({
   enabled: true,
   after_seconds: 300,
   severities: ['warn', 'critical'],
+  auto_dispatch: false,
 })
 
 const notificationError = ref('')
@@ -36,7 +40,13 @@ const severityOptions = computed(() => SEVERITY_ORDER.map((severity) => ({ value
 watch(
   () => state.notificationSettings,
   (settings) => {
-    if (settings) Object.assign(notificationForm, settings)
+    if (!settings) return
+    Object.assign(notificationForm, {
+      ...settings,
+      max_attempts: settings.max_attempts ?? 3,
+      backoff_seconds: settings.backoff_seconds ?? 2,
+      silence_seconds: settings.silence_seconds ?? 30,
+    })
   },
   { immediate: true },
 )
@@ -47,6 +57,7 @@ watch(
     escalationForm.enabled = settings.enabled
     escalationForm.after_seconds = settings.after_seconds
     escalationForm.severities = [...settings.severities]
+    escalationForm.auto_dispatch = settings.auto_dispatch ?? false
   },
   { immediate: true },
 )
@@ -63,6 +74,15 @@ function validateNotifications(): string | null {
   if (url && !/^https?:\/\//i.test(url)) return 'Webhook URL 需为 http/https 地址'
   if (!Number.isFinite(notificationForm.timeout_seconds) || notificationForm.timeout_seconds < 1 || notificationForm.timeout_seconds > 30) {
     return '超时时间需在 1–30 秒之间'
+  }
+  if (!Number.isInteger(notificationForm.max_attempts) || notificationForm.max_attempts < 1 || notificationForm.max_attempts > 5) {
+    return '最大尝试次数需为 1–5 的整数'
+  }
+  if (!Number.isFinite(notificationForm.backoff_seconds) || notificationForm.backoff_seconds < 0) {
+    return '退避基数需 ≥ 0 秒'
+  }
+  if (!Number.isFinite(notificationForm.silence_seconds) || notificationForm.silence_seconds < 0 || notificationForm.silence_seconds > 3600) {
+    return '静默窗口需在 0–3600 秒之间'
   }
   return null
 }
@@ -88,6 +108,9 @@ async function submitNotifications(): Promise<void> {
     format: notificationForm.format,
     min_severity: notificationForm.min_severity,
     timeout_seconds: notificationForm.timeout_seconds,
+    max_attempts: notificationForm.max_attempts,
+    backoff_seconds: notificationForm.backoff_seconds,
+    silence_seconds: notificationForm.silence_seconds,
   })
   notificationSaved.value = ok
 }
@@ -104,6 +127,7 @@ async function submitEscalation(): Promise<void> {
     enabled: escalationForm.enabled,
     after_seconds: escalationForm.after_seconds,
     severities: [...escalationForm.severities],
+    auto_dispatch: escalationForm.auto_dispatch,
   })
   escalationSaved.value = ok
 }
@@ -165,6 +189,18 @@ onMounted(() => {
               <span>超时（秒，1–30）</span>
               <input v-model.number="notificationForm.timeout_seconds" type="number" min="1" max="30" step="1" />
             </label>
+            <label class="settings-field">
+              <span>最大尝试次数（1–5）</span>
+              <input v-model.number="notificationForm.max_attempts" type="number" min="1" max="5" step="1" />
+            </label>
+            <label class="settings-field">
+              <span>重试退避基数（秒 ≥0）</span>
+              <input v-model.number="notificationForm.backoff_seconds" type="number" min="0" step="1" />
+            </label>
+            <label class="settings-field">
+              <span>静默窗口（秒，0–3600）</span>
+              <input v-model.number="notificationForm.silence_seconds" type="number" min="0" max="3600" step="10" />
+            </label>
           </div>
 
           <p class="form-hint">新事件（严重级别 ≥ 最低级别）与告警升级都会尝试推送；投递结果见「审计 → 通知投递」。</p>
@@ -205,6 +241,11 @@ onMounted(() => {
               </label>
             </div>
           </div>
+
+          <label class="switch settings-switch">
+            <input v-model="escalationForm.auto_dispatch" type="checkbox" />
+            <span>自动派单（升级时按相机区域解析值班组并创建紧急工单）</span>
+          </label>
 
           <p class="form-hint">
             服务端每 15 秒扫描一次：满足条件的事件写入 escalated_at、WS 广播 event_updated 并触发一次升级通知，前端显示「已升级」标记。

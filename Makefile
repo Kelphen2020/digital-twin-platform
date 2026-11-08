@@ -13,7 +13,7 @@ QPS ?= 100
 DURATION ?= 5
 ARGS ?=
 
-.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web hls db-up db-down up down sim sim-status smoke load test fmt status stop
+.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web hls db-up db-down up down obs-up sim sim-status smoke load test fmt status stop
 
 help:
 	@echo "P0 targets:"
@@ -59,11 +59,17 @@ hls:
 db-up:
 	$(COMPOSE) up -d postgres
 
-db-down:
+db-obs-up:
+	$(COMPOSE) --profile obs up -d prometheus grafana
+
+down:
 	$(COMPOSE) down
 
 up:
 	$(COMPOSE) up -d --build
+
+obs-up:
+	$(COMPOSE) --profile obs up -d prometheus grafana
 
 down:
 	$(COMPOSE) down

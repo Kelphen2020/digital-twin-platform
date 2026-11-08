@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -240,6 +241,22 @@ func pbkdf2SHA256(password, salt []byte, iterations, keyLen int) []byte {
 		out = append(out, accumulated...)
 	}
 	return out[:keyLen]
+}
+
+// UserExists reports whether a seeded username is known.
+func (s *Service) UserExists(username string) bool {
+	_, ok := s.users[username]
+	return ok
+}
+
+// Users lists the seeded accounts in stable username order.
+func (s *Service) Users() []User {
+	out := make([]User, 0, len(s.users))
+	for _, account := range s.users {
+		out = append(out, account.user)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	return out
 }
 
 // Can reports whether a role holds a permission.

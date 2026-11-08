@@ -34,7 +34,18 @@
 #   400, valid PUT, a new warn event is delivered to a local
 #   scripts/webhook_receiver.py (ok=true + JSONL log contains the event id);
 #   escalation/notification settings are restored to defaults at the end.
-#   Total: 60 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0).
+#
+# P4.0 additions (docs/API_P4.md):
+#   duty groups CRUD + /api/duty/current resolution + RBAC (operator POST 403,
+#   logged-in GET allowed); auto-dispatch: escalation settings auto_dispatch
+#   with after_seconds=1 make a stale warn event on CAM-001 (area_gate) produce
+#   an order assigned to the duty group with a note containing 自动派单
+#   (audit order.auto_dispatch); notification retry: receiver --fail-first 2 +
+#   max_attempts=3/backoff_seconds=1 -> ok=true with attempts=3 and 3 POSTs in
+#   the receiver log; silence: silence_seconds=60 suppresses the second
+#   identical event (dsh_twin_notifications_suppressed_total > 0); P4 metrics;
+#   cleanup deletes the duty group and restores settings defaults.
+#   Total: 85 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0).
 #
 # Dependencies: bash, curl, python3 only.
 #
@@ -60,6 +71,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_RECEIVER_PID=""
 WS_RECEIVER_PORT=""
 WS_RECEIVER_LOG="$TMP/webhook.log"
+DUTY_GROUP_ID=""
 
 cleanup() {
   if [ -n "${WS_RECEIVER_PID:-}" ]; then
@@ -67,22 +79,44 @@ cleanup() {
     wait "$WS_RECEIVER_PID" 2>/dev/null || true
     WS_RECEIVER_PID=""
   fi
-  # Best effort: restore P3 settings defaults even if a check failed mid-way.
+  # Best effort: restore P3/P4 settings defaults even if a check failed mid-way.
   if [ -n "${admin_token:-}" ]; then
     curl -s -o /dev/null -m 3 -X PUT -H 'Content-Type: application/json' \
       -H "Authorization: Bearer $admin_token" \
-      --data '{"enabled":true,"after_seconds":300,"severities":["warn","critical"]}' \
+      --data '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' \
       "$API_BASE/api/settings/escalation" 2>/dev/null || true
     curl -s -o /dev/null -m 3 -X PUT -H 'Content-Type: application/json' \
       -H "Authorization: Bearer $admin_token" \
-      --data '{"enabled":false,"webhook_url":"","format":"generic","min_severity":"warn","timeout_seconds":5}' \
+      --data '{"enabled":false,"webhook_url":"","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":2,"silence_seconds":30}' \
       "$API_BASE/api/settings/notifications" 2>/dev/null || true
-    # CAM-005 rules may be temporarily relaxed (dedupe_seconds=0) by the
-    # escalation step; restore the P2 defaults as a safety net.
-    curl -s -o /dev/null -m 3 -X PUT -H 'Content-Type: application/json' \
-      -H "Authorization: Bearer $admin_token" \
-      --data '{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}' \
-      "$API_BASE/api/cameras/cam_005/rules" 2>/dev/null || true
+    # Camera rules may be temporarily relaxed (dedupe_seconds=0) by the
+    # escalation/silence steps; restore the P2 defaults as a safety net.
+    for iso_file in "$TMP"/iso-rules-*.json; do
+      [ -f "$iso_file" ] || continue
+      iso_id="${iso_file##*/iso-rules-}"
+      iso_id="${iso_id%.json}"
+      curl -s -o /dev/null -m 3 -X PUT -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $admin_token" \
+        --data '{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}' \
+        "$API_BASE/api/cameras/$iso_id/rules" 2>/dev/null || true
+    done
+    cleanup_cam_ids="$(python3 -c 'import json, sys
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(" ".join(str(cam.get("id")) for cam in items if isinstance(cam, dict) and cam.get("id")))' "$TMP/cameras.json" 2>/dev/null || true)"
+    [ -n "$cleanup_cam_ids" ] || cleanup_cam_ids="cam_001 cam_005 cam_006"
+    for cam_cleanup in $cleanup_cam_ids; do
+      curl -s -o /dev/null -m 3 -X PUT -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $admin_token" \
+        --data '{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}' \
+        "$API_BASE/api/cameras/$cam_cleanup/rules" 2>/dev/null || true
+    done
+    if [ -n "${DUTY_GROUP_ID:-}" ]; then
+      curl -s -o /dev/null -m 3 -X DELETE -H "Authorization: Bearer $admin_token" \
+        "$API_BASE/api/duty/groups/$DUTY_GROUP_ID" 2>/dev/null || true
+    fi
   fi
   rm -rf "$TMP"
 }
@@ -308,20 +342,22 @@ viewer_token=""
 put_notifications_disabled() {
   local code
   code="$(http_put_json "/api/settings/notifications" \
-    '{"enabled":false,"webhook_url":"","format":"generic","min_severity":"warn","timeout_seconds":5}' \
+    '{"enabled":false,"webhook_url":"","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":2,"silence_seconds":30}' \
     "$admin_token")"
   if [ "$code" != "200" ]; then
     code="$(http_put_json "/api/settings/notifications" \
-      '{"enabled":false,"webhook_url":"http://127.0.0.1:1/hook","format":"generic","min_severity":"warn","timeout_seconds":5}' \
+      '{"enabled":false,"webhook_url":"http://127.0.0.1:1/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":2,"silence_seconds":30}' \
       "$admin_token")"
   fi
   printf '%s' "$code"
 }
 
-# start_receiver -> 0 when scripts/webhook_receiver.py is listening, sets
-# WS_RECEIVER_PID/WS_RECEIVER_PORT/WS_RECEIVER_LOG. Tries up to 3 free ports.
+# start_receiver [FAIL_FIRST] -> 0 when scripts/webhook_receiver.py is
+# listening, sets WS_RECEIVER_PID/WS_RECEIVER_PORT/WS_RECEIVER_LOG. Tries up to
+# 3 free ports. FAIL_FIRST (default 0) makes the receiver answer that many POSTs
+# with 500 first (P4 retry testing).
 start_receiver() {
-  local attempt=0 port="" code="" i
+  local attempt=0 port="" code="" i fail_first="${1:-0}"
   SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   while [ "$attempt" -lt 3 ]; do
     attempt=$((attempt + 1))
@@ -333,8 +369,14 @@ sock.close()')"
     WS_RECEIVER_LOG="$TMP/webhook-$attempt.log"
     rm -f "$WS_RECEIVER_LOG"
     WS_RECEIVER_PORT="$port"
-    python3 "$SCRIPT_DIR/webhook_receiver.py" --port "$port" --out "$WS_RECEIVER_LOG" \
-      >"$TMP/receiver-$attempt.out" 2>"$TMP/receiver-$attempt.err" &
+    if [ "$fail_first" != "0" ]; then
+      python3 "$SCRIPT_DIR/webhook_receiver.py" --port "$port" --out "$WS_RECEIVER_LOG" \
+        --fail-first "$fail_first" \
+        >"$TMP/receiver-$attempt.out" 2>"$TMP/receiver-$attempt.err" &
+    else
+      python3 "$SCRIPT_DIR/webhook_receiver.py" --port "$port" --out "$WS_RECEIVER_LOG" \
+        >"$TMP/receiver-$attempt.out" 2>"$TMP/receiver-$attempt.err" &
+    fi
     WS_RECEIVER_PID=$!
     code=""
     i=0
@@ -354,6 +396,155 @@ sock.close()')"
   return 1
 }
 
+http_delete() { http_do DELETE "$1" "" "${2:-}"; }
+
+# relax_camera_dedupe CAM_ID -> HTTP status of the rules PUT (dedupe_seconds=0).
+# Saves the camera's previous rules in RELAXED_CAM_RULES_FILE so they can be
+# restored right after a backdated/duplicate-ish event injection.
+RELAXED_CAM_ID=""
+RELAXED_CAM_RULES_FILE=""
+relax_camera_dedupe() {
+  local cam_id="$1" code payload
+  RELAXED_CAM_ID="$cam_id"
+  RELAXED_CAM_RULES_FILE="$TMP/rules-$cam_id.json"
+  code="$(http_get "/api/cameras/$cam_id/rules" "$admin_token")"
+  if [ "$code" != "200" ]; then
+    printf '%s' "$code"
+    return 0
+  fi
+  cp "$TMP/body.json" "$RELAXED_CAM_RULES_FILE" 2>/dev/null || true
+  payload="$(python3 - "$RELAXED_CAM_RULES_FILE" <<'PY'
+import json, sys
+try:
+    rules = json.load(open(sys.argv[1]))
+except Exception:
+    rules = {}
+if not isinstance(rules, dict):
+    rules = {}
+print(json.dumps({
+    "confidence_threshold": rules.get("confidence_threshold", 0.6),
+    "dedupe_seconds": 0,
+    "enabled_classes": rules.get("enabled_classes") or
+        ["person", "vehicle", "intrusion", "smoke", "no_helmet"],
+    "roi": rules.get("roi"),
+}))
+PY
+)"
+  code="$(http_put_json "/api/cameras/$cam_id/rules" "$payload" "$admin_token")"
+  printf '%s' "$code"
+}
+
+# restore_camera_dedupe CAM_ID -> HTTP status of the rules PUT from the backup.
+restore_camera_dedupe() {
+  local cam_id="${1:-$RELAXED_CAM_ID}" file="${2:-$RELAXED_CAM_RULES_FILE}" code payload
+  if [ -z "$cam_id" ] || [ ! -f "$file" ]; then
+    printf '000'
+    return 0
+  fi
+  payload="$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    rules = json.load(open(sys.argv[1]))
+except Exception:
+    rules = {}
+if not isinstance(rules, dict):
+    rules = {}
+print(json.dumps({
+    "confidence_threshold": rules.get("confidence_threshold", 0.6),
+    "dedupe_seconds": rules.get("dedupe_seconds", 5),
+    "enabled_classes": rules.get("enabled_classes") or
+        ["person", "vehicle", "intrusion", "smoke", "no_helmet"],
+    "roi": rules.get("roi"),
+}))
+PY
+)"
+  code="$(http_put_json "/api/cameras/$cam_id/rules" "$payload" "$admin_token")"
+  printf '%s' "$code"
+}
+
+# isolate_events: raise every camera's confidence_threshold to 0.995 for a
+# short retry/silence test window, so a concurrently running simulator cannot
+# interleave its own notifications with the controlled webhook deliveries.
+# The original per-camera rules are saved and restored afterwards (and in the
+# EXIT trap as a safety net). Event injection during the window uses
+# confidence=0.995 so smoke's own events still pass the threshold.
+ISOLATE_MARKER="$TMP/iso-rules"
+isolate_events() {
+  ISOLATE_MARKER="$TMP/iso-rules"
+  rm -f "$TMP"/iso-rules-*.json 2>/dev/null || true
+  local ids id file payload code
+  ids="$(python3 -c 'import json,sys
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(" ".join(str(cam.get("id")) for cam in items if isinstance(cam, dict) and cam.get("id")))' "$TMP/cameras.json")"
+  for id in $ids; do
+    file="$TMP/iso-rules-$id.json"
+    code="$(http_get "/api/cameras/$id/rules" "$admin_token")"
+    if [ "$code" != "200" ]; then
+      printf '      warning: could not read rules for %s (HTTP %s)\n' "$id" "${code:-none}" >&2
+      continue
+    fi
+    cp "$TMP/body.json" "$file" 2>/dev/null || true
+    payload="$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    rules = json.load(open(sys.argv[1]))
+except Exception:
+    rules = {}
+if not isinstance(rules, dict):
+    rules = {}
+print(json.dumps({
+    "confidence_threshold": 0.995,
+    "dedupe_seconds": rules.get("dedupe_seconds", 5),
+    "enabled_classes": rules.get("enabled_classes") or
+        ["person", "vehicle", "intrusion", "smoke", "no_helmet"],
+    "roi": rules.get("roi"),
+}))
+PY
+)"
+    code="$(http_put_json "/api/cameras/$id/rules" "$payload" "$admin_token")"
+    if [ "$code" != "200" ]; then
+      printf '      warning: could not isolate camera %s (HTTP %s)\n' "$id" "${code:-none}" >&2
+    fi
+  done
+  printf '      camera event traffic isolated (confidence_threshold=0.995) for retry/silence test\n'
+}
+
+# release_events: restore every camera's saved rules from isolate_events().
+release_events() {
+  local file id payload code
+  for file in "$TMP"/iso-rules-*.json; do
+    [ -f "$file" ] || continue
+    id="${file##*/iso-rules-}"
+    id="${id%.json}"
+    payload="$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    rules = json.load(open(sys.argv[1]))
+except Exception:
+    rules = {}
+if not isinstance(rules, dict):
+    rules = {}
+print(json.dumps({
+    "confidence_threshold": rules.get("confidence_threshold", 0.6),
+    "dedupe_seconds": rules.get("dedupe_seconds", 5),
+    "enabled_classes": rules.get("enabled_classes") or
+        ["person", "vehicle", "intrusion", "smoke", "no_helmet"],
+    "roi": rules.get("roi"),
+}))
+PY
+)"
+    code="$(http_put_json "/api/cameras/$id/rules" "$payload" "$admin_token")"
+    if [ "$code" != "200" ]; then
+      printf '      warning: could not restore rules for %s (HTTP %s)\n' "$id" "${code:-none}" >&2
+    fi
+  done
+  rm -f "$TMP"/iso-rules-*.json 2>/dev/null || true
+  printf '      camera event traffic restored\n'
+}
+
 printf 'smoke target: %s\n' "$API_BASE"
 printf 'auth:        P2 AUTH_MODE=on expected (admin/operator/viewer seeded users)\n'
 if [ -n "$INGEST_TOKEN" ]; then
@@ -365,7 +556,7 @@ fi
 # ===========================================================================
 # 1. health (exempt from auth, retry briefly while the API starts)
 # ===========================================================================
-step "1/23 health"
+step "1/28 health"
 health_code=""
 attempt=0
 while [ "$attempt" -lt 5 ]; do
@@ -399,7 +590,7 @@ fi
 # ===========================================================================
 # 2. P2 auth: unauthenticated 401, admin login, GET /api/auth/me
 # ===========================================================================
-step "2/23 auth (P2: no-token 401, login, /api/auth/me)"
+step "2/28 auth (P2: no-token 401, login, /api/auth/me)"
 noauth_code="$(http_get "/api/cameras")"
 if [ "$noauth_code" = "401" ]; then
   noauth_error="$(python3 -c 'import json,sys
@@ -441,7 +632,7 @@ fi
 # ===========================================================================
 # 3. camera inventory: >= 1 camera and the six seeded codes CAM-001..CAM-006
 # ===========================================================================
-step "3/23 cameras"
+step "3/28 cameras"
 cameras_code="$(http_get "/api/cameras" "$admin_token")"
 if [ "$cameras_code" != "200" ]; then
   fail "GET /api/cameras -> HTTP ${cameras_code:-none}"
@@ -488,6 +679,7 @@ cam1_id="$(camera_id_for CAM-001)"
 cam2_id="$(camera_id_for CAM-002)"
 cam3_id="$(camera_id_for CAM-003)"
 cam5_id="$(camera_id_for CAM-005)"
+cam6_id="$(camera_id_for CAM-006)"
 world_json="$(camera_world_ahead CAM-001 30)"
 if [ -z "$world_json" ]; then
   world_json='{"x": 0.0, "y": 0.0, "z": 0.0}'
@@ -496,7 +688,7 @@ fi
 # ===========================================================================
 # 4. ingest one high-confidence person detection for CAM-001 (token-free)
 # ===========================================================================
-step "4/23 ingest detection (P0, token-free machine entry)"
+step "4/28 ingest detection (P0, token-free machine entry)"
 ingest_code=""
 event_id=""
 ingest_attempt=0
@@ -541,7 +733,7 @@ fi
 # ===========================================================================
 # 5. poll GET /api/events?limit=20 until the event is visible (<= 5 s)
 # ===========================================================================
-step "5/23 event appears in /api/events (<= 5s)"
+step "5/28 event appears in /api/events (<= 5s)"
 found_id=""
 attempt=0
 while [ "$attempt" -lt 10 ]; do
@@ -599,7 +791,7 @@ fi
 # ===========================================================================
 # 6. ack the event (admin token; operator RBAC is covered in step 15)
 # ===========================================================================
-step "6/23 ack event (P0)"
+step "6/28 ack event (P0)"
 if [ -n "$found_id" ]; then
   ack_code="$(http_post_json "/api/events/$found_id/ack" '{}' "$admin_token")"
   if python3 - "$TMP/body.json" "$ack_code" <<'PY'
@@ -627,7 +819,7 @@ fi
 # ===========================================================================
 # 7. /metrics exposes the required counters (auth-exempt)
 # ===========================================================================
-step "7/23 metrics"
+step "7/28 metrics"
 metrics_code="$(curl -s -o "$TMP/metrics.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_code" != "200" ]; then
   fail "GET /metrics -> HTTP ${metrics_code:-none}"
@@ -649,7 +841,7 @@ fi
 # ===========================================================================
 # 8. P1.0 calibration: solve -> PUT -> GET camera shows calibration (admin)
 # ===========================================================================
-step "8/23 calibration (P1: solve -> PUT -> GET camera, admin)"
+step "8/28 calibration (P1: solve -> PUT -> GET camera, admin)"
 solve_payload='{"camera_id":"cam_001","points":[{"px":320,"py":800,"x":-84.0,"y":-30.0},{"px":1600,"py":800,"x":-20.0,"y":-30.0},{"px":320,"py":280,"x":-84.0,"y":-56.0},{"px":1600,"py":280,"x":-20.0,"y":-56.0},{"px":960,"py":540,"x":-52.0,"y":-43.0}]}'
 if [ -n "$cam1_id" ]; then
   solve_payload="$(python3 - "$TMP/cameras.json" <<'PY'
@@ -776,7 +968,7 @@ fi
 # ===========================================================================
 # 9. P1.0 tracks: ingest a detection with track_id -> GET /api/tracks returns it
 # ===========================================================================
-step "9/23 tracks (P1: ingest with track_id -> GET /api/tracks)"
+step "9/28 tracks (P1: ingest with track_id -> GET /api/tracks)"
 track_id="trk-smoke-$(python3 -c 'import time; print(int(time.time() * 1000))')"
 track_payload="$(printf '{"camera_code":"CAM-001","detections":[{"class":"person","confidence":0.77,"bbox":[0.40,0.30,0.60,0.80],"track_id":"%s","world":%s}]}' "$track_id" "$world_json")"
 track_ingest_code="$(http_post_json "/api/ingest/detections" "$track_payload")"
@@ -828,7 +1020,7 @@ fi
 # ===========================================================================
 # 10. P1.0 workflow: create event -> GET detail with empty actions
 # ===========================================================================
-step "10/23 event workflow (P1: create -> detail actions empty)"
+step "10/28 event workflow (P1: create -> detail actions empty)"
 wf_event_id=""
 attempt=0
 while [ "$attempt" -lt 3 ] && [ -z "$wf_event_id" ]; do
@@ -881,7 +1073,7 @@ fi
 # ===========================================================================
 # 11. P1.0 workflow: dispatch (no status change) then close
 # ===========================================================================
-step "11/23 event workflow (P1: dispatch -> close)"
+step "11/28 event workflow (P1: dispatch -> close)"
 if [ -n "$wf_event_id" ]; then
   dispatch_code="$(http_post_json "/api/events/$wf_event_id/dispatch" '{"target":"安保A组","note":"请5分钟内到场"}' "$admin_token")"
 else
@@ -935,7 +1127,7 @@ fi
 # ===========================================================================
 # 12. P1.0 workflow: event detail now lists the dispatch + close actions
 # ===========================================================================
-step "12/23 event detail shows actions (P1)"
+step "12/28 event detail shows actions (P1)"
 if [ -n "$wf_event_id" ]; then
   wf_detail2_code="$(http_get "/api/events/$wf_event_id" "$admin_token")"
 else
@@ -975,7 +1167,7 @@ fi
 # ===========================================================================
 # 13. P1.0 audit log records the write operations
 # ===========================================================================
-step "13/23 audit (P1)"
+step "13/28 audit (P1)"
 audit_code="$(http_get '/api/audit?limit=100' "$admin_token")"
 if python3 - "$TMP/body.json" "$audit_code" <<'PY'
 import json, sys
@@ -1002,7 +1194,7 @@ fi
 # ===========================================================================
 # 14. P1.0 stats summary + events CSV export
 # ===========================================================================
-step "14/23 stats (P1: summary + events.csv)"
+step "14/28 stats (P1: summary + events.csv)"
 summary_code="$(http_get '/api/stats/summary' "$admin_token")"
 if python3 - "$TMP/body.json" "$summary_code" <<'PY'
 import json, sys
@@ -1046,7 +1238,7 @@ fi
 # ===========================================================================
 # 15. P2.0 RBAC: viewer read-only, operator ack; prepare event for orders
 # ===========================================================================
-step "15/23 RBAC (P2: viewer read-only, operator ack)"
+step "15/28 RBAC (P2: viewer read-only, operator ack)"
 read -r viewer_login_code viewer_token < <(login_user viewer 'Viewer@123')
 read -r operator_login_code operator_token < <(login_user operator 'Operator@123')
 printf '      logins: viewer=%s operator=%s\n' "$viewer_login_code" "$operator_login_code"
@@ -1120,7 +1312,7 @@ fi
 # ===========================================================================
 # 16. P2.0 orders: create -> processing -> done (closed_at) -> GET
 # ===========================================================================
-step "16/23 orders (P2: create -> processing -> done -> GET)"
+step "16/28 orders (P2: create -> processing -> done -> GET)"
 order_id=""
 if [ -n "$rbac_event_id" ]; then
   order_payload="$(printf '{"event_id":"%s","title":"人员入侵 · 测试工单","priority":"high","assignee":"安保A组","note":"5分钟内到场"}' "$rbac_event_id")"
@@ -1217,7 +1409,7 @@ fi
 # ===========================================================================
 # 17. P2.0 camera rules (admin): high threshold suppresses events, restore
 # ===========================================================================
-step "17/23 camera rules (P2: confidence_threshold effect, restore defaults)"
+step "17/28 camera rules (P2: confidence_threshold effect, restore defaults)"
 rules_high='{"confidence_threshold":0.99,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]}'
 rules_default='{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}'
 if [ -n "$cam1_id" ]; then
@@ -1307,7 +1499,7 @@ fi
 # ===========================================================================
 # 18. P2.0 operator camera scope + audit of P2 write operations
 # ===========================================================================
-step "18/23 operator camera scope + P2 audit"
+step "18/28 operator camera scope + P2 audit"
 if [ -n "$cam2_id" ]; then
   scope_out_code="$(http_patch_json "/api/cameras/$cam2_id" '{"status":"degraded"}' "$operator_token")"
 else
@@ -1385,7 +1577,7 @@ fi
 # ===========================================================================
 # 19. P3.0 data-level filtering (operator scoped reads, admin-only lists)
 # ===========================================================================
-step "19/23 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
+step "19/28 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
 
 op_cams_code="$(http_get "/api/cameras" "$operator_token")"
 op_cams=""
@@ -1505,16 +1697,16 @@ fi
 # ===========================================================================
 # 20. P3.0 escalation settings (admin): baseline reset, PUT, GET reflects
 # ===========================================================================
-step "20/23 escalation settings (P3: PUT -> GET reflects)"
+step "20/28 escalation settings (P3: PUT -> GET reflects)"
 # Baseline reset so an interrupted previous run cannot affect the checks.
 http_put_json "/api/settings/escalation" \
-  '{"enabled":true,"after_seconds":300,"severities":["warn","critical"]}' "$admin_token" >/dev/null
+  '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token" >/dev/null
 printf '      baseline: escalation defaults (enabled=true, after_seconds=300)\n'
 put_notifications_disabled >/dev/null
 printf '      baseline: notifications disabled\n'
 
 esc_put_code="$(http_put_json "/api/settings/escalation" \
-  '{"enabled":true,"after_seconds":1,"severities":["warn","critical"]}' "$admin_token")"
+  '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token")"
 if python3 - "$TMP/body.json" "$esc_put_code" <<'PY'
 import json, sys
 if len(sys.argv) < 3 or sys.argv[2] != "200":
@@ -1556,7 +1748,7 @@ fi
 # ===========================================================================
 # 21. P3.0 escalation effect: stale warn event gets escalated_at (<= 25 s)
 # ===========================================================================
-step "21/23 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
+step "21/28 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
 # The stale event must carry occurred_at = now-10s, but the normal 5 s dedupe
 # window compares that timestamp against the last event for the same
 # camera+class: a concurrently running simulator could make a backdated event
@@ -1643,6 +1835,13 @@ escalation_started="$(python3 -c 'import time; print(time.time())')"
 attempt=0
 while [ "$attempt" -lt 50 ] && [ -z "$escalated_at" ]; do
   attempt=$((attempt + 1))
+  # Shared demo environments may have other actors flipping the settings; keep
+  # re-applying the fast escalation configuration while we wait.
+  if [ "$attempt" -gt 1 ] && [ $((attempt % 10)) -eq 0 ]; then
+    http_put_json "/api/settings/escalation" \
+      '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}' \
+      "$admin_token" >/dev/null
+  fi
   if [ -n "$esc_event_id" ]; then
     esc_detail_code="$(http_get "/api/events/$esc_event_id" "$admin_token")"
   else
@@ -1704,7 +1903,7 @@ fi
 # ===========================================================================
 # 22. P3.0 notifications + webhook delivery (local receiver)
 # ===========================================================================
-step "22/23 notifications + webhook (P3: invalid URL 400, delivery ok)"
+step "22/28 notifications + webhook (P3: invalid URL 400, delivery ok)"
 if start_receiver; then
   pass "webhook receiver listening on http://127.0.0.1:$WS_RECEIVER_PORT (log=$WS_RECEIVER_LOG)"
 else
@@ -1721,7 +1920,7 @@ else
 fi
 
 notif_url="http://127.0.0.1:${WS_RECEIVER_PORT}/hook"
-notif_payload="$(printf '{"enabled":true,"webhook_url":"%s","format":"generic","min_severity":"warn","timeout_seconds":5}' "$notif_url")"
+notif_payload="$(printf '{"enabled":true,"webhook_url":"%s","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":2,"silence_seconds":30}' "$notif_url")"
 notif_put_code="$(http_put_json "/api/settings/notifications" "$notif_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$notif_put_code" "$notif_url" <<'PY'
 import json, sys
@@ -1860,9 +2059,9 @@ fi
 # ===========================================================================
 # 23. P3.0 restore defaults + receiver cleanup
 # ===========================================================================
-step "23/23 restore P3 defaults + receiver cleanup"
+step "23/28 restore P3 defaults + receiver cleanup"
 restore_esc_code="$(http_put_json "/api/settings/escalation" \
-  '{"enabled":true,"after_seconds":300,"severities":["warn","critical"]}' "$admin_token")"
+  '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token")"
 if python3 - "$TMP/body.json" "$restore_esc_code" <<'PY'
 import json, sys
 if len(sys.argv) < 3 or sys.argv[2] != "200":
@@ -1919,6 +2118,829 @@ if [ -n "$WS_RECEIVER_PID" ]; then
   kill -TERM "$WS_RECEIVER_PID" 2>/dev/null || true
   wait "$WS_RECEIVER_PID" 2>/dev/null || true
   printf '      webhook receiver stopped (pid %s, exit=%s)\n' "$WS_RECEIVER_PID" "$?"
+  WS_RECEIVER_PID=""
+fi
+
+# ===========================================================================
+# 24. P4.0 duty groups: CRUD + /api/duty/current + RBAC
+# ===========================================================================
+step "24/28 duty groups (P4: CRUD + /api/duty/current + RBAC)"
+duty_group_name="东门值班组"
+duty_group_payload='{"name":"东门值班组","areas":["area_gate","area_parking"],"operators":["operator"],"active":true}'
+
+duty_create_code="$(http_post_json "/api/duty/groups" "$duty_group_payload" "$admin_token")"
+if python3 - "$TMP/body.json" "$duty_create_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "201":
+    sys.exit(1)
+try:
+    group = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(group, dict):
+    sys.exit(1)
+areas = group.get("areas") or []
+operators = group.get("operators") or []
+ok = group.get("name") == "东门值班组" and group.get("active") is True
+ok = ok and "area_gate" in areas and "area_parking" in areas and "operator" in operators
+sys.exit(0 if ok else 1)
+PY
+then
+  DUTY_GROUP_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id") or "")' "$TMP/body.json")"
+  pass "admin POST /api/duty/groups -> 201 id=$DUTY_GROUP_ID (areas gate+parking, operator)"
+else
+  fail "admin POST /api/duty/groups failed (HTTP ${duty_create_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+duty_list_code="$(http_get "/api/duty/groups" "$admin_token")"
+if python3 - "$TMP/body.json" "$duty_list_code" "$DUTY_GROUP_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(isinstance(g, dict) and g.get("id") == sys.argv[3] for g in items) else 1)
+PY
+then
+  pass "GET /api/duty/groups contains the new group"
+else
+  fail "GET /api/duty/groups missing the new group (HTTP ${duty_list_code:-none})"
+fi
+
+duty_current_code="$(http_get "/api/duty/current?area_id=area_gate" "$admin_token")"
+# Other actors may create additional area_gate duty groups in the shared demo
+# environment, so only require that *a* valid active group (with its operators)
+# is resolved -- not specifically the group created above.
+resolved_duty_group="$(python3 - "$TMP/body.json" "$duty_current_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+group = data.get("group") if isinstance(data, dict) else None
+operators = data.get("operators") if isinstance(data, dict) else None
+group_operators = group.get("operators") if isinstance(group, dict) else None
+ok = isinstance(group, dict) and bool(group.get("id")) and group.get("active") is True
+ok = ok and isinstance(operators, list) and operators == group_operators
+if not ok:
+    sys.exit(1)
+print(json.dumps({"id": group.get("id"), "name": group.get("name"), "operators": operators}))
+PY
+)"
+if [ -n "$resolved_duty_group" ]; then
+  pass "GET /api/duty/current?area_id=area_gate resolves a group: $resolved_duty_group"
+else
+  fail "GET /api/duty/current?area_id=area_gate did not resolve a valid group (HTTP ${duty_current_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+if [ -n "$DUTY_GROUP_ID" ]; then
+  duty_patch_code="$(http_patch_json "/api/duty/groups/$DUTY_GROUP_ID" '{"active":false}' "$admin_token")"
+else
+  duty_patch_code="000"
+fi
+if python3 - "$TMP/body.json" "$duty_patch_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    group = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(group, dict) and group.get("active") is False else 1)
+PY
+then
+  pass "admin PATCH duty group active=false -> 200"
+else
+  fail "admin PATCH duty group active=false failed (HTTP ${duty_patch_code:-none})"
+fi
+# Re-activate for the auto-dispatch test (not counted as a check).
+if [ -n "$DUTY_GROUP_ID" ]; then
+  duty_reactivate_code="$(http_patch_json "/api/duty/groups/$DUTY_GROUP_ID" '{"active":true}' "$admin_token")"
+  [ "$duty_reactivate_code" = "200" ] || printf '      warning: could not re-activate duty group (HTTP %s)\n' "${duty_reactivate_code:-none}" >&2
+fi
+
+op_duty_get_code="$(http_get "/api/duty/groups" "$operator_token")"
+if [ "$op_duty_get_code" = "200" ]; then
+  pass "operator GET /api/duty/groups -> 200 (logged-in users can read)"
+else
+  fail "operator GET /api/duty/groups -> HTTP ${op_duty_get_code:-none} (expected 200)"
+fi
+
+op_duty_post_code="$(http_post_json "/api/duty/groups" "$duty_group_payload" "$operator_token")"
+if [ "$op_duty_post_code" = "403" ]; then
+  pass "operator POST /api/duty/groups -> 403 forbidden (admin only)"
+else
+  fail "operator POST /api/duty/groups -> HTTP ${op_duty_post_code:-none} (expected 403)"
+fi
+
+if [ -n "$DUTY_GROUP_ID" ]; then
+  duty_del_code="$(http_delete "/api/duty/groups/$DUTY_GROUP_ID" "$admin_token")"
+else
+  duty_del_code="000"
+fi
+if [ "$duty_del_code" = "204" ]; then
+  pass "admin DELETE /api/duty/groups/$DUTY_GROUP_ID -> 204"
+  DUTY_GROUP_ID=""
+else
+  fail "admin DELETE duty group -> HTTP ${duty_del_code:-none} (expected 204)"
+fi
+
+# Re-create the group for the auto-dispatch test.
+recreate_code="$(http_post_json "/api/duty/groups" "$duty_group_payload" "$admin_token")"
+if [ "$recreate_code" = "201" ]; then
+  DUTY_GROUP_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id") or "")' "$TMP/body.json")"
+  pass "duty group re-created for auto-dispatch test (id=$DUTY_GROUP_ID)"
+else
+  fail "could not re-create the duty group (HTTP ${recreate_code:-none})"
+fi
+
+# ===========================================================================
+# 25. P4.0 auto-dispatch: escalation -> duty-group order
+# ===========================================================================
+step "25/28 auto-dispatch (P4: escalation creates order for duty group)"
+auto_esc_payload='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}'
+auto_esc_code="$(http_put_json "/api/settings/escalation" "$auto_esc_payload" "$admin_token")"
+if python3 - "$TMP/body.json" "$auto_esc_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(settings, dict) and settings.get("auto_dispatch") is True else 1)
+PY
+then
+  pass "admin PUT escalation {after_seconds:1, auto_dispatch:true} -> 200"
+else
+  fail "admin PUT escalation auto_dispatch settings failed (HTTP ${auto_esc_code:-none})"
+fi
+
+# Resolve the duty group that currently serves area_gate (other actors may have
+# created additional groups in the shared demo environment).
+auto_resolved_name=""
+auto_cur_code="$(http_get "/api/duty/current?area_id=area_gate" "$admin_token")"
+if [ "$auto_cur_code" = "200" ]; then
+  auto_resolved_name="$(python3 - "$TMP/body.json" <<'PY'
+import json, sys
+try:
+    group = json.load(open(sys.argv[1])).get("group") or {}
+except Exception:
+    group = {}
+print(group.get("name") or "")
+PY
+)"
+fi
+[ -n "$auto_resolved_name" ] || auto_resolved_name="$duty_group_name"
+printf '      duty group resolved for area_gate: %s\n' "$auto_resolved_name"
+
+# Backdated warn event on CAM-001 (area_gate). Disable the camera's dedupe
+# window for the injection so the ts=now-10s event cannot be swallowed.
+cam1_relax_code="$(relax_camera_dedupe "$cam1_id")"
+[ "$cam1_relax_code" = "200" ] || printf '      warning: could not relax CAM-001 dedupe (HTTP %s); continuing\n' "${cam1_relax_code:-none}" >&2
+auto_stale_ts="$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat(timespec="milliseconds").replace("+00:00", "Z"))')"
+auto_event_id=""
+attempt=0
+while [ "$attempt" -lt 3 ] && [ -z "$auto_event_id" ]; do
+  attempt=$((attempt + 1))
+  auto_payload="$(printf '{"camera_code":"CAM-001","ts":"%s","detections":[{"class":"intrusion","confidence":0.93,"bbox":[0.40,0.30,0.60,0.80]}]}' "$auto_stale_ts")"
+  auto_ingest_code="$(http_post_json "/api/ingest/detections" "$auto_payload")"
+  if [ "$auto_ingest_code" = "200" ] || [ "$auto_ingest_code" = "202" ]; then
+    auto_event_id="$(first_event_id)"
+  fi
+  if [ -z "$auto_event_id" ]; then
+    auto_stale_ts="$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat(timespec="milliseconds").replace("+00:00", "Z"))')"
+    sleep 5.2
+  fi
+done
+restore_camera_dedupe "$cam1_id" >/dev/null
+printf '      stale warn event for auto-dispatch: %s (CAM-001/area_gate)\n' "${auto_event_id:-<none>}"
+
+auto_order=""
+attempt=0
+while [ "$attempt" -lt 60 ] && [ -z "$auto_order" ]; do
+  attempt=$((attempt + 1))
+  # Keep the fast auto-dispatch escalation settings applied in case another
+  # actor changed them while we wait (shared demo backend).
+  if [ "$attempt" -gt 1 ] && [ $((attempt % 10)) -eq 0 ]; then
+    http_put_json "/api/settings/escalation" \
+      '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}' \
+      "$admin_token" >/dev/null
+  fi
+  auto_orders_code="$(http_get "/api/orders?limit=100" "$admin_token")"
+  if [ "$auto_orders_code" = "200" ]; then
+    auto_order="$(python3 - "$TMP/body.json" "$auto_event_id" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    sys.exit(0)
+items = data.get("items") or []
+for order in items:
+    if not isinstance(order, dict) or order.get("event_id") != sys.argv[2]:
+        continue
+    note = str(order.get("note") or "")
+    if "自动派单" in note:
+        print(json.dumps({
+            "id": order.get("id"),
+            "status": order.get("status"),
+            "priority": order.get("priority"),
+            "assignee": order.get("assignee"),
+            "note": note,
+        }))
+        sys.exit(0)
+print("")
+PY
+)"
+  fi
+  if [ -n "$auto_order" ]; then
+    break
+  fi
+  sleep 0.5
+done
+
+auto_group_names=""
+if [ -n "$auto_order" ]; then
+  auto_groups_code="$(http_get "/api/duty/groups" "$admin_token")"
+  if [ "$auto_groups_code" = "200" ]; then
+    auto_group_names="$(python3 - "$TMP/body.json" <<'PY'
+import json, sys
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print("|".join(str(g.get("name") or "") for g in items if isinstance(g, dict)))
+PY
+)"
+  fi
+fi
+if python3 - "$auto_order" "$auto_group_names" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or not sys.argv[1].strip():
+    sys.exit(1)
+try:
+    order = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+names = {name for name in sys.argv[2].split("|") if name}
+note = str(order.get("note") or "")
+ok = "自动派单" in note and order.get("assignee") in names
+sys.exit(0 if ok else 1)
+PY
+then
+  pass "escalation auto-dispatch -> order $auto_order (assignee is a duty group name)"
+else
+  fail "no auto-dispatched order assigned to a duty group (event=$auto_event_id, order=${auto_order:-<none>}, groups=${auto_group_names:-<none>}) within 30s"
+fi
+
+auto_audit_code="$(http_get '/api/audit?limit=300' "$admin_token")"
+if python3 - "$TMP/body.json" "$auto_audit_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    sys.exit(1)
+for item in items:
+    if isinstance(item, dict) and item.get("action") == "order.auto_dispatch":
+        print(json.dumps({"actor": item.get("actor"), "resource": item.get("resource")}))
+        sys.exit(0)
+sys.exit(1)
+PY
+then
+  auto_audit_actor="$(python3 -c 'import json,sys
+try:
+    for item in json.load(open(sys.argv[1])).get("items") or []:
+        if item.get("action") == "order.auto_dispatch":
+            print(item.get("actor") or "")
+            break
+except Exception:
+    pass' "$TMP/body.json")"
+  pass "GET /api/audit contains order.auto_dispatch (actor=$auto_audit_actor)"
+else
+  fail "audit missing order.auto_dispatch (HTTP ${auto_audit_code:-none})"
+fi
+
+restore_auto_code="$(http_put_json "/api/settings/escalation" \
+  '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token")"
+if python3 - "$TMP/body.json" "$restore_auto_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = isinstance(settings, dict) and settings.get("after_seconds") == 300
+ok = ok and settings.get("auto_dispatch") is True
+sys.exit(0 if ok else 1)
+PY
+then
+  pass "escalation defaults restored (after_seconds=300, auto_dispatch=true)"
+else
+  fail "could not restore escalation defaults (HTTP ${restore_auto_code:-none})"
+fi
+
+# ===========================================================================
+# 26. P4.0 notification retry: receiver --fail-first 2, max_attempts=3
+# ===========================================================================
+step "26/28 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
+# Keep other event traffic out of the retry/silence checks (shared demo env may
+# run the simulator concurrently); restored at the end of step 27.
+isolate_events
+if start_receiver 2; then
+  pass "webhook receiver listening with --fail-first 2 (port=$WS_RECEIVER_PORT)"
+else
+  fail "could not start scripts/webhook_receiver.py --fail-first 2"
+fi
+
+retry_notif_payload="$(printf '{"enabled":true,"webhook_url":"http://127.0.0.1:%s/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":1,"silence_seconds":0}' "$WS_RECEIVER_PORT")"
+retry_put_code="$(http_put_json "/api/settings/notifications" "$retry_notif_payload" "$admin_token")"
+if python3 - "$TMP/body.json" "$retry_put_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = isinstance(settings, dict) and settings.get("enabled") is True
+ok = ok and settings.get("max_attempts") == 3 and settings.get("backoff_seconds") == 1
+ok = ok and settings.get("silence_seconds") == 0
+sys.exit(0 if ok else 1)
+PY
+then
+  pass "admin PUT notifications max_attempts=3 backoff_seconds=1 -> 200"
+else
+  fail "admin PUT notification retry settings failed (HTTP ${retry_put_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+retry_event_id=""
+attempt=0
+while [ "$attempt" -lt 3 ] && [ -z "$retry_event_id" ]; do
+  attempt=$((attempt + 1))
+  wait_dedup_event CAM-005 intrusion
+  retry_payload='{"camera_code":"CAM-005","detections":[{"class":"intrusion","confidence":0.995,"bbox":[0.40,0.30,0.60,0.80]}]}'
+  retry_ingest_code="$(http_post_json "/api/ingest/detections" "$retry_payload")"
+  if [ "$retry_ingest_code" = "200" ] || [ "$retry_ingest_code" = "202" ]; then
+    retry_event_id="$(first_event_id)"
+  fi
+  if [ -z "$retry_event_id" ]; then
+    sleep 5.2
+  fi
+done
+printf '      warn event for retry test: %s (CAM-005)\n' "${retry_event_id:-<none>}"
+
+retry_delivery=""
+attempt=0
+while [ "$attempt" -lt 60 ] && [ -z "$retry_delivery" ]; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -gt 1 ] && [ $((attempt % 10)) -eq 0 ]; then
+    # Another actor may be editing settings (shared demo backend).
+    http_put_json "/api/settings/notifications" "$retry_notif_payload" "$admin_token" >/dev/null
+  fi
+  retry_list_code="$(http_get '/api/notifications?limit=100' "$admin_token")"
+  if [ "$retry_list_code" = "200" ]; then
+    retry_delivery="$(python3 - "$TMP/body.json" "$retry_event_id" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    sys.exit(0)
+for item in data.get("items") or []:
+    if not isinstance(item, dict) or item.get("event_id") != sys.argv[2]:
+        continue
+    if item.get("ok") is True:
+        print(json.dumps({
+            "id": item.get("id"),
+            "attempts": item.get("attempts"),
+            "status_code": item.get("status_code"),
+        }))
+        sys.exit(0)
+print("")
+PY
+)"
+  fi
+  if [ -n "$retry_delivery" ]; then
+    break
+  fi
+  sleep 0.5
+done
+if python3 - "$retry_delivery" <<'PY'
+import json, sys
+if len(sys.argv) < 2 or not sys.argv[1].strip():
+    sys.exit(1)
+try:
+    delivery = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if delivery.get("attempts") == 3 and delivery.get("status_code") == 200 else 1)
+PY
+then
+  pass "notification retried -> ok=true attempts=3 status_code=200 ($retry_delivery)"
+else
+  fail "notification delivery for $retry_event_id did not succeed after 3 attempts within 25s (got ${retry_delivery:-<none>})"
+fi
+
+retry_posts=""
+attempt=0
+while [ "$attempt" -lt 20 ] && [ -z "$retry_posts" ]; do
+  attempt=$((attempt + 1))
+  if [ -f "$WS_RECEIVER_LOG" ]; then
+    retry_posts="$(python3 - "$WS_RECEIVER_LOG" "$retry_event_id" <<'PY'
+import json, sys
+count = 0
+statuses = []
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except Exception:
+    lines = []
+for line in lines:
+    try:
+        record = json.loads(line)
+    except Exception:
+        continue
+    body = record.get("body")
+    text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+    if sys.argv[2] in text:
+        count += 1
+        statuses.append(record.get("status"))
+if count:
+    print(json.dumps({"count": count, "statuses": statuses}))
+PY
+)"
+  fi
+  if [ -n "$retry_posts" ]; then
+    break
+  fi
+  sleep 0.25
+done
+if python3 - "$retry_posts" "$WS_RECEIVER_LOG" <<'PY'
+import json, sys
+if len(sys.argv) < 2 or not sys.argv[1].strip():
+    sys.exit(1)
+try:
+    info = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if info.get("count") == 3 and info.get("statuses") == [500, 500, 200] else 1)
+PY
+then
+  pass "receiver log shows 3 POSTs for the event ($retry_posts)"
+else
+  fail "receiver log does not show 3 attempts [500,500,200] for $retry_event_id (got ${retry_posts:-<none>}, log=%s)" "$WS_RECEIVER_LOG"
+fi
+
+# ===========================================================================
+# 27. P4.0 notification silence: silence_seconds=60 suppresses duplicates
+# ===========================================================================
+step "27/28 notification silence (P4: silence_seconds=60, suppressed metric)"
+silence_notif_payload="$(printf '{"enabled":true,"webhook_url":"http://127.0.0.1:%s/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":1,"silence_seconds":60}' "$WS_RECEIVER_PORT")"
+silence_put_code="$(http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token")"
+if python3 - "$TMP/body.json" "$silence_put_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(settings, dict) and settings.get("silence_seconds") == 60 else 1)
+PY
+then
+  pass "admin PUT notifications silence_seconds=60 -> 200"
+else
+  fail "admin PUT notifications silence_seconds=60 failed (HTTP ${silence_put_code:-none})"
+fi
+
+# Pick a (camera, class) silence key that has not been delivered in the last
+# ~65 s: a previous smoke run (or another actor) may otherwise leave the 60 s
+# silence window active for a key, suppressing our "first" event too.
+http_get '/api/notifications?limit=100' "$admin_token" >/dev/null
+cp "$TMP/body.json" "$TMP/notifs_before_silence.json" 2>/dev/null || true
+http_get '/api/events?limit=200' "$admin_token" >/dev/null
+cp "$TMP/body.json" "$TMP/events_before_silence.json" 2>/dev/null || true
+silence_choice="$(python3 - "$TMP/notifs_before_silence.json" "$TMP/events_before_silence.json" "$TMP/cameras.json" <<'PY'
+import json, sys
+from datetime import datetime, timezone, timedelta
+
+def parse(ts):
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+try:
+    events = json.load(open(sys.argv[2])).get("items") or []
+except Exception:
+    events = []
+meta = {}
+for event in events:
+    if isinstance(event, dict):
+        meta[event.get("id")] = (event.get("camera_code"), event.get("type"), event.get("severity"))
+
+now = datetime.now(timezone.utc)
+recent_keys = set()
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+for item in items:
+    if not isinstance(item, dict) or item.get("kind") != "event" or not item.get("ok"):
+        continue
+    at = parse(item.get("at"))
+    if at is None or (now - at) > timedelta(seconds=65):
+        continue
+    key = meta.get(item.get("event_id"))
+    if key:
+        recent_keys.add("|".join(str(part) for part in key))
+
+classes = {
+    "intrusion": ("intrusion", "warn"),
+    "no_helmet": ("no_helmet", "warn"),
+    "smoke": ("smoke", "critical"),
+}
+try:
+    cameras = json.load(open(sys.argv[3])).get("items") or []
+except Exception:
+    cameras = []
+cam_by_code = {cam.get("code"): cam.get("id") for cam in cameras if isinstance(cam, dict)}
+candidates = [
+    ("CAM-006", "intrusion"), ("CAM-002", "no_helmet"), ("CAM-004", "intrusion"),
+    ("CAM-005", "intrusion"), ("CAM-003", "no_helmet"), ("CAM-001", "no_helmet"),
+    ("CAM-006", "smoke"), ("CAM-002", "smoke"),
+]
+for code, cls in candidates:
+    if code not in cam_by_code:
+        continue
+    event_type, severity = classes[cls]
+    if "%s|%s|%s" % (code, event_type, severity) in recent_keys:
+        continue
+    print(json.dumps({"camera_code": code, "camera_id": cam_by_code[code], "class": cls}))
+    sys.exit(0)
+print(json.dumps({
+    "camera_code": "CAM-006",
+    "camera_id": cam_by_code.get("CAM-006", "cam_006"),
+    "class": "intrusion",
+}))
+PY
+)"
+silence_camera_code="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("camera_code") or "CAM-006")' "$silence_choice")"
+silence_camera_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("camera_id") or "")' "$silence_choice")"
+silence_class="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("class") or "intrusion")' "$silence_choice")"
+[ -n "$silence_camera_id" ] || silence_camera_id="$(camera_id_for "$silence_camera_code")"
+printf '      silence key: %s/%s (chosen to avoid recent deliveries)\n' "$silence_camera_code" "$silence_class"
+
+# Two identical (camera+type+severity) warn events ~2 s apart, with the camera
+# dedupe window disabled so both events are created.
+silence_relax_code="$(relax_camera_dedupe "$silence_camera_id")"
+[ "$silence_relax_code" = "200" ] || printf '      warning: could not relax %s dedupe (HTTP %s); continuing\n' "$silence_camera_code" "${silence_relax_code:-none}" >&2
+http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token" >/dev/null
+silence_payload="$(printf '{"camera_code":"%s","detections":[{"class":"%s","confidence":0.995,"bbox":[0.40,0.30,0.60,0.80]}]}' "$silence_camera_code" "$silence_class")"
+silence_ingest_a="$(http_post_json "/api/ingest/detections" "$silence_payload")"
+silence_event_a="$(first_event_id)"
+sleep 2
+http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token" >/dev/null
+silence_ingest_b="$(http_post_json "/api/ingest/detections" "$silence_payload")"
+silence_event_b="$(first_event_id)"
+restore_camera_dedupe "$silence_camera_id" >/dev/null
+printf '      silence test events: a=%s b=%s\n' "${silence_event_a:-<none>}" "${silence_event_b:-<none>}"
+
+silence_first=""
+attempt=0
+while [ "$attempt" -lt 60 ] && [ -z "$silence_first" ]; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -gt 1 ] && [ $((attempt % 10)) -eq 0 ]; then
+    http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token" >/dev/null
+  fi
+  silence_list_code="$(http_get '/api/notifications?limit=100' "$admin_token")"
+  if [ "$silence_list_code" = "200" ]; then
+    silence_first="$(python3 - "$TMP/body.json" "$silence_event_a" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    sys.exit(0)
+for item in data.get("items") or []:
+    if not isinstance(item, dict) or item.get("event_id") != sys.argv[2]:
+        continue
+    if item.get("ok") is True:
+        print(json.dumps({"id": item.get("id"), "attempts": item.get("attempts")}))
+        sys.exit(0)
+print("")
+PY
+)"
+  fi
+  if [ -n "$silence_first" ]; then
+    break
+  fi
+  sleep 0.5
+done
+if [ -n "$silence_first" ]; then
+  pass "silence: first identical event delivered ($silence_first)"
+else
+  fail "silence: first event $silence_event_a was not delivered within 15s"
+fi
+
+# Give the suppressed delivery a moment to settle, then count deliveries for the pair.
+sleep 3
+silence_pair=""
+silence_pair_code="$(http_get '/api/notifications?limit=100' "$admin_token")"
+if [ "$silence_pair_code" = "200" ]; then
+  silence_pair="$(python3 - "$TMP/body.json" "$silence_event_a" "$silence_event_b" <<'PY'
+import json, sys
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+ids = {sys.argv[2], sys.argv[3]}
+delivered = [item for item in items
+             if isinstance(item, dict) and item.get("event_id") in ids and item.get("ok") is True]
+print(json.dumps({"delivered": len(delivered), "ids": [item.get("event_id") for item in delivered]}))
+PY
+)"
+fi
+if python3 - "$silence_pair" <<'PY'
+import json, sys
+if len(sys.argv) < 2 or not sys.argv[1].strip():
+    sys.exit(1)
+try:
+    info = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if info.get("delivered") == 1 else 1)
+PY
+then
+  pass "silence: only 1 delivery for the identical pair ($silence_pair)"
+else
+  fail "silence: expected exactly 1 delivery for the identical pair (got ${silence_pair:-<none>})"
+fi
+
+curl -s -o "$TMP/metrics_p4.txt" -m 5 "$API_BASE/metrics" 2>/dev/null || true
+suppressed_value="$(python3 - "$TMP/metrics_p4.txt" <<'PY'
+import sys
+total = 0.0
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except Exception:
+    lines = []
+for line in lines:
+    parts = line.split()
+    if len(parts) >= 2 and parts[0].split("{")[0] == "dsh_twin_notifications_suppressed_total":
+        try:
+            total += float(parts[1])
+        except ValueError:
+            pass
+print("%.0f" % total)
+PY
+)"
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "${suppressed_value:-0}" 2>/dev/null; then
+  pass "metrics dsh_twin_notifications_suppressed_total=$suppressed_value (> 0)"
+else
+  fail "metrics dsh_twin_notifications_suppressed_total=${suppressed_value:-none} (expected > 0)"
+fi
+release_events
+
+# ===========================================================================
+# 28. P4.0 metrics + cleanup
+# ===========================================================================
+step "28/28 P4 metrics + cleanup"
+metrics_p4_code="$(curl -s -o "$TMP/metrics_p4.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
+if [ "$metrics_p4_code" = "200" ] \
+  && grep -q 'dsh_twin_notifications_total{result="ok"}' "$TMP/metrics_p4.txt" \
+  && grep -q 'dsh_twin_notifications_total{result="failed"}' "$TMP/metrics_p4.txt"; then
+  pass "metrics contain dsh_twin_notifications_total{result=ok|failed}"
+else
+  fail "metrics missing dsh_twin_notifications_total{result=...} (HTTP ${metrics_p4_code:-none})"
+fi
+
+p4_counters="$(python3 - "$TMP/metrics_p4.txt" <<'PY'
+import sys
+
+wanted = {
+    "dsh_twin_escalations_total": False,
+    "dsh_twin_orders_total": False,
+    "dsh_twin_duty_dispatches_total": False,
+    "dsh_twin_duty_skipped_total": False,
+    "dsh_twin_notifications_suppressed_total": False,
+}
+values = {}
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except Exception:
+    lines = []
+for line in lines:
+    parts = line.split()
+    if len(parts) < 2:
+        continue
+    name = parts[0].split("{")[0]
+    if name in wanted:
+        wanted[name] = True
+        try:
+            values[name] = values.get(name, 0.0) + float(parts[1])
+        except ValueError:
+            pass
+missing = [name for name, seen in wanted.items() if not seen]
+dispatches = values.get("dsh_twin_duty_dispatches_total", 0.0)
+ok = not missing and dispatches > 0
+print("ok=%s missing=%s duty_dispatches=%s" % ("1" if ok else "0", ",".join(missing) or "-", "%.0f" % dispatches))
+PY
+)"
+case "$p4_counters" in
+  ok=1*)
+    pass "metrics counters present ($p4_counters)"
+    ;;
+  *)
+    fail "metrics counters missing or duty_dispatches=0 ($p4_counters)"
+    ;;
+esac
+
+if [ -n "$DUTY_GROUP_ID" ]; then
+  cleanup_duty_code="$(http_delete "/api/duty/groups/$DUTY_GROUP_ID" "$admin_token")"
+else
+  cleanup_duty_code="000"
+fi
+if [ "$cleanup_duty_code" = "204" ]; then
+  pass "cleanup: DELETE duty group $DUTY_GROUP_ID -> 204"
+  DUTY_GROUP_ID=""
+else
+  fail "cleanup: DELETE duty group -> HTTP ${cleanup_duty_code:-none} (expected 204)"
+fi
+
+cleanup_notif_ok=0
+cleanup_notif_code="000"
+cleanup_attempt=0
+while [ "$cleanup_attempt" -lt 3 ] && [ "$cleanup_notif_ok" -ne 1 ]; do
+  cleanup_attempt=$((cleanup_attempt + 1))
+  cleanup_notif_code="$(put_notifications_disabled)"
+  cleanup_notif_get_code="$(http_get "/api/settings/notifications" "$admin_token")"
+  if [ "$cleanup_notif_code" = "200" ] && python3 - "$TMP/body.json" "$cleanup_notif_get_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(settings, dict) and settings.get("enabled") is False else 1)
+PY
+  then
+    cleanup_notif_ok=1
+  else
+    sleep 0.5
+  fi
+done
+if [ "$cleanup_notif_ok" -eq 1 ]; then
+  pass "cleanup: notifications disabled (defaults restored)"
+else
+  fail "cleanup: could not disable notifications (PUT HTTP ${cleanup_notif_code:-none})"
+fi
+
+cleanup_esc_ok=0
+cleanup_esc_code="000"
+cleanup_attempt=0
+while [ "$cleanup_attempt" -lt 3 ] && [ "$cleanup_esc_ok" -ne 1 ]; do
+  cleanup_attempt=$((cleanup_attempt + 1))
+  http_put_json "/api/settings/escalation" \
+    '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' \
+    "$admin_token" >/dev/null
+  cleanup_esc_code="$(http_get "/api/settings/escalation" "$admin_token")"
+  if python3 - "$TMP/body.json" "$cleanup_esc_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = isinstance(settings, dict) and settings.get("after_seconds") == 300
+ok = ok and settings.get("auto_dispatch") is True
+sys.exit(0 if ok else 1)
+PY
+  then
+    cleanup_esc_ok=1
+  else
+    sleep 0.5
+  fi
+done
+if [ "$cleanup_esc_ok" -eq 1 ]; then
+  pass "cleanup: escalation defaults verified (after_seconds=300, auto_dispatch=true)"
+else
+  fail "cleanup: escalation defaults not restored (HTTP ${cleanup_esc_code:-none})"
+fi
+
+if [ -n "$WS_RECEIVER_PID" ]; then
+  kill -TERM "$WS_RECEIVER_PID" 2>/dev/null || true
+  wait "$WS_RECEIVER_PID" 2>/dev/null || true
+  printf '      webhook receiver stopped (pid %s)\n' "$WS_RECEIVER_PID"
   WS_RECEIVER_PID=""
 fi
 

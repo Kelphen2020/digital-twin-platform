@@ -1,5 +1,7 @@
 import { getAuthToken } from './auth/token'
 import type {
+  Area,
+  AreaListResponse,
   AuditEntry,
   AuditListResponse,
   AuthUser,
@@ -12,6 +14,10 @@ import type {
   CameraUpdatePayload,
   ControlPoint,
   CreateOrderPayload,
+  DutyCurrent,
+  DutyGroup,
+  DutyGroupPayload,
+  DutyListResponse,
   EventDetailResponse,
   EscalationSettings,
   EventListResponse,
@@ -361,6 +367,49 @@ export async function fetchAudit(limit = 100): Promise<AuditEntry[]> {
 export async function fetchNotifications(limit = 50): Promise<NotificationLogEntry[]> {
   const data = await requestJson<NotificationListResponse>(`/api/notifications?limit=${limit}`)
   return data.items ?? []
+}
+
+// ---------------- P4 值班组 / 区域 ----------------
+
+/** GET /api/areas → 区域列表（值班组区域多选）。 */
+export async function fetchAreas(): Promise<Area[]> {
+  const data = await requestJson<AreaListResponse>('/api/areas')
+  return data.items ?? []
+}
+
+/** GET /api/duty/groups → 值班组列表（登录用户）。 */
+export async function fetchDutyGroups(): Promise<DutyGroup[]> {
+  const data = await requestJson<DutyListResponse>('/api/duty/groups')
+  return data.items ?? []
+}
+
+/** GET /api/duty/current?area_id= → 指定区域当前值班组（登录用户）。 */
+export async function fetchDutyCurrent(areaId: string): Promise<DutyCurrent> {
+  const params = new URLSearchParams({ area_id: areaId })
+  return requestJson<DutyCurrent>(`/api/duty/current?${params.toString()}`)
+}
+
+/** POST /api/duty/groups（admin）→ 创建值班组。 */
+export async function createDutyGroup(payload: DutyGroupPayload): Promise<DutyGroup> {
+  return postJson<DutyGroup>('/api/duty/groups', payload)
+}
+
+/** PATCH /api/duty/groups/{id}（admin）→ 更新值班组。 */
+export async function updateDutyGroup(groupId: string, payload: Partial<DutyGroupPayload>): Promise<DutyGroup> {
+  return patchJson<DutyGroup>(`/api/duty/groups/${encodeURIComponent(groupId)}`, payload)
+}
+
+/** DELETE /api/duty/groups/{id}（admin）→ 删除值班组。 */
+export async function deleteDutyGroup(groupId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/duty/groups/${encodeURIComponent(groupId)}`), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json', ...authHeaders() },
+  })
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized('/api/duty/groups')
+    throw error
+  }
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

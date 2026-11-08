@@ -99,7 +99,10 @@ onMounted(() => {
               <span class="mono">{{ entry.status_code }}</span>
               <time>{{ formatDateTime(entry.at) }}</time>
             </div>
-            <p class="audit-resource mono">{{ entry.kind }} · {{ entry.event_id }} · {{ entry.format }}</p>
+            <p class="audit-resource mono">
+              {{ entry.kind }} · {{ entry.event_id }} · {{ entry.format }}
+              <span v-if="entry.attempts > 0" class="attempts-chip">尝试 {{ entry.attempts }} 次</span>
+            </p>
             <p class="audit-detail mono">{{ entry.url }}</p>
             <p v-if="entry.error" class="form-error">{{ entry.error }}</p>
           </article>
