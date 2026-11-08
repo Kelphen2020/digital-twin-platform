@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { apiErrorMessage, exportAuditCsv } from '../api'
 import { formatDateTime } from '../labels'
 import { useAdminStore } from '../store/admin'
+import { useAuthStore } from '../store/auth'
+import { pushToast } from '../store/ui'
 import type { AuditEntry, NotificationLogEntry } from '../types'
 
 const { state, refreshAudit } = useAdminStore()
+const { role } = useAuthStore()
+const isAdmin = computed(() => role.value === 'admin')
 
 type AuditSubTab = 'audit' | 'notifications'
 
@@ -12,6 +17,68 @@ const subTab = ref<AuditSubTab>('audit')
 
 const auditCount = computed(() => state.audit.length)
 const notificationCount = computed(() => state.notifications.length)
+
+// ---- P10：审计筛选 + CSV 导出 ----
+const filterAction = ref('')
+const filterActor = ref('')
+const filterFrom = ref('')
+const filterTo = ref('')
+const exporting = ref(false)
+
+const filteredAudit = computed(() => {
+  const action = filterAction.value.trim().toLowerCase()
+  const actor = filterActor.value.trim().toLowerCase()
+  const from = filterFrom.value ? new Date(filterFrom.value).getTime() : null
+  const to = filterTo.value ? new Date(filterTo.value).getTime() : null
+  return state.audit.filter((entry) => {
+    if (action && !entry.action.toLowerCase().includes(action)) return false
+    if (actor && !entry.actor.toLowerCase().includes(actor)) return false
+    const at = new Date(entry.at).getTime()
+    if (from !== null && Number.isFinite(from) && at < from) return false
+    if (to !== null && Number.isFinite(to) && at > to) return false
+    return true
+  })
+})
+
+function clearFilters(): void {
+  filterAction.value = ''
+  filterActor.value = ''
+  filterFrom.value = ''
+  filterTo.value = ''
+}
+
+function toIsoOrUndefined(value: string): string | undefined {
+  if (!value) return undefined
+  const timestamp = new Date(value)
+  if (Number.isNaN(timestamp.getTime())) return undefined
+  return timestamp.toISOString()
+}
+
+async function exportAudit(): Promise<void> {
+  if (!isAdmin.value || exporting.value) return
+  exporting.value = true
+  try {
+    const blob = await exportAuditCsv({
+      from: toIsoOrUndefined(filterFrom.value),
+      to: toIsoOrUndefined(filterTo.value),
+      action: filterAction.value.trim() || undefined,
+      actor: filterActor.value.trim() || undefined,
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'audit.csv'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    pushToast('审计 CSV 已导出（audit.csv）', 'success')
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+  } finally {
+    exporting.value = false
+  }
+}
 
 function formatDetail(detail: Record<string, unknown> | null): string {
   if (!detail) return ''
@@ -44,6 +111,15 @@ onMounted(() => {
         <button class="ghost-btn" :disabled="state.auditLoading || state.notificationsLoading" @click="refreshAudit">
           刷新
         </button>
+        <button
+          v-if="isAdmin && subTab === 'audit'"
+          class="secondary-btn"
+          :disabled="exporting"
+          title="按当前筛选导出 CSV（GET /api/audit/export）"
+          @click="exportAudit"
+        >
+          {{ exporting ? '导出中…' : '导出 CSV' }}
+        </button>
       </div>
     </header>
 
@@ -58,17 +134,31 @@ onMounted(() => {
 
     <div class="audit-list">
       <template v-if="subTab === 'audit'">
+        <div class="audit-filters">
+          <input v-model="filterAction" type="text" class="audit-filter-input" placeholder="action 关键字" />
+          <input v-model="filterActor" type="text" class="audit-filter-input" placeholder="actor" />
+          <label class="audit-filter-time">
+            <span>起</span>
+            <input v-model="filterFrom" type="datetime-local" />
+          </label>
+          <label class="audit-filter-time">
+            <span>止</span>
+            <input v-model="filterTo" type="datetime-local" />
+          </label>
+          <button class="ghost-btn" @click="clearFilters">清除筛选</button>
+          <span class="audit-filter-count">{{ filteredAudit.length }} 条</span>
+        </div>
         <p v-if="state.auditLoading && state.audit.length === 0" class="detail-loading">正在加载审计日志…</p>
         <p v-else-if="state.auditError" class="form-error">
           审计加载失败：{{ state.auditError }}
           <button class="link-btn" @click="refreshAudit">重试</button>
         </p>
-        <div v-else-if="state.audit.length === 0" class="feed-empty">
-          <p>暂无审计记录</p>
-          <span>用户写操作（事件处置、相机/规则/工单/设置变更）会记录在这里。</span>
+        <div v-else-if="filteredAudit.length === 0" class="feed-empty">
+          <p>暂无匹配审计记录</p>
+          <span>调整筛选条件或清除筛选后重试。</span>
         </div>
         <template v-else>
-          <article v-for="entry in state.audit" :key="entry.id" class="audit-item">
+          <article v-for="entry in filteredAudit" :key="entry.id" class="audit-item">
             <div class="audit-row">
               <span class="audit-actor">{{ entry.actor }}</span>
               <span class="audit-action mono">{{ entry.action }}</span>

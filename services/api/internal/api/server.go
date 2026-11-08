@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,6 +51,10 @@ type Server struct {
 	bus           *bus.Bus
 	site          model.Site
 	trackSample   int
+	loginMu       sync.Mutex
+	loginFailures map[string]loginFailure
+	loginMax      int
+	loginLockout  time.Duration
 	trackSequence atomic.Uint64
 	ingestLimiter *RateLimiter
 	maxBodyBytes  int64
@@ -77,6 +82,9 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		rotation:      make(map[string]int),
 		site:          model.DefaultSite(),
 		trackSample:   1,
+		loginFailures: make(map[string]loginFailure),
+		loginMax:      5,
+		loginLockout:  60 * time.Second,
 	}
 }
 
@@ -123,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/orders/{id}", s.handleGetOrder)
 	mux.HandleFunc("PATCH /api/orders/{id}", s.handlePatchOrder)
 	mux.HandleFunc("GET /api/audit", s.handleAudit)
+	mux.HandleFunc("GET /api/audit/export", s.handleAuditExport)
 	mux.HandleFunc("GET /api/stats/summary", s.handleStatsSummary)
 	mux.HandleFunc("GET /api/stats/events.csv", s.handleStatsCSV)
 	mux.HandleFunc("POST /api/ingest/detections", s.handleIngest)
@@ -139,7 +148,7 @@ func (s *Server) Handler() http.Handler {
 			"cameras":     count,
 		}}
 	}
-	return cors(s.authenticate(mux))
+	return cors(securityHeaders(s.authenticate(mux)))
 }
 
 // RunStats broadcasts the stats frame every interval until ctx is cancelled.
@@ -274,6 +283,77 @@ func (s *Server) allowEventCamera(w http.ResponseWriter, r *http.Request, permis
 	return event, true
 }
 
+type loginFailure struct {
+	count       int
+	lockedUntil time.Time
+}
+
+// SetLoginGuard configures the brute-force lockout (0 max disables it).
+func (s *Server) SetLoginGuard(maxFailures int, lockout time.Duration) {
+	if maxFailures < 0 {
+		maxFailures = 0
+	}
+	if lockout <= 0 {
+		lockout = time.Minute
+	}
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	s.loginMax = maxFailures
+	s.loginLockout = lockout
+}
+
+// loginLocked reports the remaining lock seconds for a username+IP key.
+func (s *Server) loginLocked(key string) (int, bool) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	entry, exists := s.loginFailures[key]
+	if !exists || entry.lockedUntil.IsZero() {
+		return 0, false
+	}
+	remaining := time.Until(entry.lockedUntil)
+	if remaining <= 0 {
+		delete(s.loginFailures, key)
+		return 0, false
+	}
+	return int(remaining.Seconds()) + 1, true
+}
+
+// recordLoginFailure counts a failed sign-in and locks the key past the limit.
+func (s *Server) recordLoginFailure(key string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	if s.loginMax <= 0 {
+		return
+	}
+	entry := s.loginFailures[key]
+	entry.count++
+	if entry.count >= s.loginMax {
+		entry.lockedUntil = time.Now().Add(s.loginLockout)
+	}
+	s.loginFailures[key] = entry
+}
+
+func (s *Server) clearLoginFailures(key string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	delete(s.loginFailures, key)
+}
+
+// clientIP resolves the caller address, honoring a reverse proxy header.
+func clientIP(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if candidate := strings.TrimSpace(parts[0]); candidate != "" {
+			return candidate
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Username string `json:"username"`
@@ -283,11 +363,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
-	token, expires, user, err := s.auth.Login(r.Context(), strings.TrimSpace(request.Username), request.Password)
+	username := strings.TrimSpace(request.Username)
+	key := username + "|" + clientIP(r)
+	if retryAfter, locked := s.loginLocked(key); locked {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed sign-in attempts; retry later")
+		return
+	}
+	token, expires, user, err := s.auth.Login(r.Context(), username, request.Password)
 	if err != nil {
+		s.recordLoginFailure(key)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
+	s.clearLoginFailures(key)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":      token,
 		"expires_at": expires.Format(time.RFC3339),
@@ -1203,6 +1292,50 @@ func (s *Server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 		summary.ByHour = []model.HourStat{}
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	filter := model.AuditFilter{
+		Action: r.URL.Query().Get("action"),
+		Actor:  r.URL.Query().Get("actor"),
+		Limit:  parseIntDefault(r.URL.Query().Get("limit"), 5000),
+	}
+	if filter.Limit > 20000 {
+		filter.Limit = 20000
+	}
+	if raw := r.URL.Query().Get("from"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "from must be RFC3339")
+			return
+		}
+		filter.From = &parsed
+	}
+	if raw := r.URL.Query().Get("to"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "to must be RFC3339")
+			return
+		}
+		filter.To = &parsed
+	}
+	entries, err := s.store.ListAudit(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="audit.csv"`)
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"id", "at", "actor", "action", "resource", "detail"})
+	for _, entry := range entries {
+		detail, _ := json.Marshal(entry.Detail)
+		_ = writer.Write([]string{entry.ID, entry.At.Format(time.RFC3339), entry.Actor, entry.Action, entry.Resource, string(detail)})
+	}
+	writer.Flush()
 }
 
 func (s *Server) handleStatsCSV(w http.ResponseWriter, r *http.Request) {
@@ -2252,6 +2385,17 @@ func newID(prefix string) string {
 		return prefix + "_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
 	return prefix + "_" + hex.EncodeToString(raw[:])
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("X-Frame-Options", "DENY")
+		header.Set("Referrer-Policy", "no-referrer")
+		header.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func cors(next http.Handler) http.Handler {

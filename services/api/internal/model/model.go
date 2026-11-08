@@ -242,6 +242,8 @@ type AuditFilter struct {
 	Limit  int
 	Action string
 	Actor  string
+	From   *time.Time
+	To     *time.Time
 }
 
 // Counts is the cheap aggregate the stats frame and the sidebar need.

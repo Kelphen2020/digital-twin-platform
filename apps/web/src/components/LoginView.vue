@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useAuthStore } from '../store/auth'
 
 const { state, login } = useAuthStore()
@@ -20,8 +20,36 @@ const demoAccounts: DemoAccount[] = [
 const username = ref('')
 const password = ref('')
 const formError = ref('')
+const lockoutRemaining = ref(0)
+let lockoutTimer: number | null = null
 
-const displayError = computed(() => formError.value || state.error)
+/** 根据 auth store 的 lockoutUntil 更新倒计时（每秒）。 */
+function syncLockoutCountdown(): void {
+  if (!state.lockoutUntil) {
+    lockoutRemaining.value = 0
+    return
+  }
+  const remaining = Math.max(0, Math.ceil((state.lockoutUntil - Date.now()) / 1000))
+  lockoutRemaining.value = remaining
+  if (remaining === 0) {
+    state.lockoutUntil = null
+    state.error = null
+    formError.value = ''
+  }
+}
+
+onMounted(() => {
+  syncLockoutCountdown()
+  lockoutTimer = window.setInterval(syncLockoutCountdown, 1000)
+})
+onBeforeUnmount(() => {
+  if (lockoutTimer !== null) window.clearInterval(lockoutTimer)
+})
+
+const displayError = computed(() => {
+  if (lockoutRemaining.value > 0) return `登录失败次数过多，请在 ${lockoutRemaining.value} 秒后重试`
+  return formError.value || state.error
+})
 
 function fill(account: DemoAccount): void {
   username.value = account.username
@@ -31,6 +59,10 @@ function fill(account: DemoAccount): void {
 
 async function submit(): Promise<void> {
   formError.value = ''
+  if (lockoutRemaining.value > 0) {
+    formError.value = `登录失败次数过多，请在 ${lockoutRemaining.value} 秒后重试`
+    return
+  }
   if (!username.value.trim()) {
     formError.value = '请输入用户名'
     return
@@ -51,7 +83,7 @@ async function submit(): Promise<void> {
         <span class="brand-mark login-mark">DT</span>
         <div>
           <h1>数字孪生安防平台</h1>
-          <p>P2.0 · 登录 / RBAC / 规则 / 工单</p>
+          <p>P10.0 · 登录安全 / 密码策略 / 审计导出</p>
         </div>
       </header>
 
@@ -77,11 +109,23 @@ async function submit(): Promise<void> {
           />
         </label>
 
-        <p v-if="displayError" class="form-error login-error">{{ displayError }}</p>
+        <p
+          v-if="displayError"
+          class="form-error login-error"
+          :class="{ 'login-lockout': lockoutRemaining > 0 }"
+          :data-lockout-remaining="lockoutRemaining"
+        >
+          {{ displayError }}
+        </p>
 
-        <button class="login-submit" type="submit" :disabled="state.loggingIn">
+        <button
+          class="login-submit"
+          type="submit"
+          :disabled="state.loggingIn || lockoutRemaining > 0"
+          :data-lockout="lockoutRemaining > 0 ? 'true' : 'false'"
+        >
           <span v-if="state.loggingIn" class="spinner login-spinner" />
-          {{ state.loggingIn ? '登录中…' : '登 录' }}
+          {{ lockoutRemaining > 0 ? `锁定中 · ${lockoutRemaining}s` : state.loggingIn ? '登录中…' : '登 录' }}
         </button>
       </form>
 
@@ -110,6 +154,6 @@ async function submit(): Promise<void> {
       </p>
     </main>
 
-    <footer class="login-footer">数字孪生安防平台 · P2.0 演示环境 · 请勿用于生产</footer>
+    <footer class="login-footer">数字孪生安防平台 · P10.0 演示环境 · 请勿用于生产</footer>
   </div>
 </template>

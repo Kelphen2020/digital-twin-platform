@@ -171,6 +171,18 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P9.md`](docs/API_P9.md)。
 
+![P10.0 登录锁定与密码策略](docs/screenshots/p10-lockout.png)
+
+## P10.0 能力（安全加固）
+
+- **登录防爆破**：同一 username+IP 连续失败达阈值（默认 5 次）锁定（默认 60s），锁定期间返回 429 + `Retry-After`；成功登录清零。
+- **密码策略**：≥10 位且至少包含字母与数字（创建/修改用户），违规 400 并提示规则。
+- **审计导出**：`GET /api/audit/export?from=&to=&action=&actor=` 导出 CSV（仅 admin），带筛选与时间范围。
+- **安全响应头**：`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、`Permissions-Policy`。
+- **HTTPS 部署模板**：`deploy/nginx-tls.conf`（TLS 终结/HSTS/反代），运维手册补充证书与自签/Let's Encrypt 方案。
+
+契约见 [`docs/API_P10.md`](docs/API_P10.md)。
+
 ## 目录
 
 ```

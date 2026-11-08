@@ -286,8 +286,8 @@ func (s *Service) CreateUser(ctx context.Context, input CreateUserInput) (User, 
 	if !usernamePattern.MatchString(input.Username) {
 		return User{}, fmt.Errorf("%w: username must be 3-32 characters (letters, digits, _ . -)", ErrBadInput)
 	}
-	if len(input.Password) < 8 {
-		return User{}, fmt.Errorf("%w: password must be at least 8 characters", ErrBadInput)
+	if err := validatePassword(input.Password); err != nil {
+		return User{}, err
 	}
 	if !ValidRole(input.Role) {
 		return User{}, fmt.Errorf("%w: unknown role", ErrBadInput)
@@ -355,8 +355,8 @@ func (s *Service) UpdateUser(ctx context.Context, id string, input UpdateUserInp
 		account.Active = *input.Active
 	}
 	if input.Password != nil {
-		if len(*input.Password) < 8 {
-			return User{}, fmt.Errorf("%w: password must be at least 8 characters", ErrBadInput)
+		if err := validatePassword(*input.Password); err != nil {
+			return User{}, err
 		}
 		hash, err := hashPassword(*input.Password)
 		if err != nil {
@@ -375,6 +375,26 @@ func (s *Service) UpdateUser(ctx context.Context, id string, input UpdateUserInp
 // DeleteUser removes an account.
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	return s.repo.DeleteUserAccount(ctx, id)
+}
+
+// validatePassword enforces the P10.0 password policy.
+func validatePassword(password string) error {
+	if len(password) < 10 {
+		return fmt.Errorf("%w: password must be at least 10 characters", ErrBadInput)
+	}
+	hasLetter, hasDigit := false, false
+	for _, char := range password {
+		switch {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z':
+			hasLetter = true
+		case char >= '0' && char <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return fmt.Errorf("%w: password must contain at least one letter and one digit", ErrBadInput)
+	}
+	return nil
 }
 
 // ValidRole reports whether a role string is known.

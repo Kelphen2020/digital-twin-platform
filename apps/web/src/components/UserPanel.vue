@@ -55,6 +55,9 @@ const isSelf = computed(() => !!editingUser.value && editingUser.value.username 
 const selfProtected = computed(
   () => dialogMode.value === 'edit' && isSelf.value && (!form.active || form.role !== 'admin'),
 )
+const passwordLongEnough = computed(() => form.password.length >= 10)
+const passwordHasLetter = computed(() => /[A-Za-z]/.test(form.password))
+const passwordHasDigit = computed(() => /\d/.test(form.password))
 const dialogTitle = computed(() => (dialogMode.value === 'create' ? '新建用户' : '编辑用户'))
 
 function resetForm(): void {
@@ -100,9 +103,11 @@ function validate(): string | null {
     const username = form.username.trim()
     if (username.length < 3 || username.length > 32) return '用户名长度需为 3–32 个字符'
     if (!/^[A-Za-z0-9_.-]+$/.test(username)) return '用户名仅支持字母、数字、下划线、点与短横线'
-    if (form.password.length < 8) return '密码至少 8 个字符'
-  } else if (form.password.length > 0 && form.password.length < 8) {
-    return '新密码至少 8 个字符（留空表示不修改）'
+    if (form.password.length < 10) return '密码至少 10 个字符'
+    if (!passwordHasLetter.value || !passwordHasDigit.value) return '密码需同时包含字母与数字'
+  } else if (form.password.length > 0) {
+    if (form.password.length < 10) return '新密码至少 10 个字符（留空表示不修改）'
+    if (!passwordHasLetter.value || !passwordHasDigit.value) return '新密码需同时包含字母与数字'
   }
   if (!form.display_name.trim()) return '显示名不能为空'
   if (!roleOptions.some((option) => option.value === form.role)) return '角色不合法'
@@ -259,9 +264,17 @@ onMounted(() => {
           </label>
 
           <label class="settings-field">
-            <span>{{ dialogMode === 'create' ? '密码 *（至少 8 字符）' : '新密码（留空表示不修改，至少 8 字符）' }}</span>
+            <span>{{ dialogMode === 'create' ? '密码 *（至少 10 字符，含字母与数字）' : '新密码（留空表示不修改，至少 10 字符，含字母与数字）' }}</span>
             <input v-model="form.password" type="password" placeholder="••••••••" autocomplete="new-password" />
           </label>
+          <div class="password-policy" :class="{ 'password-policy-empty': dialogMode === 'edit' && !form.password }">
+            <span class="password-policy-title">
+              密码策略{{ dialogMode === 'edit' ? '（留空不修改；如需修改需满足）' : '' }}
+            </span>
+            <span class="password-rule" :class="{ met: passwordLongEnough }">≥ 10 字符</span>
+            <span class="password-rule" :class="{ met: passwordHasLetter }">含字母</span>
+            <span class="password-rule" :class="{ met: passwordHasDigit }">含数字</span>
+          </div>
 
           <label class="settings-field">
             <span>显示名 *</span>

@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -18,7 +18,11 @@ extent, glTF model manifest, map style for the 2.5D/3D scene) and the P7.0
 addition in [`docs/API_P7.md`](../../docs/API_P7.md) (admin user management:
 `/api/users` CRUD, roles/areas/active, self-protection) and the P8.0 addition
 in [`docs/API_P8.md`](../../docs/API_P8.md) (duty shifts + operator rotation,
-open-order dedupe, second escalation / `re_escalated_at`).
+open-order dedupe, second escalation / `re_escalated_at`) and the P10.0
+security hardening in [`docs/API_P10.md`](../../docs/API_P10.md) (security
+headers, login brute-force lockout, password policy, audit CSV export).
+P9.0 performance tooling/numbers live in
+[`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -27,7 +31,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 = **133 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 = **146 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export). |
 | `../../scripts/load.py` | Threaded load injector: steady or `--ramp` QPS, optional `--read-ratio` event reads, achieved QPS, accepted/dropped, HTTP p50/p95/p99, `/metrics` counter deltas, `--report` Markdown rows + `--json` run records (see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)). |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -200,7 +204,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**133 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0):
+(**146 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -347,6 +351,23 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     `second_after_seconds=0`), notifications disabled, test duty group deleted
     (204) and no leftover `P8值班组`/`smoke_*` test data (groups temporarily
     deactivated for determinism are re-activated).
+
+**P10.0 (steps 40–42, 13 checks)**
+
+40. security headers: `GET /api/health` and authenticated `GET /api/cameras`
+    include `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
+    `Referrer-Policy: no-referrer`;
+41. login lockout: 6 wrong-password logins for a throwaway `lock_<ts>`
+    username → the 5th failure locks the account, so the 6th returns
+    `429 too_many_attempts` with a `Retry-After: 60` header (observed codes
+    `401 401 401 401 401 429`), while a normal admin login still succeeds (no
+    global lock); password policy: 9-char password → 400, 16 letters without a
+    digit → 400, valid 10+ letter+digit password → 201 (test user deleted);
+42. audit CSV export: admin `GET /api/audit/export` → 200
+    `text/csv; charset=utf-8` with `Content-Disposition: attachment;
+    filename="audit.csv"` and header `id,at,actor,action,resource,detail`;
+    operator → 403 forbidden; cleanup deletes the test user and verifies admin
+    can still log in.
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -724,7 +745,56 @@ P8 metrics: `dsh_twin_re_escalations_total`,
 `dsh_twin_orders_deduped_total`. Validation: `second_after_seconds` must be
 within `[0, 604800]` (0 = off), otherwise `400 bad_request`.
 
-## 10. Typical demo sequence
+## 10. P10.0 security hardening
+
+The API now sends security headers on every response, rate-limits repeated
+login failures, enforces a password policy and exports the audit log as CSV:
+
+```bash
+# 1) security headers (all responses)
+curl -s -D - -o /dev/null http://127.0.0.1:8080/api/health \
+  | grep -E 'X-Content-Type-Options|X-Frame-Options|Referrer-Policy|Permissions-Policy'
+# -> X-Content-Type-Options: nosniff
+#    X-Frame-Options: DENY
+#    Referrer-Policy: no-referrer
+#    Permissions-Policy: geolocation=(), microphone=(), camera=()
+
+# 2) login lockout: 5 consecutive failures for one username+IP -> 429 for 60 s
+for i in 1 2 3 4 5 6; do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"lock_demo","password":"Wrong@12345"}' \
+    http://127.0.0.1:8080/api/auth/login
+done
+# -> 401 401 401 401 401 429   (429 = too_many_attempts, Retry-After: 60)
+# other accounts are unaffected; LOGIN_MAX_FAILURES=0 disables lockout.
+
+# 3) password policy for user create/update: >=10 chars, letter + digit
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"username":"operator3","password":"OnlyLettersLong","display_name":"x",
+       "role":"viewer","areas":[],"active":true}' http://127.0.0.1:8080/api/users
+# -> 400 bad_request "password must contain at least one letter and one digit"
+
+# 4) audit CSV export (admin only)
+curl -s -D /tmp/audit.headers -H "Authorization: Bearer $ADMIN" \
+  'http://127.0.0.1:8080/api/audit/export?limit=100' -o /tmp/audit.csv
+head -1 /tmp/audit.csv   # id,at,actor,action,resource,detail
+grep -i content-disposition /tmp/audit.headers   # attachment; filename="audit.csv"
+```
+
+Notes:
+
+- Lockout key is `username + client IP` (`X-Forwarded-For` first hop behind a
+  proxy), `LOGIN_MAX_FAILURES=5` / `LOGIN_LOCKOUT_SECONDS=60` by default; a
+  successful login resets the counter.
+- `GET /api/audit/export?from=&to=&action=&actor=&limit=5000` returns
+  `text/csv; charset=utf-8` with `detail` as a CSV-escaped JSON string;
+  `limit` is capped at 20000. Non-admin roles get `403 forbidden`.
+- HTTPS deployment (TLS termination + HSTS) is documented in
+  `deploy/nginx-tls.conf` and `docs/OPERATIONS.md`.
+- `smoke.sh` verifies all of the above (step 40–42).
+
+## 11. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

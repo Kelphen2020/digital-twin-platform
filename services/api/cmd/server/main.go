@@ -60,6 +60,7 @@ func main() {
 	server.SetSite(siteConfig)
 	server.SetTrackSample(cfg.WSTrackSample)
 	server.SetIngestGuard(api.NewRateLimiter(cfg.IngestRateLimit, cfg.IngestBurst), cfg.MaxBodyBytes)
+	server.SetLoginGuard(cfg.LoginMaxFailures, time.Duration(cfg.LoginLockoutSeconds)*time.Second)
 
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)

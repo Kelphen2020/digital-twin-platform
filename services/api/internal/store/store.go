@@ -339,6 +339,12 @@ func (m *Memory) ListAudit(_ context.Context, filter model.AuditFilter) ([]model
 		if filter.Actor != "" && entry.Actor != filter.Actor {
 			continue
 		}
+		if filter.From != nil && entry.At.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && entry.At.After(*filter.To) {
+			continue
+		}
 		out = append(out, entry)
 	}
 	return out, nil

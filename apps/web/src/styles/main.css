@@ -3466,3 +3466,102 @@ dd {
     display: none;
   }
 }
+
+
+/* ============================================================
+   P10.0 扩展：登录锁定 / 密码策略 / 审计导出
+   ============================================================ */
+
+.login-error.login-lockout {
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-radius: 7px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #fcd34d;
+  padding: 7px 9px;
+}
+
+.password-policy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: -2px;
+}
+
+.password-policy-title {
+  width: 100%;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.password-rule {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.password-rule.met {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.08);
+  color: #86efac;
+}
+
+.password-policy-empty .password-rule {
+  opacity: 0.6;
+}
+
+.audit-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(8, 20, 38, 0.45);
+}
+
+.audit-filter-input {
+  width: 108px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #061120;
+  color: var(--text);
+  font-size: 10.5px;
+  outline: none;
+}
+
+.audit-filter-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.audit-filter-time input {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #061120;
+  color: var(--text);
+  font-size: 10px;
+  outline: none;
+}
+
+.audit-filter-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 1360px) {
+  .audit-filter-input {
+    width: 84px;
+  }
+}

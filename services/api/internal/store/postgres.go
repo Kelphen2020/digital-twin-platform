@@ -363,6 +363,12 @@ func (p *Postgres) ListAudit(ctx context.Context, filter model.AuditFilter) ([]m
 	if filter.Actor != "" {
 		add("actor = $%d", filter.Actor)
 	}
+	if filter.From != nil {
+		add("at >= $%d", *filter.From)
+	}
+	if filter.To != nil {
+		add("at <= $%d", *filter.To)
+	}
 	query := `SELECT id, at, actor, action, resource, detail FROM audit_log`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")

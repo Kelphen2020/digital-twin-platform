@@ -509,3 +509,42 @@ cd services/api && go vet ./... && go test ./...
 - WS 背压仅"满队列丢弃"策略，未做优先级队列/慢消费者踢出；限流为单实例令牌桶。
 - compose `web` 服务与 observability 镜像拉取依赖网络（本机 Docker Hub 受限未实测）。
 - 轨迹采样只影响广播不影响落库；采样过大会影响三维轨迹连续性，需按现场调整。
+
+---
+
+# P10.0 验收记录（2026-11-09 凌晨）
+
+## 48. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：安全响应头、密码策略（长度/字母/数字）、登录防爆破（阈值/Retry-After/到期恢复/不影响其他账号）、审计 CSV 导出（表头/角色/时间参数校验） |
+
+## 49. smoke.sh（P0–P9 133 项 + P10 13 项 = 146 项 / 42 步）
+
+```
+smoke: PASS (146 checks passed)
+```
+
+P10 覆盖：安全头（health + 认证接口）；登录锁定（连续 5 次失败后 429 + `Retry-After: 60`，admin 登录不受影响）；密码策略（9 位/纯字母 400，合规 201 并清理）；审计导出（admin 200 CSV + 附件头 + 精确表头，operator 403）；清理后仅 3 个种子账号。
+
+## 50. 前端 P10 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 登录锁定 | ✅「登录失败次数过多，请在 60 秒后重试」+ 倒计时 60→58，提交禁用，演示账号填充仍可用；刷新后 admin 正常登录（锁定仅对测试用户名生效） |
+| 密码策略 | ✅ 新建用户内联规则「≥10 字符 / 含字母 / 含数字」实时高亮；8 位/无数字分别提示；拦截后端 400 显示「密码不符合策略…」 |
+| 审计导出 | ✅ action/actor/时间筛选 + 导出 CSV（Blob 下载 audit.csv，表头正确、80 行、actor 全为 admin），成功 Toast；operator 无审计页签且 403 |
+| 回归 | ✅ 8 页签、4 场景开关、模型/底图/WS 指示器正常；console errors=[]、exceptions=[] |
+| 截图 | `docs/screenshots/p10-lockout.png`、`p10-login-demo.png`、`p10-password-policy.png`、`p10-password-policy-backend-400.png`、`p10-audit-export.png` |
+
+## 51. 已知限制（P10.0）
+
+- 防爆破状态在进程内（重启清零），多实例需共享计数（Redis/内存网关）；按 username+IP，NAT 后用户可能共享锁。
+- 密码策略仅长度/字符类别，未接泄露口令库或历史密码校验；无 MFA、无刷新令牌/吊销（JWT 到期 12h）。
+- 审计导出上限 20000 行（CSV 同步生成）；超大审计量需异步导出。
+- HTTPS 模板未在本机实跑（证书/镜像依赖网络）；`/metrics` 与审计接口需在网关层限制来源。

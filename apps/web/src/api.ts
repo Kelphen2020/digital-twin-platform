@@ -56,12 +56,15 @@ export class ApiError extends Error {
   readonly status: number | undefined
   /** 后端错误码（响应体 error 字段，如 out_of_scope / forbidden）。 */
   readonly code: string | undefined
+  /** 429 响应的 Retry-After（秒；P10 登录锁定）。 */
+  readonly retryAfter: number | undefined
 
-  constructor(message: string, status?: number, code?: string) {
+  constructor(message: string, status?: number, code?: string, retryAfter?: number) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.retryAfter = retryAfter
   }
 }
 
@@ -91,7 +94,14 @@ async function parseError(response: Response): Promise<ApiError> {
   } catch {
     // 错误响应不是 JSON 时保留 HTTP 状态信息
   }
-  return new ApiError(message, response.status, code)
+  const retryAfterHeader = response.headers.get('Retry-After')
+  const parsedRetryAfter = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : NaN
+  return new ApiError(
+    message,
+    response.status,
+    code,
+    Number.isFinite(parsedRetryAfter) ? parsedRetryAfter : undefined,
+  )
 }
 
 function notifyUnauthorized(path: string): void {
@@ -155,12 +165,23 @@ export function apiErrorMessage(error: unknown): string {
       return `当前角色无此操作权限（403）：${error.message}`
     }
     if (error.status === 429) {
+      // P10 登录防爆破：error=too_many_attempts + Retry-After 秒
+      if (error.code === 'too_many_attempts' || error.message.includes('too_many_attempts')) {
+        return '登录失败次数过多，请稍后重试'
+      }
       // P9 ingest 限流：error=rate_limited
       return '请求过于频繁，已限流'
     }
     if (error.status === 400) {
       if (error.code === 'self_protected' || error.message.includes('self_protected')) {
         return '不能停用、降级或删除当前登录账号（400 self_protected）'
+      }
+      const passwordMessage = error.message.toLowerCase()
+      if (
+        passwordMessage.includes('password') &&
+        (passwordMessage.includes('10') || passwordMessage.includes('letter') || passwordMessage.includes('digit'))
+      ) {
+        return '密码不符合策略：至少 10 个字符，且需同时包含字母与数字'
       }
       return `请求参数不合法（400）：${error.message}`
     }
@@ -487,6 +508,37 @@ export async function deleteUser(userId: string): Promise<void> {
     if (response.status === 401) notifyUnauthorized('/api/users')
     throw error
   }
+}
+
+// ---------------- P10 审计导出（admin） ----------------
+
+export interface AuditExportParams {
+  from?: string
+  to?: string
+  action?: string
+  actor?: string
+  limit?: number
+}
+
+/** GET /api/audit/export（admin）→ text/csv Blob（表头 id,at,actor,action,resource,detail）。 */
+export async function exportAuditCsv(params: AuditExportParams = {}): Promise<Blob> {
+  const query = new URLSearchParams()
+  if (params.from) query.set('from', params.from)
+  if (params.to) query.set('to', params.to)
+  if (params.action) query.set('action', params.action)
+  if (params.actor) query.set('actor', params.actor)
+  if (params.limit) query.set('limit', String(params.limit))
+  const suffix = query.toString()
+  const response = await fetch(apiUrl(`/api/audit/export${suffix ? `?${suffix}` : ''}`), {
+    method: 'GET',
+    headers: { Accept: 'text/csv', ...authHeaders() },
+  })
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized('/api/audit/export')
+    throw error
+  }
+  return response.blob()
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

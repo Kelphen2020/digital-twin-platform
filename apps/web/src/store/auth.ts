@@ -1,5 +1,5 @@
 import { computed, reactive } from 'vue'
-import { login as requestLogin, fetchMe, setUnauthorizedHandler, apiErrorMessage } from '../api'
+import { ApiError, login as requestLogin, fetchMe, setUnauthorizedHandler, apiErrorMessage } from '../api'
 import { setAuthToken } from '../auth/token'
 import { pushToast } from './ui'
 import type { AuthUser, LoginResponse, Permission, Role } from '../types'
@@ -13,6 +13,8 @@ interface AuthState {
   booting: boolean
   loggingIn: boolean
   error: string | null
+  /** P10 登录锁定：锁定到期时间戳（毫秒）；为空表示未锁定。 */
+  lockoutUntil: number | null
 }
 
 const state = reactive<AuthState>({
@@ -21,6 +23,7 @@ const state = reactive<AuthState>({
   booting: true,
   loggingIn: false,
   error: null,
+  lockoutUntil: null,
 })
 
 const isAuthenticated = computed(() => state.user !== null && state.token !== null)
@@ -77,6 +80,7 @@ function clearSession(): void {
   state.user = null
   state.token = null
   state.error = null
+  state.lockoutUntil = null
 }
 
 /** 启动时用本地令牌换取 /api/auth/me；失败则回到登录页。 */
@@ -107,6 +111,7 @@ async function login(username: string, password: string): Promise<boolean> {
   state.error = null
   try {
     const result: LoginResponse = await requestLogin(username.trim(), password)
+    state.lockoutUntil = null
     persistToken(result.token)
     setAuthToken(result.token)
     state.token = result.token
@@ -114,6 +119,12 @@ async function login(username: string, password: string): Promise<boolean> {
     return true
   } catch (error) {
     state.error = apiErrorMessage(error)
+    if (error instanceof ApiError && error.code === 'too_many_attempts') {
+      const retryAfter = error.retryAfter && error.retryAfter > 0 ? error.retryAfter : 60
+      state.lockoutUntil = Date.now() + retryAfter * 1000
+    } else {
+      state.lockoutUntil = null
+    }
     return false
   } finally {
     state.loggingIn = false

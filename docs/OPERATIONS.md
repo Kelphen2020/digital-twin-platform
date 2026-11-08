@@ -73,7 +73,15 @@ docker compose -f deploy/docker-compose.yml start api
 | 升级不触发 | 升级设置是否启用、严重级别匹配、扫描周期 15s |
 | 总线告警 | `GET /api/bus/status` 看 lag；必要时回放或检查磁盘 |
 
-## 7. 安全清单
+## 7. HTTPS 与证书
+
+- 模板：`deploy/nginx-tls.conf`（80→443 跳转、HSTS、TLS1.2/1.3、静态站点 + `/api`/`/ws`/`/hls` 反代）。证书挂载到 `/etc/nginx/certs/fullchain.pem` 与 `privkey.pem`。
+- 自签（内网演示）：`openssl req -x509 -nodes -newkey rsa:2048 -days 365 -keyout privkey.pem -out fullchain.pem -subj "/CN=dtp.local"`。
+- Let's Encrypt：域名解析到本机后 `certbot certonly --standalone -d <domain>`，把 `/etc/letsencrypt/live/<domain>/{fullchain,privkey}.pem` 挂载到上述路径；续期用 cron/systemd timer。
+- 反代后客户端 IP 通过 `X-Forwarded-For` 传递（登录防爆破按该 IP 计数）。
+- 生产建议：只暴露 443；`/metrics` 与 `/api/audit*` 限制到运维网段；开启 WAF/限流。
+
+## 8. 安全清单
 
 - 替换 `JWT_SECRET` 与种子账号口令；关闭演示账号或改密。
 - 生产启用 HTTPS（nginx/网关），限制 `/metrics` 访问。

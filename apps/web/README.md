@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P9.0）
+# 数字孪生安防平台 · Web 前端（P10.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,13 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 登录安全 / 密码策略 / 审计导出（P10）
+
+- **登录防爆破**：同一 `username + IP` 连续失败达到 `LOGIN_MAX_FAILURES`（默认 5）后锁定 `LOGIN_LOCKOUT_SECONDS`（默认 60s）；后端返回 `429 too_many_attempts` + `Retry-After` 秒。登录页读取 `Retry-After`，显示中文倒计时「登录失败次数过多，请在 N 秒后重试」，锁定期间提交按钮禁用/显示「锁定中 · Ns」，到期自动恢复；**演示账号一键填入按钮保留**。
+- **密码策略**：创建/编辑用户密码要求 **≥ 10 字符，且至少包含一个字母与一个数字**。用户弹窗内联展示三条规则（≥10 字符 / 含字母 / 含数字）实时高亮；客户端前置校验给出明确中文提示，后端 400 密码策略错误也映射为「密码不符合策略：至少 10 个字符，且需同时包含字母与数字」Toast。
+- **审计 CSV 导出**（仅 admin）：审计面板新增筛选（action / actor / 起止时间，列表同步前端过滤）与「导出 CSV」按钮；按当前筛选调用 `GET /api/audit/export?from=&to=&action=&actor`，带 `Authorization` 请求并以 Blob 下载 `audit.csv`（表头 `id,at,actor,action,resource,detail`），成功/失败 Toast 提示；operator/viewer 无该按钮（接口 403）。
+- **安全响应头**由后端统一返回（`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、`Permissions-Policy`），前端无需额外处理。
+
 ### 连接质量与限流反馈（P9）
 
 - **顶栏连接质量指示器**（WS 状态点旁）：显示最近 **5 秒** WS 帧速率（帧/s）、自页面加载以来的**重连次数**（`↻N`），并以颜色表示健康度——绿色=已连接且最近 5s 有帧/新连接，琥珀色=重连中或超过 5s 无帧，红色=断开等待重连。悬停 tooltip 展示帧总数、5s 速率、重连次数、连接时长、最近帧年龄。
@@ -198,7 +205,8 @@ pnpm dev          # http://127.0.0.1:5173
 | POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删（P8 含 rotation/shifts） |
 | GET | `/api/duty/current?area_id=&at=` | 已登录 | 区域当前值班组 + 当前班次（P8） |
 | GET | `/api/site` | 已登录 | 站点范围 / glTF 模型清单 / 底图配置 |
-| GET/POST | `/api/users` | admin | 用户列表 / 新建用户 |
+| GET/POST | `/api/users` | admin | 用户列表 / 新建用户（P10 密码策略） |
+| GET | `/api/audit/export` | admin | 审计 CSV（from/to/action/actor/limit，text/csv） |
 | PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
 | POST | `/api/bus/replay` | admin | 按 offset 区间回放事件 |
@@ -269,6 +277,7 @@ apps/web/
 | 事件总线状态 / 回放 | **实时**：`/api/bus/status` + `POST /api/bus/replay` + WS `event_replay`（当前后端驱动为 `jsonl`，路径 `data/bus/events.jsonl`） |
 | 用户与账号 | **实时**：`/api/users` CRUD（密码不返回；角色/区域下次登录生效；停用即禁止登录） |
 | WS 连接质量 / 限流 | **实时**：WS 帧计数（前端统计）、REST 429 `rate_limited` → 中文 Toast；`INGEST_RATE_LIMIT` 默认 0 |
+| 登录锁定 / 密码策略 / 审计导出 | **实时**：`429 too_many_attempts`+`Retry-After`、用户密码 `400` 策略、`GET /api/audit/export` CSV |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -316,6 +325,17 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P10：登录防爆破（用 throwaway 用户名触发 429 + Retry-After）
+for i in 1 2 3 4 5; do curl -s -o /dev/null -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"locktest","password":"WrongPass1!"}' http://localhost:8080/api/auth/login; done
+curl -s -i -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"locktest","password":"WrongPass1!"}' http://localhost:8080/api/auth/login | head -20
+
+# P10：审计 CSV（admin）
+curl -s -D - -o /tmp/audit.csv -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/audit/export?action=&actor=&limit=5"
+head -3 /tmp/audit.csv
 
 # P9：WS 指标（后端） / 限流（默认关闭）
 curl -s http://localhost:8080/metrics | grep -E 'dsh_twin_ws_(frames|dropped)_total|dsh_twin_ingest_rejected_total'
@@ -398,3 +418,5 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - 二次升级需 `second_after_seconds > 0`，由后端升级 worker 周期扫描（约 15s）触发；`re_escalated_at` 写入后不可撤销。
 - P9 连接质量速率为前端滚动 5s 窗口统计（非后端指标）；空闲超过 5s 会显示琥珀色（属正常，不代表断线）。
 - 重连次数自页面加载/上次登录起算；`INGEST_RATE_LIMIT` 默认 0（关闭），未开启时不会出现 429。
+- P10 登录锁定按 `username + 客户端 IP` 计数，锁定 60s；前端倒计时取 `Retry-After`，锁定期间无法提交任何账号登录（可刷新页面重置前端倒计时，但后端锁定仍生效）。
+- P10 密码策略同时作用于创建与修改；内置种子口令均满足；审计导出默认 `limit=5000`（后端上限 20000），CSV 为 UTF-8、detail 为 JSON 字符串。

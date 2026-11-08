@@ -146,7 +146,17 @@
 | 部署 | `deploy/Dockerfile.web` + `nginx.conf` + compose web | 静态站点 + 反代 + WS 升级 + HLS |
 | 运维 | `docs/OPERATIONS.md`、`docs/PERFORMANCE.md` | 启停/备份/升级/排障 + 压测矩阵 |
 
-## 15. P1 建议优先级
+## 15. P10.0 已落地（安全加固）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 登录防爆破 | `loginFailures`（username+IP） | 阈值/锁定时长可配，429 + Retry-After，成功清零 |
+| 密码策略 | `auth.validatePassword` | ≥10 位、字母+数字；创建与改密统一校验 |
+| 审计导出 | `/api/audit/export` | CSV（含 detail JSON），时间/动作/操作者筛选，仅 admin |
+| 安全头 | `securityHeaders` 中间件 | nosniff / DENY / no-referrer / Permissions-Policy |
+| HTTPS | `deploy/nginx-tls.conf` + OPERATIONS | HSTS、TLS1.2/1.3、反代头传递（X-Forwarded-For 用于限流计数） |
+
+## 16. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。
