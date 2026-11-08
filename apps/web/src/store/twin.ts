@@ -7,12 +7,14 @@ import {
   createOrder as requestCreateOrder,
   deleteCalibration as requestDeleteCalibration,
   dispatchEvent as requestDispatchEvent,
+  fetchAreas,
   fetchCameras,
   fetchEventDetail,
   fetchEvents,
   fetchEventsCsv,
   fetchOrders,
   fetchStatsSummary,
+  fetchSite,
   fetchTracks,
   saveCalibration as requestSaveCalibration,
   solveCalibration as requestSolveCalibration,
@@ -23,6 +25,7 @@ import { TwinSocket } from '../ws'
 import { EVENT_TYPE_LABELS } from '../labels'
 import { pushToast } from './ui'
 import type {
+  Area,
   CalibrationSavePayload,
   Camera,
   CameraUpdatePayload,
@@ -36,6 +39,8 @@ import type {
   OrderStatus,
   ReplayFeedItem,
   Severity,
+  SiteConfig,
+  SiteModelStatus,
   SidebarTab,
   StatsRange,
   StatsSummary,
@@ -100,6 +105,16 @@ interface TwinState {
   statsRange: StatsRange
   statsLoading: boolean
   statsError: string | null
+  // ---- P6：站点 / 三维显示开关 ----
+  site: SiteConfig | null
+  siteLoading: boolean
+  siteError: string | null
+  areas: Area[]
+  showBaseMap: boolean
+  showModelDetails: boolean
+  showVideoFusion: boolean
+  siteModelStatus: SiteModelStatus
+  siteModelMessage: string
   // ---- P1：侧栏页签 ----
   sidebarTab: SidebarTab
   // ---- P5：总线回放 feed（仅事件流展示，不计入实时事件/三维标记） ----
@@ -145,6 +160,15 @@ const state = reactive<TwinState>({
   statsRange: '24h',
   statsLoading: false,
   statsError: null,
+  site: null,
+  siteLoading: false,
+  siteError: null,
+  areas: [],
+  showBaseMap: true,
+  showModelDetails: true,
+  showVideoFusion: false,
+  siteModelStatus: 'idle',
+  siteModelMessage: '',
   sidebarTab: 'events',
   replayEvents: [],
   orders: [],
@@ -201,6 +225,61 @@ function matchesFilters(event: TwinEvent): boolean {
   )
 }
 
+// ---------------- P6：站点与三维开关 ----------------
+
+let sitePromise: Promise<void> | null = null
+let areasPromise: Promise<void> | null = null
+
+/** GET /api/site；403/404/网络错误时保留程序化场景并记录提示。 */
+async function loadSite(): Promise<void> {
+  if (sitePromise) return sitePromise
+  state.siteLoading = true
+  sitePromise = (async () => {
+    try {
+      state.site = await fetchSite()
+      state.siteError = null
+    } catch (error) {
+      state.siteError = apiErrorMessage(error)
+    } finally {
+      state.siteLoading = false
+      sitePromise = null
+    }
+  })()
+  return sitePromise
+}
+
+/** GET /api/areas（2.5D 底图建筑/区域轮廓；失败时前端回退到相机布局）。 */
+async function loadAreas(): Promise<void> {
+  if (areasPromise) return areasPromise
+  areasPromise = (async () => {
+    try {
+      state.areas = await fetchAreas()
+    } catch {
+      // 底图/值班有本地回退，不阻塞主流程
+    } finally {
+      areasPromise = null
+    }
+  })()
+  return areasPromise
+}
+
+function toggleBaseMap(): void {
+  state.showBaseMap = !state.showBaseMap
+}
+
+function toggleModelDetails(): void {
+  state.showModelDetails = !state.showModelDetails
+}
+
+function toggleVideoFusion(): void {
+  state.showVideoFusion = !state.showVideoFusion
+}
+
+function setSiteModelStatus(status: SiteModelStatus, message = ''): void {
+  state.siteModelStatus = status
+  state.siteModelMessage = message
+}
+
 // ---------------- 基础数据 ----------------
 
 function scheduleRestRetry(): void {
@@ -228,6 +307,9 @@ async function loadInitial(): Promise<void> {
         state.selectedCameraId = cameras[0].id
       }
       if (state.selectedCameraId) void loadTracks(state.selectedCameraId)
+      // P6：站点配置与区域（独立失败，不阻塞 P0-P5 数据）
+      if (!state.site) void loadSite()
+      if (state.areas.length === 0) void loadAreas()
     } catch (error) {
       state.backendOnline = false
       state.lastError = error instanceof Error ? error.message : String(error)
@@ -782,6 +864,15 @@ function reset(): void {
   state.statsRange = '24h'
   state.statsLoading = false
   state.statsError = null
+  state.site = null
+  state.siteLoading = false
+  state.siteError = null
+  state.areas = []
+  state.showBaseMap = true
+  state.showModelDetails = true
+  state.showVideoFusion = false
+  state.siteModelStatus = 'idle'
+  state.siteModelMessage = ''
   state.sidebarTab = 'events'
   state.replayEvents = []
   state.orders = []
@@ -842,6 +933,8 @@ export function useTwinStore() {
     loadEventDetail,
     loadTracks,
     loadStats,
+    loadSite,
+    loadAreas,
     downloadEventsCsv,
     solveCameraCalibration,
     saveCameraCalibration,
@@ -855,6 +948,10 @@ export function useTwinStore() {
     setSeverityFilter,
     setSidebarTab,
     toggleTracks,
+    toggleBaseMap,
+    toggleModelDetails,
+    toggleVideoFusion,
+    setSiteModelStatus,
     setFps,
     clearSelection,
   }

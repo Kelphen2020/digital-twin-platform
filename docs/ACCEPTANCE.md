@@ -335,3 +335,45 @@ P5 覆盖：admin bus status 形状；非 admin status/replay → 403；注入�
 - 回放为只读重放（不修改事件/工单），默认不重复通知；回放窗口受 `limit` 500 限制。
 - 总线 lag 指标为「尾部差」，不跟踪多消费者组；多消费者场景需改用 Kafka 语义。
 - 真实 GPU 帧率、真实视频源、真实机器人投递仍需人工验收。
+
+---
+
+# P6.0 验收记录（2026-11-08 上午）
+
+## 31. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增 `GET /api/site` 测试（默认站点字段/模型清单/viewer 可读/匿名 401）；既有全部测试保持通过 |
+
+## 32. smoke.sh（P0–P5 94 项 + P6 3 项 = 97 项 / 34 步）
+
+```
+smoke: PASS (97 checks passed)
+```
+
+P6 覆盖：admin `GET /api/site` → 200（name/extent 数值/models[id,format,url]/map.style）；viewer 200；匿名 401。
+
+## 33. 前端 P6 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 站点配置 | ✅ `/api/site` 200；`/models/site.gltf` 200；HUD「模型：已加载」，title「已加载：园区总览模型」 |
+| 2.5D 底图 | ✅ 默认 on：区域多边形/道路/建筑轮廓/相机标注/指北针/扫描线；关闭后显示纯网格，再开启恢复 |
+| 建筑 LOD | ✅ `data-model-detail=lod/simple` 切换；glTF 作近景、程序化盒体/轮廓作中远景 |
+| glTF | ✅ GLTFLoader 按需分包加载成功（1 号楼/2 号楼/东门门架）；加载失败指示与程序化回退已实现 |
+| 视频融合 | ✅ 点击后隐藏 video（readyState=4、paused=false、HLS）→ 视锥内视频纹理面；关闭后销毁；右侧播放器不受影响 |
+| 工具栏 | ✅ 4 开关（轨迹/视频融合/模型细节/2.5D底图）状态与 active 正确；7 个页签保持 |
+| 控制台 | ✅ console issues=[]、page exceptions=[]、bad responses=[]；operator 同样可读且无错误 |
+| 截图 | `docs/screenshots/p6-scene.png`、`p6-video-fusion.png`、`p6-base-map-off.png`、`p6-lod-off.png`、`p6-operator.png` |
+
+## 34. 已知限制（P6.0）
+
+- 示例 glTF 由 `tools/make_site_model.py` 生成（3 个体块），非真实 BIM；真实模型需 LOD/轻量化（目标 ≤200MB）、Draco/KTX2 压缩解码未接入。
+- 2.5D 底图为程序化矢量绘制，未接正射影像（`map.image_url` 目前为空，接口已预留）。
+- 视频融合使用 HLS 演示流；真实 WebRTC 低时延融合需媒体服务器（本机 Docker 网络受限未验证）。
+- 真机 GPU 帧率、视频面流畅度与大模型加载性能需人工验收。

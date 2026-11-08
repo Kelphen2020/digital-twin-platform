@@ -4,7 +4,7 @@ import { ROLE_COLORS, ROLE_LABELS, WS_STATE_LABELS, formatArea, formatClock } fr
 import { useAuthStore } from '../store/auth'
 import { useTwinStore } from '../store/twin'
 
-const { state, onlineCameras, toggleTracks } = useTwinStore()
+const { state, onlineCameras, toggleTracks, toggleVideoFusion, toggleModelDetails, toggleBaseMap } = useTwinStore()
 const { state: authState, role, logout } = useAuthStore()
 
 const now = ref(new Date())
@@ -45,7 +45,7 @@ const userTitle = computed(() =>
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P5.0 事件总线 / 回放</p>
+        <p>园区三维安防 · P6.0 2.5D 底图 / LOD / 视频融合</p>
       </div>
     </div>
 
@@ -64,17 +64,45 @@ const userTitle = computed(() =>
       </div>
     </div>
 
-    <button
-      class="track-toggle"
-      :class="{ active: state.showTracks }"
-      :aria-pressed="state.showTracks"
-      title="显示/隐藏选中相机的历史轨迹"
-      @click="toggleTracks"
-    >
-      <span class="track-toggle-dot" />
-      显示轨迹
-      <span v-if="state.showTracks && trackCount > 0" class="track-count">{{ trackCount }}</span>
-    </button>
+    <div class="scene-toolbar" role="group" aria-label="三维显示开关">
+      <button
+        class="toolbar-toggle"
+        :class="{ active: state.showTracks }"
+        :aria-pressed="state.showTracks"
+        title="显示/隐藏选中相机的历史轨迹"
+        @click="toggleTracks"
+      >
+        <span class="toolbar-dot" />轨迹
+        <span v-if="state.showTracks && trackCount > 0" class="track-count">{{ trackCount }}</span>
+      </button>
+      <button
+        class="toolbar-toggle"
+        :class="{ active: state.showVideoFusion }"
+        :aria-pressed="state.showVideoFusion"
+        title="在选中相机视锥内融合 HLS 视频纹理"
+        @click="toggleVideoFusion"
+      >
+        <span class="toolbar-dot" />视频融合
+      </button>
+      <button
+        class="toolbar-toggle"
+        :class="{ active: state.showModelDetails }"
+        :aria-pressed="state.showModelDetails"
+        title="建筑 LOD 细节 / 简化盒体切换"
+        @click="toggleModelDetails"
+      >
+        <span class="toolbar-dot" />模型细节
+      </button>
+      <button
+        class="toolbar-toggle"
+        :class="{ active: state.showBaseMap }"
+        :aria-pressed="state.showBaseMap"
+        title="2.5D 程序化矢量底图开关"
+        @click="toggleBaseMap"
+      >
+        <span class="toolbar-dot" />2.5D底图
+      </button>
+    </div>
 
     <div class="status-cluster">
       <div class="ws-state" :class="`ws-${wsTone}`">

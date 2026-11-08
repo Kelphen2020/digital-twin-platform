@@ -124,6 +124,8 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P5.md`](docs/API_P5.md)。
 
+![P6.0 三维增强：2.5D 底图 + glTF + LOD + 视频融合](docs/screenshots/p6-scene.png)
+
 ## P6.0 能力（三维增强）
 
 - **站点配置**：`GET /api/site` 下发站点名称、ENU 范围、模型清单与底图样式；`SITE_CONFIG_FILE` 可覆盖。

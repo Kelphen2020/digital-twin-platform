@@ -31,6 +31,7 @@ import type {
   Order,
   OrderListResponse,
   OrderStatus,
+  SiteConfig,
   StatsSummary,
   TrackListResponse,
   TrackPoint,
@@ -432,6 +433,13 @@ export async function fetchBusStatus(): Promise<BusStatus> {
 /** POST /api/bus/replay（admin）→ 回放指定 offset 区间。 */
 export async function replayBus(payload: BusReplayRequest): Promise<BusReplayResponse> {
   return postJson<BusReplayResponse>('/api/bus/replay', payload)
+}
+
+// ---------------- P6 站点配置 ----------------
+
+/** GET /api/site（登录用户）→ 站点范围 / 模型清单 / 底图配置。 */
+export async function fetchSite(): Promise<SiteConfig> {
+  return requestJson<SiteConfig>('/api/site')
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

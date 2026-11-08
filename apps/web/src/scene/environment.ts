@@ -1,41 +1,27 @@
 import * as THREE from 'three'
-import { SITE_SIZE_M, enuToThree } from './coordinates'
+import type { SiteConfig } from '../types'
 import { disposeObject3D } from './dispose'
-import { createTextSprite } from './textSprite'
+import { getSiteSize } from './siteDefaults'
 
 export interface SceneEnvironment {
   group: THREE.Group
   dispose(): void
 }
 
-interface BuildingSpec {
-  label: string
-  /** ENU 中心 (x, y)。 */
-  center: [number, number]
-  /** ENU 尺寸 (x 向, y 向, z 高)。 */
-  size: [number, number, number]
-  color: number
-}
-
-/** P0 固定布局：两栋演示建筑，坐标与 P0 需求一致。 */
-const BUILDINGS: BuildingSpec[] = [
-  { label: 'A 栋 · 60×40×20 m', center: [-40, 40], size: [60, 40, 20], color: 0x1c3a5e },
-  { label: 'B 栋 · 50×30×14 m', center: [60, -20], size: [50, 30, 14], color: 0x193550 },
-]
-
 const GROUND_COLOR = 0x0a1a2c
 const GRID_LINE_COLOR = 0x1e3a5f
 const GRID_CENTER_COLOR = 0x3b82f6
 
-/** 构建静态场景：天空、地面网格、两栋建筑、灯光。 */
-export function createEnvironment(): SceneEnvironment {
+/** 构建静态场景：天空、地面、网格、灯光（范围由站点 extent 决定）。 */
+export function createEnvironment(site: SiteConfig): SceneEnvironment {
   const group = new THREE.Group()
   group.name = 'environment'
 
+  const { width, depth, centerX, centerY } = getSiteSize(site)
+
   group.add(createSky())
-  group.add(createGround())
-  group.add(createGrid())
-  for (const building of BUILDINGS) group.add(createBuilding(building))
+  group.add(createGround(width, depth, centerX, centerY))
+  group.add(createGrid(width, depth, centerX, centerY))
   group.add(createLights())
 
   return {
@@ -48,7 +34,7 @@ export function createEnvironment(): SceneEnvironment {
 
 /** 渐变天穹；不受雾影响，提供深蓝夜空背景。 */
 function createSky(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(1200, 32, 16)
+  const geometry = new THREE.SphereGeometry(1600, 32, 16)
   const material = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -79,72 +65,44 @@ function createSky(): THREE.Mesh {
   return sky
 }
 
-/** 400×400 m 主地面 + 外围大地面（与雾融合，消除边界硬切）。 */
-function createGround(): THREE.Group {
+/** 站点地面 + 外围大地面（与雾融合，消除边界硬切）。 */
+function createGround(width: number, depth: number, centerX: number, centerY: number): THREE.Group {
   const group = new THREE.Group()
 
-  const geometry = new THREE.PlaneGeometry(SITE_SIZE_M, SITE_SIZE_M)
+  const geometry = new THREE.PlaneGeometry(width, depth)
   geometry.rotateX(-Math.PI / 2)
   const ground = new THREE.Mesh(
     geometry,
     new THREE.MeshStandardMaterial({ color: GROUND_COLOR, roughness: 0.95, metalness: 0.15 }),
   )
+  ground.position.set(centerX, 0, -centerY)
   ground.receiveShadow = true
   group.add(ground)
 
-  const apronGeometry = new THREE.PlaneGeometry(2400, 2400)
+  const apronSize = Math.max(2400, Math.max(width, depth) * 3)
+  const apronGeometry = new THREE.PlaneGeometry(apronSize, apronSize)
   apronGeometry.rotateX(-Math.PI / 2)
   const apron = new THREE.Mesh(
     apronGeometry,
     new THREE.MeshStandardMaterial({ color: 0x061020, roughness: 1, metalness: 0 }),
   )
-  apron.position.y = -0.3
+  apron.position.set(centerX, -0.3, -centerY)
   group.add(apron)
 
   return group
 }
 
-/** 400 × 400 m、10 m 间距的地面网格。 */
-function createGrid(): THREE.GridHelper {
-  const grid = new THREE.GridHelper(SITE_SIZE_M, 40, GRID_CENTER_COLOR, GRID_LINE_COLOR)
-  grid.position.y = 0.02
+/** 与 extent 匹配、10 m 间距的地面网格。 */
+function createGrid(width: number, depth: number, centerX: number, centerY: number): THREE.GridHelper {
+  const gridSize = Math.max(width, depth)
+  const divisions = Math.max(2, Math.round(gridSize / 10))
+  const grid = new THREE.GridHelper(gridSize, divisions, GRID_CENTER_COLOR, GRID_LINE_COLOR)
+  grid.position.set(centerX, 0.02, -centerY)
   const material = grid.material as THREE.LineBasicMaterial
   material.transparent = true
   material.opacity = 0.55
   material.depthWrite = false
   return grid
-}
-
-/** 按 ENU 中心与尺寸生成建筑盒体 + 轮廓线 + 名称标注。 */
-function createBuilding(spec: BuildingSpec): THREE.Group {
-  const [centerX, centerY] = spec.center
-  const [sizeX, sizeY, sizeZ] = spec.size
-
-  const group = new THREE.Group()
-  group.position.copy(enuToThree(centerX, centerY, 0))
-
-  const geometry = new THREE.BoxGeometry(sizeX, sizeZ, sizeY)
-  const body = new THREE.Mesh(
-    geometry,
-    new THREE.MeshStandardMaterial({ color: spec.color, roughness: 0.58, metalness: 0.35 }),
-  )
-  body.position.y = sizeZ / 2
-  body.castShadow = true
-  body.receiveShadow = true
-  group.add(body)
-
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geometry),
-    new THREE.LineBasicMaterial({ color: 0x4c8dff, transparent: true, opacity: 0.4 }),
-  )
-  edges.position.copy(body.position)
-  group.add(edges)
-
-  const label = createTextSprite(spec.label, { worldHeight: 5.5 })
-  label.position.set(0, sizeZ + 9, 0)
-  group.add(label)
-
-  return group
 }
 
 /** 环境光 + 主平行光（带阴影）+ 冷色补光。 */

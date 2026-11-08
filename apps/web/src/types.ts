@@ -413,6 +413,58 @@ export interface DutyCurrent {
   operators: string[]
 }
 
+// ---------------- P6：三维站点配置 ----------------
+
+export interface SiteOrigin {
+  lat: number
+  lng: number
+  alt: number
+}
+
+/** 站点局部 ENU 米制范围。 */
+export interface SiteExtent {
+  min_x: number
+  max_x: number
+  min_y: number
+  max_y: number
+  min_z: number
+  max_z: number
+}
+
+export interface SiteModelTransform {
+  x: number
+  y: number
+  z: number
+  /** 绕 ENU 上轴（z）旋转角度（度）。 */
+  rotation_y: number
+  scale: number
+}
+
+export interface SiteModel {
+  id: string
+  name: string
+  format: string
+  url: string
+  transform: SiteModelTransform
+}
+
+export interface SiteMapConfig {
+  style: string
+  image_url: string | null
+}
+
+/** GET /api/site（登录用户）。 */
+export interface SiteConfig {
+  name: string
+  origin: SiteOrigin
+  extent: SiteExtent
+  models: SiteModel[]
+  map: SiteMapConfig
+}
+
+/** glTF 模型加载状态（用于场景内“模型已加载/回退”指示）。 */
+export type SiteModelStatus = 'idle' | 'loading' | 'loaded' | 'partial' | 'fallback'
+
 // ---------------- P5：可回放事件总线 ----------------
 
 /** GET /api/bus/status（admin）。 */

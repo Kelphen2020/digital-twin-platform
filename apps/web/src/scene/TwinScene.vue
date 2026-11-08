@@ -12,11 +12,17 @@ import {
   SEVERITY_ORDER,
   formatDateTime,
 } from '../labels'
-import type { Camera, FocusRequest, TrackPoint, TwinEvent } from '../types'
+import type { Area, Camera, FocusRequest, SiteConfig, SiteModelStatus, TrackPoint, TwinEvent } from '../types'
+import { createBaseMapLayer, type BaseMapLayer } from './baseMap'
+import { createBuildingLayer, type BuildingLayer } from './buildings'
 import { createCameraMarker, type CameraMarker } from './cameraMarkers'
-import { EVENT_MARKER_TTL_MS, createEventMarker, type EventMarker } from './eventMarkers'
+import { disposeObject3D } from './dispose'
 import { createEnvironment, type SceneEnvironment } from './environment'
+import { EVENT_MARKER_TTL_MS, createEventMarker, type EventMarker } from './eventMarkers'
+import { loadSiteModels } from './gltf'
+import { DEFAULT_SITE } from './siteDefaults'
 import { createTrackLineLayer, type TrackLineLayer } from './trackLines'
+import { createVideoFusion, type VideoFusion } from './videoFusion'
 
 const props = defineProps<{
   cameras: Camera[]
@@ -27,6 +33,11 @@ const props = defineProps<{
   offline: boolean
   tracks: TrackPoint[]
   showTracks: boolean
+  site: SiteConfig | null
+  areas: Area[]
+  showBaseMap: boolean
+  showModelDetails: boolean
+  showVideoFusion: boolean
 }>()
 
 const emit = defineEmits<{
@@ -65,6 +76,12 @@ let scene: THREE.Scene | null = null
 let camera: THREE.PerspectiveCamera | null = null
 let controls: OrbitControls | null = null
 let environment: SceneEnvironment | null = null
+let baseMapLayer: BaseMapLayer | null = null
+let buildingLayer: BuildingLayer | null = null
+let gltfGroup: THREE.Group | null = null
+let fusion: VideoFusion | null = null
+let modelLoadSeq = 0
+let fusionSeq = 0
 let cameraLayer: THREE.Group | null = null
 let eventLayer: THREE.Group | null = null
 let trackLayer: TrackLineLayer | null = null
@@ -84,6 +101,132 @@ let lastTrackSyncAt = 0
 const cameraMarkers = new Map<string, CameraMarker>()
 const eventMarkers = new Map<string, EventMarker>()
 const pointer = new THREE.Vector2()
+
+// ---- P6：站点/模型/视频融合状态（暴露为 data-* 便于验收） ----
+const modelStatus = ref<SiteModelStatus>('idle')
+const modelMessage = ref('')
+const fusionActive = ref(false)
+const selectedCamera = computed<Camera | null>(
+  () => props.cameras.find((item) => item.id === props.selectedCameraId) ?? null,
+)
+const modelStatusLabel = computed(() => {
+  switch (modelStatus.value) {
+    case 'loading':
+      return '加载中…'
+    case 'loaded':
+      return '已加载'
+    case 'partial':
+      return '部分加载'
+    case 'fallback':
+      return '回退·程序化建筑'
+    default:
+      return '—'
+  }
+})
+const modelStatusClass = computed(() => `model-${modelStatus.value}`)
+
+function currentSite(): SiteConfig {
+  return props.site ?? DEFAULT_SITE
+}
+
+// ---- P6：场景层重建 ----
+
+function rebuildEnvironment(): void {
+  if (!scene) return
+  environment?.dispose()
+  environment = createEnvironment(currentSite())
+  scene.add(environment.group)
+}
+
+function rebuildBaseMap(): void {
+  if (!scene) return
+  baseMapLayer?.dispose()
+  baseMapLayer = createBaseMapLayer(currentSite(), props.areas, props.cameras)
+  baseMapLayer.mesh.visible = props.showBaseMap
+  scene.add(baseMapLayer.mesh)
+}
+
+function rebuildBuildingLayer(): void {
+  if (!scene) return
+  buildingLayer?.dispose()
+  buildingLayer = createBuildingLayer(props.showModelDetails ? 'lod' : 'simple', gltfGroup)
+  scene.add(buildingLayer.group)
+}
+
+function disposeGltfGroup(): void {
+  if (!gltfGroup) return
+  gltfGroup.parent?.remove(gltfGroup)
+  disposeObject3D(gltfGroup)
+  gltfGroup = null
+}
+
+/** 加载 GET /api/site models；失败/缺失保持程序化建筑并在 HUD 显示回退状态。 */
+async function reloadModels(): Promise<void> {
+  const seq = (modelLoadSeq += 1)
+  disposeGltfGroup()
+  rebuildBuildingLayer()
+
+  const models = currentSite().models ?? []
+  if (models.length === 0) {
+    modelStatus.value = 'fallback'
+    modelMessage.value = '站点未配置模型，使用程序化建筑'
+    return
+  }
+
+  modelStatus.value = 'loading'
+  modelMessage.value = `正在加载 ${models.length} 个站点模型…`
+  try {
+    const result = await loadSiteModels(models)
+    if (seq !== modelLoadSeq) {
+      for (const loaded of result.loaded) disposeObject3D(loaded.object)
+      return
+    }
+    if (result.loaded.length === 0) {
+      modelStatus.value = 'fallback'
+      modelMessage.value = `模型加载失败（${result.failed.length}），使用程序化建筑`
+      return
+    }
+    const group = new THREE.Group()
+    group.name = 'site-models'
+    for (const loaded of result.loaded) group.add(loaded.object)
+    gltfGroup = group
+    modelStatus.value = result.failed.length > 0 ? 'partial' : 'loaded'
+    modelMessage.value =
+      result.failed.length > 0
+        ? `已加载 ${result.loaded.length} 个模型，${result.failed.length} 个失败（回退程序化建筑）`
+        : `已加载：${result.loaded.map((item) => item.name).join('、')}`
+    rebuildBuildingLayer()
+  } catch (error) {
+    if (seq !== modelLoadSeq) return
+    modelStatus.value = 'fallback'
+    modelMessage.value = `模型加载异常：${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+// ---- P6：视频纹理融合（独立于右侧 CameraVideo 播放器） ----
+
+function disposeFusion(): void {
+  fusion?.dispose()
+  fusion = null
+  fusionActive.value = false
+}
+
+async function syncVideoFusion(): Promise<void> {
+  const seq = (fusionSeq += 1)
+  disposeFusion()
+  if (!props.showVideoFusion) return
+  const target = selectedCamera.value
+  if (!target || !target.stream_url) return
+  const created = await createVideoFusion(target)
+  if (seq !== fusionSeq) {
+    created?.dispose()
+    return
+  }
+  if (!created) return
+  fusion = created
+  fusionActive.value = true
+  scene?.add(created.group)
+}
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
@@ -350,8 +493,15 @@ function initScene(): void {
   controlsInstance.update()
   controls = controlsInstance
 
-  environment = createEnvironment()
+  environment = createEnvironment(currentSite())
   sceneInstance.add(environment.group)
+
+  baseMapLayer = createBaseMapLayer(currentSite(), props.areas, props.cameras)
+  baseMapLayer.mesh.visible = props.showBaseMap
+  sceneInstance.add(baseMapLayer.mesh)
+
+  buildingLayer = createBuildingLayer(props.showModelDetails ? 'lod' : 'simple', null)
+  sceneInstance.add(buildingLayer.group)
 
   cameraLayer = new THREE.Group()
   cameraLayer.name = 'camera-markers'
@@ -369,6 +519,8 @@ function initScene(): void {
 
   rebuildCameraMarkers()
   syncEventMarkers()
+  void reloadModels()
+  void syncVideoFusion()
 
   resizeObserver = new ResizeObserver(() => resizeRenderer())
   resizeObserver.observe(container)
@@ -406,6 +558,13 @@ function disposeScene(): void {
 
   trackLayer?.dispose()
   trackLayer = null
+
+  disposeFusion()
+  buildingLayer?.dispose()
+  buildingLayer = null
+  baseMapLayer?.dispose()
+  baseMapLayer = null
+  disposeGltfGroup()
 
   environment?.dispose()
   environment = null
@@ -458,6 +617,38 @@ watch(
   },
 )
 watch(
+  () => props.site,
+  () => {
+    rebuildEnvironment()
+    rebuildBaseMap()
+    void reloadModels()
+  },
+)
+watch(
+  () => props.areas,
+  () => rebuildBaseMap(),
+)
+watch(
+  () => props.cameras,
+  () => rebuildBaseMap(),
+)
+watch(
+  () => props.showBaseMap,
+  () => {
+    if (baseMapLayer) baseMapLayer.mesh.visible = props.showBaseMap
+  },
+)
+watch(
+  () => props.showModelDetails,
+  () => rebuildBuildingLayer(),
+)
+watch(
+  [() => props.selectedCameraId, () => props.showVideoFusion, () => selectedCamera.value?.stream_url],
+  () => {
+    void syncVideoFusion()
+  },
+)
+watch(
   () => props.focusRequest,
   (request) => {
     if (!request || request.seq === lastFocusSeq) return
@@ -483,9 +674,19 @@ onBeforeUnmount(disposeScene)
 </script>
 
 <template>
-  <div ref="containerRef" class="scene-root">
+  <div
+    ref="containerRef"
+    class="scene-root"
+    :data-base-map="showBaseMap ? 'on' : 'off'"
+    :data-model-detail="showModelDetails ? 'lod' : 'simple'"
+    :data-video-fusion="fusionActive ? 'active' : 'off'"
+    :data-model-status="modelStatus"
+  >
     <div class="scene-hud">
       <span class="scene-fps">{{ fpsDisplay > 0 ? fpsDisplay : '—' }} FPS</span>
+      <span class="scene-model-status" :class="modelStatusClass" :title="modelMessage">
+        模型：{{ modelStatusLabel }}
+      </span>
       <span class="scene-hint">左键旋转 · 右键平移 · 滚轮缩放</span>
     </div>
 

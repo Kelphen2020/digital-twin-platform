@@ -860,44 +860,54 @@ dd {
    P1.0 扩展：视频、轨迹开关、事件处置、统计、标定弹窗
    ============================================================ */
 
-/* ---------------- 顶栏轨迹开关 ---------------- */
+/* ---------------- 三维显示开关工具栏（P6：轨迹/视频融合/模型细节/2.5D底图） ---------------- */
 
-.track-toggle {
+.scene-toolbar {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 12px;
+  gap: 5px;
+  padding: 3px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(8, 20, 38, 0.6);
+  background: rgba(8, 20, 38, 0.55);
+}
+
+.toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   white-space: nowrap;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 
-.track-toggle:hover {
-  border-color: var(--border-strong);
+.toolbar-toggle:hover {
+  border-color: var(--border);
   color: var(--text);
 }
 
-.track-toggle.active {
-  border-color: rgba(56, 189, 248, 0.55);
+.toolbar-toggle.active {
+  border-color: rgba(56, 189, 248, 0.5);
   background: rgba(14, 165, 233, 0.16);
   color: #bae6fd;
 }
 
-.track-toggle-dot {
-  width: 8px;
-  height: 8px;
+.toolbar-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--text-faint);
 }
 
-.track-toggle.active .track-toggle-dot {
+.toolbar-toggle.active .toolbar-dot {
   background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
+  box-shadow: 0 0 7px var(--accent);
 }
 
 .track-count {
@@ -906,7 +916,45 @@ dd {
   background: rgba(56, 189, 248, 0.18);
   color: #7dd3fc;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
+}
+
+/* 场景内模型加载状态 */
+.scene-model-status {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(5, 12, 24, 0.7);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.scene-model-status.model-loaded {
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+.scene-model-status.model-partial {
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fcd34d;
+}
+
+.scene-model-status.model-fallback {
+  border-color: rgba(148, 163, 184, 0.4);
+  color: var(--text-muted);
+}
+
+.scene-model-status.model-loading {
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #7dd3fc;
+}
+
+@media (max-width: 1360px) {
+  .toolbar-toggle {
+    padding: 4px 6px;
+    font-size: 10.5px;
+  }
 }
 
 /* ---------------- 侧栏页签 ---------------- */

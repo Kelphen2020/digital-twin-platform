@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P5.0）
+# 数字孪生安防平台 · Web 前端（P6.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6，均为固定契约）。
 
 ## 快速开始
 
@@ -140,6 +140,15 @@ pnpm dev          # http://127.0.0.1:5173
 - **回放事件流**：WS `event_replay` 帧（`data: {event, offset, replay}`）追加到事件流顶部回放区，显示紫色「回放 · offset N」徽标与「回放」计数；回放条目不计入事件总数、不生成实时告警与三维标记、不提供确认按钮（仅「历史」标记），可点击打开事件详情。`event_escalated` 回放仍走 `event_updated` 正常更新。
 - 回放 feed 最多保留 100 条，实时事件原有 200 条上限不变。
 
+### 三维增强：2.5D 底图 / LOD / glTF / 视频融合（P6）
+
+- **站点配置**：登录后 `GET /api/site` 获取 `extent`（地面/网格尺寸）、`models`（glTF 清单与 transform）、`map`；接口失败/403/404 时使用内置兜底站点（400×400 m），场景不回退加载。
+- **2.5D 矢量底图**（默认开启，顶栏「2.5D底图」切换）：程序化 CanvasTexture（2048²）按站点 extent 绘制——区域/建筑轮廓（优先 `GET /api/areas` 的 building polygon，缺失时使用固定建筑布局）、程序化道路、相机点位与 code、指北针、50 m 比例尺、扫描线与暗角；关闭后仅保留三维网格。
+- **建筑 LOD**（顶栏「模型细节」切换）：`THREE.LOD` 近景 = 楼体 + 屋顶 + 楼层线 + 轮廓，中景 = 简化盒体，远景 = 地面轮廓；glTF 加载成功时 glTF 作为近景层级（中/远景仍用程序化盒体/轮廓），关闭模型细节则使用简化盒体。
+- **glTF 加载**：`GLTFLoader` 按需动态加载 `site.models`（支持 gltf/glb），应用 transform（ENU 位置、`rotation_y` 角度、缩放）；加载中/成功/部分失败/回退在场景左下角「模型：…」指示；失败或无模型时保留程序化建筑（回退指示）。
+- **视频纹理融合**（默认关闭，顶栏「视频融合」切换）：为选中相机创建**独立**隐藏 `<video>` + hls.js 实例播放 `stream_url`，把 `VideoTexture` 贴到视锥内量程 60% 处的平面（尺寸按 `fov_h`/`fov_v` 计算），带边框、暗角与 LIVE 标签；相机切换/关闭开关时销毁播放器与纹理，不影响右侧相机详情里的 HLS 播放器。
+- **工具栏**：顶栏紧凑工具栏含 轨迹 / 视频融合 / 模型细节 / 2.5D底图 四个开关（会话内状态，刷新恢复默认）；7 个侧栏 tab 保持不变。
+
 ## 后端契约（前端实际调用）
 
 | 方法 | 路径 | 角色 | 用途 |
@@ -165,6 +174,7 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/duty/groups` | 已登录 | 值班组列表 |
 | POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删 |
 | GET | `/api/duty/current?area_id=` | 已登录 | 区域当前值班组 |
+| GET | `/api/site` | 已登录 | 站点范围 / glTF 模型清单 / 底图配置 |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
 | POST | `/api/bus/replay` | admin | 按 offset 区间回放事件 |
 | WS | `/ws?token=` | 已登录 | `hello/event/event_updated/event_replay/camera_status/track_point/order_updated/stats` |
@@ -204,6 +214,11 @@ apps/web/
    │  ├─ BusPanel.vue            # P5 事件总线状态 / 回放（admin）
    │  └─ （其余见代码）
    ├─ scene/                     # TwinScene + 环境/相机标记/事件标记/轨迹/坐标/资源释放
+   │  ├─ buildings.ts            # 建筑 LOD（近细节/中盒体/远轮廓）与 glTF 近景接线
+   │  ├─ baseMap.ts              # 2.5D 程序化矢量底图 CanvasTexture
+   │  ├─ gltf.ts                 # GLTFLoader 站点模型加载与 transform
+   │  ├─ videoFusion.ts          # 选中相机 HLS VideoTexture 视锥内视频面
+   │  └─ siteDefaults.ts         # /api/site 兜底站点
    └─ styles/main.css            # 深蓝指挥中心风格（1280–1920）
 ```
 
@@ -225,6 +240,9 @@ apps/web/
 | 操作审计 | **实时**：`/api/audit`（含 `duty.*`、`order.auto_dispatch*`） |
 | 值班组 / 自动派单 | **实时**：`/api/duty/*` + 升级设置 `auto_dispatch` + WS `order_updated` |
 | 事件总线状态 / 回放 | **实时**：`/api/bus/status` + `POST /api/bus/replay` + WS `event_replay`（当前后端驱动为 `jsonl`，路径 `data/bus/events.jsonl`） |
+| 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
+| glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
+| 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
 | AI 推理 | **未接入**，由 `services/simulator` 按 `/api/ingest/detections` 契约模拟 |
 
 ## 验证方式
@@ -270,6 +288,12 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
 
+# P6：站点配置与 glTF 资源
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/site
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5173/models/site.gltf
+# 浏览器打开后顶栏可切换 轨迹 / 视频融合 / 模型细节 / 2.5D底图；
+# 场景左下角显示「模型：已加载」或「模型：回退·程序化建筑」。
+
 # P5：总线状态与回放（admin）
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/bus/status
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -307,3 +331,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - 自动派单依赖升级设置 `enabled + auto_dispatch` 与区域/全局值班组；无匹配值班组时后端审计 `order.auto_dispatch_skipped`，前端不显示工单。
 - P5 当前后端驱动为 `jsonl`（可跨重启回放）；`409 bus_driver_unsupported` 仅在不支持回放的驱动或 memory 缓冲区间滚出时出现，界面已映射为 Toast，但当前驱动下无法主动触发。
 - 回放条目只进入事件流回放区，不进入三维场景与实时告警统计；回放 feed 上限 100 条。
+- P6 底图为前端程序化矢量风格；`map.image_url`（正射影像）当前未渲染（为 null），接入真实影像属后续阶段。
+- glTF transform 的 `rotation_y` 按项目约定视为角度（度）；多模型/超大模型未做 Draco/KTX2 压缩解码。
+- 视频融合仅对选中相机生效，使用独立隐藏 hls.js 实例（与右侧 CameraVideo 面板互不影响）；关闭/切换相机时释放资源。
+- 四个三维开关为会话内存状态，刷新页面恢复默认（轨迹开/视频融合关/模型细节开/2.5D底图开）。
