@@ -37,6 +37,7 @@ type Store interface {
 	ListAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEntry, error)
 	GetCameraRules(ctx context.Context, cameraID string) (model.CameraRules, error)
 	SetCameraRules(ctx context.Context, rules model.CameraRules) (model.CameraRules, error)
+	FindOpenOrderForEvent(ctx context.Context, eventID string) (model.Order, bool, error)
 	CreateOrder(ctx context.Context, order model.Order) error
 	GetOrder(ctx context.Context, id string) (model.Order, error)
 	UpdateOrder(ctx context.Context, id string, update model.OrderUpdate) (model.Order, error)
@@ -46,6 +47,7 @@ type Store interface {
 	CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error
 	ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error)
 	EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
+	ReEscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
 	GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error)
 	GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error)
 	ListUserAccounts(ctx context.Context) ([]model.UserAccount, error)
@@ -411,6 +413,45 @@ func (m *Memory) SetCameraRules(_ context.Context, rules model.CameraRules) (mod
 	return rules, nil
 }
 
+func (m *Memory) FindOpenOrderForEvent(_ context.Context, eventID string) (model.Order, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := len(m.orders) - 1; i >= 0; i-- {
+		order := m.orders[i]
+		if order.EventID != eventID {
+			continue
+		}
+		switch order.Status {
+		case "open", "assigned", "processing":
+			return order, true, nil
+		}
+	}
+	return model.Order{}, false, nil
+}
+
+func (m *Memory) ReEscalateStale(_ context.Context, before time.Time, severities []string) ([]model.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	escalated := make([]model.Event, 0, 4)
+	for i := range m.events {
+		event := &m.events[i]
+		if event.Status == "closed" || event.EscalatedAt == nil || event.ReEscalatedAt != nil {
+			continue
+		}
+		if event.EscalatedAt.After(before) {
+			continue
+		}
+		if len(severities) > 0 && !containsString(severities, event.Severity) {
+			continue
+		}
+		stamp := now
+		event.ReEscalatedAt = &stamp
+		escalated = append(escalated, *event)
+	}
+	return escalated, nil
+}
+
 func (m *Memory) CreateOrder(_ context.Context, order model.Order) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -459,6 +500,9 @@ func (m *Memory) ListOrders(_ context.Context, filter model.OrderFilter) ([]mode
 			continue
 		}
 		if filter.Assignee != "" && order.Assignee != filter.Assignee {
+			continue
+		}
+		if filter.EventID != "" && order.EventID != filter.EventID {
 			continue
 		}
 		if len(filter.CameraIDs) > 0 && !containsString(filter.CameraIDs, order.CameraID) {

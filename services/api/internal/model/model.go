@@ -62,21 +62,22 @@ type Area struct {
 
 // Event is one produced event (P0 stand-in for the Kafka event envelope).
 type Event struct {
-	ID          string         `json:"id"`
-	CameraID    string         `json:"camera_id"`
-	CameraCode  string         `json:"camera_code"`
-	CameraName  string         `json:"camera_name"`
-	Type        string         `json:"type"`
-	Severity    string         `json:"severity"`
-	Confidence  float64        `json:"confidence"`
-	X           float64        `json:"x"`
-	Y           float64        `json:"y"`
-	Z           float64        `json:"z"`
-	OccurredAt  time.Time      `json:"occurred_at"`
-	Status      string         `json:"status"`
-	ClosedAt    *time.Time     `json:"closed_at,omitempty"`
-	EscalatedAt *time.Time     `json:"escalated_at,omitempty"`
-	Payload     map[string]any `json:"payload"`
+	ID            string         `json:"id"`
+	CameraID      string         `json:"camera_id"`
+	CameraCode    string         `json:"camera_code"`
+	CameraName    string         `json:"camera_name"`
+	Type          string         `json:"type"`
+	Severity      string         `json:"severity"`
+	Confidence    float64        `json:"confidence"`
+	X             float64        `json:"x"`
+	Y             float64        `json:"y"`
+	Z             float64        `json:"z"`
+	OccurredAt    time.Time      `json:"occurred_at"`
+	Status        string         `json:"status"`
+	ClosedAt      *time.Time     `json:"closed_at,omitempty"`
+	EscalatedAt   *time.Time     `json:"escalated_at,omitempty"`
+	ReEscalatedAt *time.Time     `json:"re_escalated_at,omitempty"`
+	Payload       map[string]any `json:"payload"`
 }
 
 // NotificationSettings controls webhook delivery of events and escalations.
@@ -101,10 +102,11 @@ func DefaultNotificationSettings() NotificationSettings {
 
 // EscalationSettings controls the stale-alert escalation worker.
 type EscalationSettings struct {
-	Enabled      bool     `json:"enabled"`
-	AfterSeconds int      `json:"after_seconds"`
-	Severities   []string `json:"severities"`
-	AutoDispatch bool     `json:"auto_dispatch"`
+	Enabled            bool     `json:"enabled"`
+	AfterSeconds       int      `json:"after_seconds"`
+	Severities         []string `json:"severities"`
+	AutoDispatch       bool     `json:"auto_dispatch"`
+	SecondAfterSeconds int      `json:"second_after_seconds"`
 }
 
 // DefaultEscalationSettings escalates warn/critical alerts after five minutes.
@@ -129,13 +131,25 @@ type NotificationLog struct {
 // DutyGroup is one on-duty roster bound to a set of areas. An empty area list
 // is the global fallback group.
 type DutyGroup struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Areas     []string  `json:"areas"`
-	Operators []string  `json:"operators"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Areas     []string    `json:"areas"`
+	Operators []string    `json:"operators"`
+	Rotation  string      `json:"rotation"`
+	Shifts    []DutyShift `json:"shifts"`
+	Active    bool        `json:"active"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
+// DutyShift is one staffing window inside a duty group.
+type DutyShift struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Start     string   `json:"start"`
+	End       string   `json:"end"`
+	Weekdays  []int    `json:"weekdays"`
+	Operators []string `json:"operators"`
 }
 
 // SeverityRank orders severities for notification thresholds.
@@ -329,6 +343,7 @@ type Order struct {
 type OrderFilter struct {
 	Status    string
 	Assignee  string
+	EventID   string
 	Limit     int
 	CameraIDs []string
 }

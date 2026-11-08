@@ -417,3 +417,44 @@ P7 覆盖：admin 列表（3 个种子账号、无密码字段）；operator 403
 - 账号持久化：内存模式下重启会回到 3 个种子账号；设置 `DATABASE_URL` 使用 PostgreSQL 时账号持久化。
 - JWT 无刷新令牌：角色/区域变更在下次登录生效，停用后旧 token 最长 12h 内仍有效（下次请求不主动吊销）。
 - `/api/auth/me` 返回的是 JWT 快照，`created_at/updated_at` 为零值（列表接口返回真实时间）；不影响权限。
+
+---
+
+# P8.0 验收记录（2026-11-08 晚间）
+
+## 39. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增 P8 测试：班次校验与解析（含跨夜/非班次时间无人值班）、轮转派单（两个事件不同 operator）、二次升级（re_escalated_at/审计/指标）、工单去重（open_order）、second_after_seconds 校验 |
+
+## 40. smoke.sh（P0–P7 113 项 + P8 20 项 = 133 项 / 39 步）
+
+```
+smoke: PASS (133 checks passed)
+```
+
+P8 覆盖：班次组创建 201、`/api/duty/current` 返回 shift + 2 班次成员、operator 建组 403；轮转派单 assignee 在 operator/viewer 间轮转（note 含班组·班次）；二次升级 15s 左右写入 `re_escalated_at`、审计 `event.re_escalate`、指标增长；同事件再次派单被 open_order 去重（审计/指标）；`second_after_seconds` 越界 400；清理恢复默认并删除测试组。
+
+## 41. 前端 P8 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 值班班次 | ✅ 值班组表单 rotation 选择 + 班次编辑器（名称/起止/周几/成员/增删）；当前值班卡显示当前班次与成员；operator/viewer 只读 |
+| 派单轮转 | ✅ 工单负责人显示 operator/viewer（轮转），note 原样显示「系统自动派单（告警升级） · 班组 · 班次」 |
+| 再升级 | ✅ 事件流/详情「再升级」徽标 + 再升级时间行；WS toast「告警再次升级：…」 |
+| 设置 | ✅ 二次升级时限字段（0–604800）保存/回读（120→0 还原） |
+| 回归 | ✅ 8 页签、场景模型/2.5D 底图/视频、P0–P7 功能正常；console errors=[]、exceptions=[]、bad responses=[] |
+| 截图 | `docs/screenshots/p8-duty-current.png`、`p8-duty-form.png`、`p8-settings.png`、`p8-event-detail.png`、`p8-orders.png`、`p8-toast.png`、`p8-operator-duty.png` |
+
+## 42. 已知限制（P8.0）
+
+- 轮转状态是进程内轮询（重启归零）；多实例需共享轮转计数。
+- 班次按服务端 Asia/Shanghai 解释；跨时区站点需要配置时区（当前未参数化）。
+- 二次升级依赖 15s 扫描周期，最坏延迟约 15s；与首轮升级共用静默窗口。
+- 工单去重仅针对「同一事件已有未关闭工单」；同相机同类事件跨事件仍是多张工单（按设计）。
+- 真实 GPU/视频源/机器人投递仍需人工验收。

@@ -64,6 +64,8 @@ export interface TwinEvent {
   closed_at?: string | null
   /** 告警升级时间（P3，可空）；非空表示超时未处置已升级。 */
   escalated_at?: string | null
+  /** 二次升级时间（P8，可空）；非空表示升级后超时仍未关闭。 */
+  re_escalated_at?: string | null
   payload: Record<string, unknown> | null
 }
 
@@ -327,13 +329,15 @@ export interface NotificationSettings {
   silence_seconds: number
 }
 
-/** GET/PUT /api/settings/escalation（admin；P4 增加自动派单）。 */
+/** GET/PUT /api/settings/escalation（admin；P4 自动派单，P8 二次升级）。 */
 export interface EscalationSettings {
   enabled: boolean
   after_seconds: number
   severities: Severity[]
   /** 升级时是否按相机区域解析值班组并自动创建工单。 */
   auto_dispatch: boolean
+  /** 升级后再超过该时长仍未关闭则触发二次升级；0 表示关闭（0–604800 秒）。 */
+  second_after_seconds: number
 }
 
 /** GET /api/audit 审计条目。 */
@@ -383,6 +387,21 @@ export interface AreaListResponse {
   items: Area[]
 }
 
+/** P8：值班班次（weekdays 为 ISO 周几：1=周一 … 7=周日）。 */
+export interface DutyShift {
+  /** 服务端生成的班次 id；新建时缺省。 */
+  id?: string
+  name: string
+  /** HH:MM */
+  start: string
+  /** HH:MM；end <= start 视为跨夜。 */
+  end: string
+  weekdays: number[]
+  operators: string[]
+}
+
+export type DutyRotation = 'group' | 'operator'
+
 export interface DutyGroup {
   id: string
   name: string
@@ -391,6 +410,10 @@ export interface DutyGroup {
   /** 值班人员用户名（须为已知用户）。 */
   operators: string[]
   active: boolean
+  /** P8：派单对象——group=班组名，operator=按班次成员轮转。 */
+  rotation?: DutyRotation
+  /** P8：班次列表；为空时沿用 operators 全天值班。 */
+  shifts?: DutyShift[]
   created_at: string
   updated_at: string
 }
@@ -400,6 +423,8 @@ export interface DutyGroupPayload {
   areas: string[]
   operators: string[]
   active: boolean
+  rotation: DutyRotation
+  shifts: DutyShift[]
 }
 
 export interface DutyListResponse {
@@ -410,6 +435,8 @@ export interface DutyListResponse {
 export interface DutyCurrent {
   area_id: string
   group: DutyGroup | null
+  /** P8：当前生效班次（无班次/非值班时间为 null）。 */
+  shift?: { id?: string; name: string; start: string; end: string } | null
   operators: string[]
 }
 

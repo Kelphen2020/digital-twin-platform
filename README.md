@@ -148,6 +148,18 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P7.md`](docs/API_P7.md)。
 
+![P8.0 值班班次与轮转派单](docs/screenshots/p8-duty-form.png)
+
+## P8.0 能力（值班排班 / 派单去重与轮转 / 超时再升级）
+
+- **值班班次**：值班组可配置多个班次（名称、开始/结束、ISO 周几、成员）；`end <= start` 支持跨夜；`/api/duty/current?area_id=&at=` 返回当前班次与成员（非班次时间无人值班）。
+- **派单轮转**：`rotation=operator` 时按当前班次成员轮转 assignee；否则仍派给班组名（兼容 P4）。
+- **工单去重**：同一事件已有未关闭工单时不再自动建单，审计 `order.auto_dispatch_skipped`（reason=open_order），指标 `dsh_twin_orders_deduped_total`。
+- **超时再升级**：`second_after_seconds` 控制升级后仍未关闭的再次升级（`re_escalated_at`、审计 `event.re_escalate`、指标 `dsh_twin_re_escalations_total`）。
+- 前端：值班表单支持班次编辑与轮转选择；事件显示「再升级」；设置页支持二次升级时长。
+
+契约见 [`docs/API_P8.md`](docs/API_P8.md)。
+
 ## 目录
 
 ```

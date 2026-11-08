@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -16,7 +16,9 @@ replay, bus metrics), the P6.0 addition in
 [`docs/API_P6.md`](../../docs/API_P6.md) (`GET /api/site`: site name, ENU
 extent, glTF model manifest, map style for the 2.5D/3D scene) and the P7.0
 addition in [`docs/API_P7.md`](../../docs/API_P7.md) (admin user management:
-`/api/users` CRUD, roles/areas/active, self-protection).
+`/api/users` CRUD, roles/areas/active, self-protection) and the P8.0 addition
+in [`docs/API_P8.md`](../../docs/API_P8.md) (duty shifts + operator rotation,
+open-order dedupe, second escalation / `re_escalated_at`).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -25,7 +27,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 = **113 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 = **133 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation). |
 | `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -198,7 +200,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**113 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0):
+(**133 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -320,6 +322,31 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     and self `PATCH active=false` → `400 self_protected`; audit contains
     `user.create`/`user.update`/`user.delete` with `actor=admin`. Cleanup
     deletes the temporary user (also via the EXIT trap).
+
+**P8.0 (steps 36–39, 20 checks)**
+
+36. duty shifts: admin creates a duty group for `area_gate` with
+    `rotation=operator` and one all-week `00:00–23:59` shift with operators
+    `[operator, viewer]` → 201; `GET /api/duty/current?area_id=area_gate`
+    returns the group, `shift.name=全天` and 2 operators; operator POST group
+    → 403;
+37. rotation: escalation `{after_seconds:1, auto_dispatch:true,
+    second_after_seconds:0}` (after sweeping pending events with
+    auto_dispatch off so only the two injected events dispatch); a stale warn
+    event on CAM-001 produces an order whose `assignee` is a shift operator
+    (rotation, not the group name); a second stale warn event on CAM-006 gets
+    the *other* operator as assignee; order notes include
+    `系统自动派单（告警升级） · <组> · <班次>`;
+38. open-order dedupe + re-escalation: `second_after_seconds=1` re-escalates
+    the first event (`re_escalated_at`, audit `event.re_escalate`,
+    `dsh_twin_re_escalations_total>0`), the re-escalation does **not** create a
+    second order (open-order dedupe; audit `order.auto_dispatch_skipped`
+    reason=`open_order`, `dsh_twin_orders_deduped_total>0`);
+39. validation + cleanup: `second_after_seconds=-1` and `604801` → 400;
+    escalation defaults restored (`300 s`, `auto_dispatch=true`,
+    `second_after_seconds=0`), notifications disabled, test duty group deleted
+    (204) and no leftover `P8值班组`/`smoke_*` test data (groups temporarily
+    deactivated for determinism are re-activated).
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -616,7 +643,59 @@ Notes:
   `GET /api/cameras` returns exactly the cameras in those areas.
 - Audit entries: `user.create`, `user.update`, `user.delete` (`actor=<admin>`).
 
-## 9. Typical demo sequence
+## 9. P8.0 duty shifts, rotation, dedupe & re-escalation
+
+P8 completes the "on-call → dispatch → escalate" loop: duty groups can carry
+shifts, `rotation=operator` dispatches to a shift member instead of the group
+name, repeated auto-dispatch to an event with an open order is deduped, and an
+escalated-but-unclosed event can be re-escalated after a second timeout.
+
+```bash
+ADMIN="$TOKEN"
+
+# 1) duty group with an all-day shift and operator rotation (area_gate)
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"name":"东门值班组","areas":["area_gate"],"operators":["operator","viewer"],
+       "active":true,"rotation":"operator",
+       "shifts":[{"name":"全天","start":"00:00","end":"23:59","weekdays":[1,2,3,4,5,6,7],
+                  "operators":["operator","viewer"]}]}' \
+  http://127.0.0.1:8080/api/duty/groups
+curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:8080/api/duty/current?area_id=area_gate'
+# -> { "group": {...}, "shift": {"name":"全天","start":"00:00","end":"23:59"},
+#      "operators": ["operator","viewer"] }
+
+# 2) fast escalation with operator rotation; stale warn events get dispatched
+#    to operator → viewer → operator ... (per group+shift rotation counter)
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],
+       "auto_dispatch":true,"second_after_seconds":0}' \
+  http://127.0.0.1:8080/api/settings/escalation
+# (create backdated warn events as in the P4 demo; orders get
+#  note "系统自动派单（告警升级） · <组> · <班次>" and assignee=operator/viewer)
+
+# 3) second escalation (re_escalated_at) after a further timeout, while the
+#    event's open order is deduped instead of creating another order
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],
+       "auto_dispatch":true,"second_after_seconds":1}' \
+  http://127.0.0.1:8080/api/settings/escalation
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/events/<event_id>
+# -> escalated_at + re_escalated_at; audit: event.re_escalate,
+#    order.auto_dispatch_skipped {reason:"open_order"}
+curl -s http://127.0.0.1:8080/metrics | grep -E 're_escalations|orders_deduped'
+
+# 4) restore defaults when done
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],
+       "auto_dispatch":true,"second_after_seconds":0}' \
+  http://127.0.0.1:8080/api/settings/escalation
+```
+
+P8 metrics: `dsh_twin_re_escalations_total`,
+`dsh_twin_orders_deduped_total`. Validation: `second_after_seconds` must be
+within `[0, 604800]` (0 = off), otherwise `400 bad_request`.
+
+## 10. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

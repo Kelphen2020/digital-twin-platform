@@ -24,6 +24,8 @@ type Metrics struct {
 	Orders                  atomic.Int64
 	DutyDispatches          atomic.Int64
 	DutySkipped             atomic.Int64
+	OrdersDeduped           atomic.Int64
+	ReEscalations           atomic.Int64
 }
 
 // New returns an empty counter set.
@@ -99,6 +101,14 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	b.WriteString("# HELP dsh_twin_duty_skipped_total Escalations without an on-duty group.\n")
 	b.WriteString("# TYPE dsh_twin_duty_skipped_total counter\n")
 	fmt.Fprintf(&b, "dsh_twin_duty_skipped_total %d\n", m.DutySkipped.Load())
+
+	b.WriteString("# HELP dsh_twin_orders_deduped_total Auto-dispatch attempts skipped by open-order dedupe.\n")
+	b.WriteString("# TYPE dsh_twin_orders_deduped_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_orders_deduped_total %d\n", m.OrdersDeduped.Load())
+
+	b.WriteString("# HELP dsh_twin_re_escalations_total Events escalated a second time.\n")
+	b.WriteString("# TYPE dsh_twin_re_escalations_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_re_escalations_total %d\n", m.ReEscalations.Load())
 
 	b.WriteString("# HELP dsh_twin_cameras_online Cameras currently online.\n")
 	b.WriteString("# TYPE dsh_twin_cameras_online gauge\n")

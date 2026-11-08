@@ -125,7 +125,17 @@
 | 会话语义 | JWT claims | 停用后旧 token 仍到过期（12h），下次登录即拒绝；改密立即使旧密码失效 |
 | 审计 | `user.*` | actor=管理员用户名 |
 
-## 13. P1 建议优先级
+## 13. P8.0 已落地（值班排班 / 派单去重与轮转 / 二次升级）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 班次 | `DutyGroup.Shifts` + `activeShift` | 周几 + 起止时间（支持跨夜），Asia/Shanghai 时区；`at` 参数便于测试 |
+| 轮转 | `nextRotation` 进程内轮询 | rotation=operator 时按班次成员轮转；默认 group 行为不变 |
+| 去重 | `FindOpenOrderForEvent` | 同事件已有 open/assigned/processing 工单 → 跳过并计数 |
+| 二次升级 | `ReEscalateStale` + `reEscalateOnce` | second_after_seconds 控制，写 re_escalated_at/审计/指标 |
+| 前端 | 值班班次编辑器、再升级徽标、设置字段 | 保持 8 页签与 P0–P7 功能 |
+
+## 14. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P7.0）
+# 数字孪生安防平台 · Web 前端（P8.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8，均为固定契约）。
 
 ## 快速开始
 
@@ -76,6 +76,7 @@ pnpm dev          # http://127.0.0.1:5173
 ### 事件处置（P1/P2）
 
 - 点击事件流或 3D 标记打开处置面板：事件信息、状态、动作时间线（`GET /api/events/{id}`）。
+- 超时升级显示「已升级」徽标（`escalated_at`）；升级后超时仍关闭则显示「再升级」徽标（`re_escalated_at`）与再升级时间，WS 推送时 Toast「告警再次升级：…」。
 - `确认` / `关闭事件（备注）` / `派单（目标 + 备注）`，监听 WS `event_updated` 实时刷新；事件流可按类型/等级筛选、导出 CSV（`/api/stats/events.csv`）。
 
 ### 工单（P2）
@@ -120,11 +121,17 @@ pnpm dev          # http://127.0.0.1:5173
 ### 值班组与自动派单（P4）
 
 - 所有登录用户可在右侧「值班」页签查看：
-  - **当前值班**：按所选相机区域解析（`GET /api/duty/current?area_id=`），展示值班组与值班人员（当前用户高亮）。
-  - **值班组列表**：名称、负责区域、值班人员、启用状态与更新时间；operator/viewer 只读。
-- admin 可在同一页签内新建/编辑/删除值班组（名称、区域多选（`GET /api/areas`）、值班人员勾选、启用开关），删除为两步确认；保存/删除后自动刷新当前值班解析。
-- 值班解析规则：优先匹配包含相机区域且启用的值班组，其次使用 `areas=[]` 的全局兜底组；无匹配时升级不自动派单。
-- 升级设置新增 `auto_dispatch`：开启后告警升级时按相机区域解析值班组并自动创建紧急工单（`status=open`、`priority=urgent`、`assignee=<值班组名>`、`note=系统自动派单（告警升级）`）。前端通过 WS `order_updated` 收到新工单时提示「系统自动派单：<值班组>」并出现在「工单」页签。
+  - **当前值班**：按所选相机区域解析（`GET /api/duty/current?area_id=`），展示值班组、当前班次（名称/起止时间）与当班人员（当前用户高亮）；无班次时按值班人员全天值班。
+  - **值班组列表**：名称、负责区域、值班人员、rotation、班次摘要、启用状态与更新时间；operator/viewer 只读。
+- admin 可在同一页签内新建/编辑/删除值班组（名称、区域多选、值班人员勾选、rotation=班组名/班次成员轮转、启用开关），并维护**班次编辑器**（每行：名称、HH:MM 起止、周一–周日多选、班次成员多选、添加/删除）；删除为两步确认；保存/删除后刷新当前值班解析。
+- 值班解析规则：优先匹配包含相机区域且启用的值班组，其次使用 `areas=[]` 的全局兜底组；配置班次时只有落在班次内（按服务端 Asia/Shanghai 时间、ISO 周几）才算值班，无人班次 → 无值班。
+
+### 值班排班与轮转 / 超时再升级（P8）
+
+- **值班班次**：值班组支持 `rotation`（`group` 派单给班组名 / `operator` 按班次成员轮转）与 `shifts[]`（名称、`HH:MM` 起止、ISO 周几 1–7、班次成员）；`end <= start` 视为跨夜；新班次由服务端生成 id，编辑时保留已有 id。前端在「值班」页签提供班次行编辑（添加/删除/周几/成员），并做名称、HH:MM、周几范围校验。
+- **当前值班**：`GET /api/duty/current?area_id=` 响应新增 `shift`；卡片显示当前班次与当班人员，非值班时间/无班次给出明确提示。
+- **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
+- **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
 ### 通知可靠性与审计（P4）
 
@@ -182,8 +189,8 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/notifications?limit=50` | admin | 通知投递记录（含 `attempts`） |
 | GET | `/api/areas` | 已登录 | 区域列表（值班组区域多选） |
 | GET | `/api/duty/groups` | 已登录 | 值班组列表 |
-| POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删 |
-| GET | `/api/duty/current?area_id=` | 已登录 | 区域当前值班组 |
+| POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删（P8 含 rotation/shifts） |
+| GET | `/api/duty/current?area_id=&at=` | 已登录 | 区域当前值班组 + 当前班次（P8） |
 | GET | `/api/site` | 已登录 | 站点范围 / glTF 模型清单 / 底图配置 |
 | GET/POST | `/api/users` | admin | 用户列表 / 新建用户 |
 | PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
@@ -222,7 +229,7 @@ apps/web/
    │  ├─ EventFeed.vue / EventDetail.vue / StatsPanel.vue / OrdersPanel.vue
    │  ├─ SettingsPanel.vue       # P3 通知/升级设置（admin）
    │  ├─ AuditPanel.vue          # P3 操作审计 + 通知投递（admin，P4 显示 attempts）
-   │  ├─ DutyPanel.vue           # P4 值班组（admin 增改删；其他角色只读）
+   │  ├─ DutyPanel.vue           # P4/P8 值班组+班次+轮转（admin 增改删；其他角色只读）
    │  ├─ BusPanel.vue            # P5 事件总线状态 / 回放（admin）
    │  ├─ UserPanel.vue           # P7 用户与账号管理（admin）
    │  └─ （其余见代码）
@@ -302,6 +309,17 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
 
+# P8：值班班次 + 轮转（admin 创建含班次的值班组；GET current 可见 shift）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"P8 测试值班组","areas":["area_gate"],"operators":["operator"],"active":true,"rotation":"operator","shifts":[{"name":"早班","start":"00:00","end":"23:59","weekdays":[1,2,3,4,5,6,7],"operators":["operator","viewer"]}]}' \
+  http://localhost:5173/api/duty/groups
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:5173/api/duty/current?area_id=area_gate"
+# 二次升级设置：second_after_seconds（0=关闭）
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":0,"severities":["critical"],"auto_dispatch":true,"second_after_seconds":1}' \
+  http://localhost:5173/api/settings/escalation
+# 注入 critical → 升级后 1s 再升级：GET /api/events 可见 escalated_at 与 re_escalated_at
+
 # P7：用户管理（admin）
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/users
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -362,3 +380,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P7 用户管理为**单租户**；角色/区域/启用状态变更在下次登录生效（JWT 内容不变），停用账号的现有会话在下一次 API 401 时自动登出。
 - 用户名创建后不可修改（PATCH 不开放 username）；密码永不返回，编辑时留空表示不修改。
 - 用户管理仅 admin 可见/可调用；operator/viewer 的 `GET /api/users` 等均返回 403 forbidden（tab 隐藏）。
+- P8 班次时间按服务端 Asia/Shanghai 解释（`at` 可选）；跨夜班次以 `end <= start` 表示；无人班次不派单。
+- `rotation=operator` 的轮转为后端进程内轮询（按班组+班次），重启后轮转位置重置；工单去重仅针对同事件未关闭工单。
+- 二次升级需 `second_after_seconds > 0`，由后端升级 worker 周期扫描（约 15s）触发；`re_escalated_at` 写入后不可撤销。

@@ -128,6 +128,7 @@ onMounted(() => {
           <p class="order-meta">
             负责人：<span :class="{ 'text-faint': !order.assignee }">{{ order.assignee || '未分配' }}</span>
           </p>
+          <p v-if="order.note" class="order-meta order-note" :title="order.note">{{ order.note }}</p>
           <p v-if="order.closed_at" class="order-meta closed-line">关闭时间：{{ formatDateTime(order.closed_at) }}</p>
         </div>
 

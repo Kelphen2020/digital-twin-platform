@@ -484,7 +484,7 @@ func (p *Postgres) Counts(ctx context.Context) (model.Counts, error) {
 const cameraSelect = `SELECT id, code, name, area_id, x, y, z, heading, fov_h, fov_v, range_m, status, stream_url, calibration, updated_at FROM cameras`
 
 const eventSelect = `SELECT id, camera_id, camera_code, camera_name, type, severity, confidence,
-                            x, y, z, occurred_at, status, closed_at, escalated_at, payload FROM events`
+                            x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload FROM events`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -516,7 +516,7 @@ func scanEvent(row rowScanner) (model.Event, error) {
 	var payload []byte
 	err := row.Scan(&event.ID, &event.CameraID, &event.CameraCode, &event.CameraName, &event.Type, &event.Severity,
 		&event.Confidence, &event.X, &event.Y, &event.Z, &event.OccurredAt, &event.Status, &event.ClosedAt,
-		&event.EscalatedAt, &payload)
+		&event.EscalatedAt, &event.ReEscalatedAt, &payload)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.Event{}, ErrNotFound
@@ -531,6 +531,10 @@ func scanEvent(row rowScanner) (model.Event, error) {
 	if event.EscalatedAt != nil {
 		escalated := event.EscalatedAt.UTC()
 		event.EscalatedAt = &escalated
+	}
+	if event.ReEscalatedAt != nil {
+		stamp := event.ReEscalatedAt.UTC()
+		event.ReEscalatedAt = &stamp
 	}
 	if len(payload) > 0 {
 		_ = json.Unmarshal(payload, &event.Payload)
@@ -645,6 +649,9 @@ func (p *Postgres) ListOrders(ctx context.Context, filter model.OrderFilter) ([]
 	}
 	if filter.Assignee != "" {
 		add("assignee = $%d", filter.Assignee)
+	}
+	if filter.EventID != "" {
+		add("event_id = $%d", filter.EventID)
 	}
 	if len(filter.CameraIDs) > 0 {
 		add("camera_id = ANY($%d)", filter.CameraIDs)
@@ -771,10 +778,11 @@ func (p *Postgres) EscalateStale(ctx context.Context, before time.Time, severiti
 func (p *Postgres) CreateDutyGroup(ctx context.Context, group model.DutyGroup) error {
 	areas, _ := json.Marshal(group.Areas)
 	operators, _ := json.Marshal(group.Operators)
+	shifts, _ := json.Marshal(group.Shifts)
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO duty_groups (id, name, areas, operators, active, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		group.ID, group.Name, areas, operators, group.Active, group.CreatedAt, group.UpdatedAt)
+        INSERT INTO duty_groups (id, name, areas, operators, rotation, shifts, active, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		group.ID, group.Name, areas, operators, group.Rotation, shifts, group.Active, group.CreatedAt, group.UpdatedAt)
 	return err
 }
 
@@ -802,9 +810,10 @@ func (p *Postgres) ListDutyGroups(ctx context.Context) ([]model.DutyGroup, error
 func (p *Postgres) UpdateDutyGroup(ctx context.Context, id string, group model.DutyGroup) (model.DutyGroup, error) {
 	areas, _ := json.Marshal(group.Areas)
 	operators, _ := json.Marshal(group.Operators)
+	shifts, _ := json.Marshal(group.Shifts)
 	_, err := p.pool.Exec(ctx, `
-        UPDATE duty_groups SET name=$2, areas=$3, operators=$4, active=$5, updated_at=now()
-        WHERE id=$1`, id, group.Name, areas, operators, group.Active)
+        UPDATE duty_groups SET name=$2, areas=$3, operators=$4, rotation=$5, shifts=$6, active=$7, updated_at=now()
+        WHERE id=$1`, id, group.Name, areas, operators, group.Rotation, shifts, group.Active)
 	if err != nil {
 		return model.DutyGroup{}, err
 	}
@@ -822,7 +831,7 @@ func (p *Postgres) DeleteDutyGroup(ctx context.Context, id string) error {
 	return nil
 }
 
-const dutySelect = `SELECT id, name, areas, operators, active, created_at, updated_at FROM duty_groups`
+const dutySelect = `SELECT id, name, areas, operators, rotation, shifts, active, created_at, updated_at FROM duty_groups`
 
 type dutyScanner interface {
 	Scan(dest ...any) error
@@ -830,8 +839,8 @@ type dutyScanner interface {
 
 func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 	var group model.DutyGroup
-	var areas, operators []byte
-	err := row.Scan(&group.ID, &group.Name, &areas, &operators, &group.Active, &group.CreatedAt, &group.UpdatedAt)
+	var areas, operators, shifts []byte
+	err := row.Scan(&group.ID, &group.Name, &areas, &operators, &group.Rotation, &shifts, &group.Active, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.DutyGroup{}, ErrNotFound
@@ -843,6 +852,9 @@ func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 	}
 	if len(operators) > 0 {
 		_ = json.Unmarshal(operators, &group.Operators)
+	}
+	if len(shifts) > 0 {
+		_ = json.Unmarshal(shifts, &group.Shifts)
 	}
 	group.CreatedAt = group.CreatedAt.UTC()
 	group.UpdatedAt = group.UpdatedAt.UTC()
@@ -953,4 +965,42 @@ func scanUserAccount(row rowScanner) (model.UserAccount, error) {
 	account.CreatedAt = account.CreatedAt.UTC()
 	account.UpdatedAt = account.UpdatedAt.UTC()
 	return account, nil
+}
+
+func (p *Postgres) FindOpenOrderForEvent(ctx context.Context, eventID string) (model.Order, bool, error) {
+	order, err := scanOrder(p.pool.QueryRow(ctx, orderSelect+`
+        WHERE event_id=$1 AND status IN ('open','assigned','processing')
+        ORDER BY created_at DESC LIMIT 1`, eventID))
+	if err != nil {
+		if err == ErrNotFound {
+			return model.Order{}, false, nil
+		}
+		return model.Order{}, false, err
+	}
+	return order, true, nil
+}
+
+func (p *Postgres) ReEscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error) {
+	if len(severities) == 0 {
+		return nil, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+        UPDATE events SET re_escalated_at = now()
+        WHERE status <> 'closed' AND escalated_at IS NOT NULL AND re_escalated_at IS NULL
+          AND escalated_at < $1 AND severity = ANY($2)
+        RETURNING id, camera_id, camera_code, camera_name, type, severity, confidence,
+                  x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload`, before, severities)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]model.Event, 0, 4)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }

@@ -682,12 +682,13 @@ function handleWsMessage(message: WsMessage): void {
     case 'event_updated': {
       const previous = state.events.find((item) => item.id === message.data.id)
       applyEventUpdate(message.data)
-      // 告警升级：escalated_at 由空变为非空时浮层提示（P3）
-      if (message.data.escalated_at && !previous?.escalated_at) {
-        pushToast(
-          `告警已升级：${EVENT_TYPE_LABELS[message.data.type]} · ${message.data.camera_code} ${message.data.camera_name}`,
-          'warning',
-        )
+      const eventLabel = `${EVENT_TYPE_LABELS[message.data.type]} · ${message.data.camera_code} ${message.data.camera_name}`
+      // P8：二次升级（re_escalated_at 由空变为非空）优先提示
+      if (message.data.re_escalated_at && !previous?.re_escalated_at) {
+        pushToast(`告警再次升级：${eventLabel}`, 'warning')
+      } else if (message.data.escalated_at && !previous?.escalated_at) {
+        // 告警升级：escalated_at 由空变为非空时浮层提示（P3）
+        pushToast(`告警已升级：${eventLabel}`, 'warning')
       }
       if (state.selectedEventId === message.data.id) void loadEventDetail(message.data.id)
       break

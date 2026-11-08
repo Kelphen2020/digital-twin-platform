@@ -22,6 +22,7 @@ const escalationForm = reactive<EscalationSettings>({
   after_seconds: 300,
   severities: ['warn', 'critical'],
   auto_dispatch: false,
+  second_after_seconds: 0,
 })
 
 const notificationError = ref('')
@@ -58,6 +59,7 @@ watch(
     escalationForm.after_seconds = settings.after_seconds
     escalationForm.severities = [...settings.severities]
     escalationForm.auto_dispatch = settings.auto_dispatch ?? false
+    escalationForm.second_after_seconds = settings.second_after_seconds ?? 0
   },
   { immediate: true },
 )
@@ -90,6 +92,13 @@ function validateNotifications(): string | null {
 function validateEscalation(): string | null {
   if (!Number.isFinite(escalationForm.after_seconds) || escalationForm.after_seconds < 0 || escalationForm.after_seconds > 86400) {
     return '升级时限需在 0–86400 秒之间'
+  }
+  if (
+    !Number.isFinite(escalationForm.second_after_seconds) ||
+    escalationForm.second_after_seconds < 0 ||
+    escalationForm.second_after_seconds > 604800
+  ) {
+    return '二次升级时限需在 0–604800 秒之间（0 = 关闭）'
   }
   return null
 }
@@ -128,6 +137,7 @@ async function submitEscalation(): Promise<void> {
     after_seconds: escalationForm.after_seconds,
     severities: [...escalationForm.severities],
     auto_dispatch: escalationForm.auto_dispatch,
+    second_after_seconds: escalationForm.second_after_seconds,
   })
   escalationSaved.value = ok
 }
@@ -227,6 +237,14 @@ onMounted(() => {
             <span>超时未处置升级时限（秒，0–86400）</span>
             <input v-model.number="escalationForm.after_seconds" type="number" min="0" max="86400" step="10" />
           </label>
+
+          <label class="settings-field">
+            <span>二次升级时限（秒，0–604800；0 = 关闭）</span>
+            <input v-model.number="escalationForm.second_after_seconds" type="number" min="0" max="604800" step="60" />
+          </label>
+          <p class="form-hint">
+            升级后超过该时长仍未关闭 → 写入 re_escalated_at、WS event_updated、发送通知并触发再升级派单（受同事件未关闭工单去重限制）。
+          </p>
 
           <div class="settings-field">
             <span>适用严重级别</span>

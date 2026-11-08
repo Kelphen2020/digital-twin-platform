@@ -44,6 +44,8 @@ type Server struct {
 	escalation    model.EscalationSettings
 	notifyMu      sync.Mutex
 	notifySilence map[string]time.Time
+	rotationMu    sync.Mutex
+	rotation      map[string]int
 	bus           *bus.Bus
 	site          model.Site
 }
@@ -67,6 +69,7 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		notify:        model.DefaultNotificationSettings(),
 		escalation:    model.DefaultEscalationSettings(),
 		notifySilence: make(map[string]time.Time),
+		rotation:      make(map[string]int),
 		site:          model.DefaultSite(),
 	}
 }
@@ -337,6 +340,7 @@ func (s *Server) RunEscalation(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			s.escalateOnce(ctx)
+			s.reEscalateOnce(ctx)
 		}
 	}
 }
@@ -362,6 +366,39 @@ func (s *Server) escalateOnce(ctx context.Context) {
 		if s.bus != nil {
 			if _, err := s.bus.Publish(bus.KindEventEscalated, event, nil, "escalation"); err != nil {
 				log.Printf("api: bus publish escalation: %v", err)
+			}
+		} else {
+			s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: event})
+			go s.deliverNotification(context.Background(), "escalation", event, nil)
+		}
+		if cfg.AutoDispatch {
+			s.autoDispatch(ctx, event)
+		}
+	}
+}
+
+// reEscalateOnce marks already escalated, still-open events for a second alert.
+func (s *Server) reEscalateOnce(ctx context.Context) {
+	cfg := s.currentEscalation()
+	if !cfg.Enabled || cfg.SecondAfterSeconds <= 0 || len(cfg.Severities) == 0 {
+		return
+	}
+	before := time.Now().UTC().Add(-time.Duration(cfg.SecondAfterSeconds) * time.Second)
+	events, err := s.store.ReEscalateStale(ctx, before, cfg.Severities)
+	if err != nil {
+		log.Printf("api: re-escalate: %v", err)
+		return
+	}
+	for _, event := range events {
+		s.metrics.ReEscalations.Add(1)
+		_ = s.store.AddAudit(ctx, model.AuditEntry{
+			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
+			Action: "event.re_escalate", Resource: event.ID,
+			Detail: map[string]any{"severity": event.Severity, "second_after_seconds": cfg.SecondAfterSeconds},
+		})
+		if s.bus != nil {
+			if _, err := s.bus.Publish(bus.KindEventEscalated, event, nil, "escalation"); err != nil {
+				log.Printf("api: bus publish re-escalation: %v", err)
 			}
 		} else {
 			s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: event})
@@ -510,22 +547,41 @@ func (s *Server) autoDispatch(ctx context.Context, event model.Event) {
 	}
 	group := s.resolveDutyGroup(ctx, camera.AreaID)
 	if group == nil {
-		s.metrics.DutySkipped.Add(1)
-		_ = s.store.AddAudit(ctx, model.AuditEntry{
-			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
-			Action: "order.auto_dispatch_skipped", Resource: event.ID,
-			Detail: map[string]any{"area_id": camera.AreaID},
-		})
+		s.skipDispatch(ctx, event, camera.AreaID, "no_duty", nil)
+		return
+	}
+	shift, operators := dutyNow(*group, time.Now())
+	if len(group.Shifts) > 0 && shift == nil {
+		s.skipDispatch(ctx, event, camera.AreaID, "no_duty", map[string]any{"group": group.Name, "reason_detail": "outside_shifts"})
+		return
+	}
+	if existing, ok, err := s.store.FindOpenOrderForEvent(ctx, event.ID); err == nil && ok {
+		s.metrics.OrdersDeduped.Add(1)
+		s.skipDispatch(ctx, event, camera.AreaID, "open_order", map[string]any{"order_id": existing.ID})
 		return
 	}
 	now := time.Now().UTC()
+	assignee := group.Name
+	note := "系统自动派单（告警升级）"
+	if group.Rotation == "operator" && len(operators) > 0 {
+		key := group.ID
+		if shift != nil {
+			key += "|" + shift.ID
+		}
+		assignee = operators[s.nextRotation(key, len(operators))]
+		if shift != nil {
+			note += " · " + group.Name + " · " + shift.Name
+		} else {
+			note += " · " + group.Name
+		}
+	}
 	order := model.Order{
 		ID: newID("ord"), EventID: event.ID, CameraID: event.CameraID,
 		Title:     "告警升级 · " + event.Type + " · " + event.CameraCode + " " + event.CameraName,
 		Status:    "open",
 		Priority:  "urgent",
-		Assignee:  group.Name,
-		Note:      "系统自动派单（告警升级）",
+		Assignee:  assignee,
+		Note:      note,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -535,13 +591,110 @@ func (s *Server) autoDispatch(ctx context.Context, event model.Event) {
 	}
 	s.metrics.Orders.Add(1)
 	s.metrics.DutyDispatches.Add(1)
+	shiftName := ""
+	if shift != nil {
+		shiftName = shift.Name
+	}
 	_ = s.store.AddAudit(ctx, model.AuditEntry{
 		ID: newID("aud"), At: now, Actor: "system",
 		Action: "order.auto_dispatch", Resource: order.ID,
-		Detail: map[string]any{"event_id": event.ID, "group": group.Name, "area_id": camera.AreaID},
+		Detail: map[string]any{
+			"event_id": event.ID, "group": group.Name, "area_id": camera.AreaID,
+			"shift": shiftName, "rotation": group.Rotation, "assignee": assignee,
+		},
 	})
 	s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
 	go s.deliverNotification(context.Background(), "dispatch", event, &order)
+}
+
+func (s *Server) skipDispatch(ctx context.Context, event model.Event, areaID, reason string, extra map[string]any) {
+	s.metrics.DutySkipped.Add(1)
+	detail := map[string]any{"area_id": areaID, "reason": reason}
+	for key, value := range extra {
+		detail[key] = value
+	}
+	_ = s.store.AddAudit(ctx, model.AuditEntry{
+		ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
+		Action: "order.auto_dispatch_skipped", Resource: event.ID, Detail: detail,
+	})
+}
+
+// nextRotation advances a per-key round-robin index.
+func (s *Server) nextRotation(key string, size int) int {
+	if size <= 0 {
+		return 0
+	}
+	s.rotationMu.Lock()
+	defer s.rotationMu.Unlock()
+	index := s.rotation[key]
+	s.rotation[key] = index + 1
+	return index % size
+}
+
+// siteLocation is the staffing timezone (Asia/Shanghai by default).
+func siteLocation() *time.Location {
+	if location, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		return location
+	}
+	return time.UTC
+}
+
+func parseHHMM(value string) (int, bool) {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
+	if err != nil {
+		return 0, false
+	}
+	return parsed.Hour()*60 + parsed.Minute(), true
+}
+
+func containsWeekday(weekdays []int, weekday int) bool {
+	for _, value := range weekdays {
+		if value == weekday {
+			return true
+		}
+	}
+	return false
+}
+
+// activeShift finds the shift covering `at` (end <= start means overnight).
+func activeShift(shifts []model.DutyShift, at time.Time) *model.DutyShift {
+	local := at.In(siteLocation())
+	weekday := int(local.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	minutes := local.Hour()*60 + local.Minute()
+	for i := range shifts {
+		shift := &shifts[i]
+		if !containsWeekday(shift.Weekdays, weekday) {
+			continue
+		}
+		start, startOK := parseHHMM(shift.Start)
+		end, endOK := parseHHMM(shift.End)
+		if !startOK || !endOK {
+			continue
+		}
+		if start <= end {
+			if minutes >= start && minutes < end {
+				return shift
+			}
+		} else if minutes >= start || minutes < end {
+			return shift
+		}
+	}
+	return nil
+}
+
+// dutyNow resolves the shift and its operators for the group at a moment.
+func dutyNow(group model.DutyGroup, at time.Time) (*model.DutyShift, []string) {
+	if len(group.Shifts) == 0 {
+		return nil, group.Operators
+	}
+	shift := activeShift(group.Shifts, at)
+	if shift == nil {
+		return nil, []string{}
+	}
+	return shift, shift.Operators
 }
 
 // visibleCameras returns the camera ids a user may read. restricted=false means
@@ -1309,6 +1462,7 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	filter := model.OrderFilter{
 		Status:   r.URL.Query().Get("status"),
 		Assignee: r.URL.Query().Get("assignee"),
+		EventID:  r.URL.Query().Get("event_id"),
 		Limit:    parseIntDefault(r.URL.Query().Get("limit"), 100),
 	}
 	if filter.Limit > 500 {
@@ -1515,6 +1669,10 @@ func (s *Server) handlePutEscalationSettings(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "bad_request", "after_seconds must be within [0,86400]")
 		return
 	}
+	if cfg.SecondAfterSeconds < 0 || cfg.SecondAfterSeconds > 604800 {
+		writeError(w, http.StatusBadRequest, "bad_request", "second_after_seconds must be within [0,604800]")
+		return
+	}
 	for _, severity := range cfg.Severities {
 		if !validSeverity(severity) {
 			writeError(w, http.StatusBadRequest, "bad_request", "severities must be info, warn or critical")
@@ -1718,10 +1876,12 @@ func (s *Server) handleListDutyGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 type dutyGroupBody struct {
-	Name      string    `json:"name"`
-	Areas     *[]string `json:"areas,omitempty"`
-	Operators *[]string `json:"operators,omitempty"`
-	Active    *bool     `json:"active,omitempty"`
+	Name      string             `json:"name"`
+	Areas     *[]string          `json:"areas,omitempty"`
+	Operators *[]string          `json:"operators,omitempty"`
+	Rotation  *string            `json:"rotation,omitempty"`
+	Shifts    *[]model.DutyShift `json:"shifts,omitempty"`
+	Active    *bool              `json:"active,omitempty"`
 }
 
 func (s *Server) handleCreateDutyGroup(w http.ResponseWriter, r *http.Request) {
@@ -1742,13 +1902,34 @@ func (s *Server) handleCreateDutyGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	rotation := "group"
+	if body.Rotation != nil {
+		rotation = *body.Rotation
+	}
+	if rotation != "group" && rotation != "operator" {
+		writeError(w, http.StatusBadRequest, "bad_request", "rotation must be group or operator")
+		return
+	}
+	shifts := []model.DutyShift{}
+	if body.Shifts != nil {
+		shifts = *body.Shifts
+	}
+	if err := s.validateDutyShifts(r.Context(), shifts); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	for i := range shifts {
+		if strings.TrimSpace(shifts[i].ID) == "" {
+			shifts[i].ID = newID("shift")
+		}
+	}
 	active := true
 	if body.Active != nil {
 		active = *body.Active
 	}
 	now := time.Now().UTC()
 	group := model.DutyGroup{
-		ID: newID("duty"), Name: body.Name, Active: active,
+		ID: newID("duty"), Name: body.Name, Active: active, Rotation: rotation, Shifts: shifts,
 		Areas: []string{}, Operators: []string{}, CreatedAt: now, UpdatedAt: now,
 	}
 	if body.Areas != nil {
@@ -1792,6 +1973,26 @@ func (s *Server) handleUpdateDutyGroup(w http.ResponseWriter, r *http.Request) {
 	if body.Operators != nil {
 		existing.Operators = *body.Operators
 	}
+	if body.Rotation != nil {
+		if *body.Rotation != "group" && *body.Rotation != "operator" {
+			writeError(w, http.StatusBadRequest, "bad_request", "rotation must be group or operator")
+			return
+		}
+		existing.Rotation = *body.Rotation
+	}
+	if body.Shifts != nil {
+		shifts := *body.Shifts
+		if err := s.validateDutyShifts(r.Context(), shifts); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		for i := range shifts {
+			if strings.TrimSpace(shifts[i].ID) == "" {
+				shifts[i].ID = newID("shift")
+			}
+		}
+		existing.Shifts = shifts
+	}
 	if body.Active != nil {
 		existing.Active = *body.Active
 	}
@@ -1823,12 +2024,24 @@ func (s *Server) handleCurrentDuty(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "area_id is required")
 		return
 	}
+	at := time.Now()
+	if raw := r.URL.Query().Get("at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "at must be RFC3339")
+			return
+		}
+		at = parsed
+	}
 	group := s.resolveDutyGroup(r.Context(), areaID)
 	if group == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"area_id": areaID, "group": nil, "operators": []string{}})
+		writeJSON(w, http.StatusOK, map[string]any{"area_id": areaID, "group": nil, "shift": nil, "operators": []string{}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"area_id": areaID, "group": group, "operators": group.Operators})
+	shift, operators := dutyNow(*group, at)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"area_id": areaID, "group": group, "shift": shift, "operators": operators,
+	})
 }
 
 func (s *Server) validateDutyGroups(ctx context.Context, areas, operators *[]string) error {
@@ -1849,6 +2062,41 @@ func (s *Server) validateDutyGroups(ctx context.Context, areas, operators *[]str
 	}
 	if operators != nil {
 		for _, username := range *operators {
+			exists, err := s.auth.UserExists(ctx, username)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return fmt.Errorf("unknown operator %q", username)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) validateDutyShifts(ctx context.Context, shifts []model.DutyShift) error {
+	if len(shifts) > 20 {
+		return errors.New("at most 20 shifts are accepted")
+	}
+	for _, shift := range shifts {
+		if strings.TrimSpace(shift.Name) == "" {
+			return errors.New("shift name is required")
+		}
+		if _, ok := parseHHMM(shift.Start); !ok {
+			return fmt.Errorf("shift %q has invalid start (HH:MM)", shift.Name)
+		}
+		if _, ok := parseHHMM(shift.End); !ok {
+			return fmt.Errorf("shift %q has invalid end (HH:MM)", shift.Name)
+		}
+		if len(shift.Weekdays) == 0 {
+			return fmt.Errorf("shift %q needs at least one weekday", shift.Name)
+		}
+		for _, weekday := range shift.Weekdays {
+			if weekday < 1 || weekday > 7 {
+				return fmt.Errorf("shift %q weekday must be within 1..7", shift.Name)
+			}
+		}
+		for _, username := range shift.Operators {
 			exists, err := s.auth.UserExists(ctx, username)
 			if err != nil {
 				return err

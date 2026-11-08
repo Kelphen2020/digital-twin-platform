@@ -148,6 +148,9 @@ function closePanel(): void {
           {{ SEVERITY_LABELS[event.severity] }}
         </span>
         <span v-if="event.escalated_at" class="escalation-chip" title="超过处置时限，已由系统升级">已升级</span>
+        <span v-if="event.re_escalated_at" class="re-escalation-chip" title="升级后超时仍未关闭，已二次升级">
+          再升级
+        </span>
       </div>
       <button class="ghost-btn" aria-label="关闭事件详情" @click="closePanel">✕</button>
     </header>
@@ -181,6 +184,10 @@ function closePanel(): void {
         <div v-if="event.escalated_at" class="wide">
           <dt>升级时间</dt>
           <dd class="mono">{{ formatDateTime(event.escalated_at) }}</dd>
+        </div>
+        <div v-if="event.re_escalated_at" class="wide">
+          <dt>再升级时间</dt>
+          <dd class="mono">{{ formatDateTime(event.re_escalated_at) }}</dd>
         </div>
       </dl>
 

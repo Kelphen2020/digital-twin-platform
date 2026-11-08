@@ -201,6 +201,13 @@ watch(
               回放 · offset {{ item.replay.offset }}
             </span>
             <span v-if="item.event.escalated_at" class="escalation-chip" title="超过处置时限，已由系统升级">已升级</span>
+            <span
+              v-if="item.event.re_escalated_at"
+              class="re-escalation-chip"
+              title="升级后超时仍未关闭，已二次升级"
+            >
+              再升级
+            </span>
             <time>{{ formatRelativeTime(item.event.occurred_at, nowTick) }}</time>
           </div>
           <p class="event-camera">{{ item.event.camera_code }} · {{ item.event.camera_name }}</p>

@@ -3206,3 +3206,198 @@ dd {
 .user-active-switch {
   align-self: flex-end;
 }
+
+
+/* ============================================================
+   P8.0 扩展：值班班次 / 轮转 / 二次升级
+   ============================================================ */
+
+/* 再升级徽标 */
+.re-escalation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: 1px solid rgba(217, 70, 239, 0.65);
+  border-radius: 999px;
+  background: rgba(192, 38, 211, 0.16);
+  color: #f0abfc;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  animation: re-escalation-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes re-escalation-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(217, 70, 239, 0);
+  }
+  50% {
+    box-shadow: 0 0 10px rgba(217, 70, 239, 0.55);
+  }
+}
+
+/* 值班班次 */
+.duty-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.shift-chip {
+  padding: 1px 7px;
+  border: 1px solid rgba(167, 139, 250, 0.5);
+  border-radius: 999px;
+  background: rgba(139, 92, 246, 0.12);
+  color: #c4b5fd;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.shift-chip-alt {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(14, 165, 233, 0.1);
+  color: #7dd3fc;
+}
+
+.duty-current-shift {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #7dd3fc;
+}
+
+.duty-current-shift strong {
+  color: #e0f2fe;
+}
+
+.duty-current-shift-off {
+  color: #fcd34d;
+}
+
+.shift-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.shift-empty {
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.shift-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shift-editor-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(6, 17, 32, 0.55);
+}
+
+.shift-row-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shift-row-head input[type='text'],
+.shift-row-head input[type='time'] {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #061120;
+  color: var(--text);
+  font-size: 11.5px;
+  outline: none;
+}
+
+.shift-row-head input[type='text'] {
+  flex: 1;
+  min-width: 90px;
+}
+
+.shift-row-head input[type='time'] {
+  width: 92px;
+}
+
+.shift-row-head input:focus {
+  border-color: var(--border-strong);
+}
+
+.shift-time-sep {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.shift-remove {
+  font-size: 10.5px;
+  padding: 2px 6px;
+}
+
+.weekday-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.weekday-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.weekday-toggle.active {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(14, 165, 233, 0.14);
+  color: #bae6fd;
+}
+
+.weekday-toggle input {
+  display: none;
+}
+
+.shift-operators {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+}
+
+.shift-operators-label {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.shift-summary {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.order-note {
+  overflow: hidden;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
