@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"digital-twin-platform/api/internal/api"
 	"digital-twin-platform/api/internal/auth"
+	"digital-twin-platform/api/internal/bus"
 	"digital-twin-platform/api/internal/config"
 	"digital-twin-platform/api/internal/metrics"
 	"digital-twin-platform/api/internal/realtime"
@@ -36,6 +38,15 @@ func main() {
 	meters := metrics.New()
 	authService := auth.New(cfg.AuthMode, cfg.JWTSecret)
 	server := api.New(database, engine, hub, meters, cfg.Version, authService, cfg.IngestToken)
+
+	eventBus, err := openBus(cfg)
+	if err != nil {
+		log.Fatalf("api: open event bus: %v", err)
+	}
+	if eventBus != nil {
+		server.AttachBus(eventBus)
+		log.Printf("api: event bus driver=%s", cfg.BusDriver)
+	}
 
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)
@@ -76,6 +87,17 @@ func openStore(ctx context.Context, cfg config.Config) (store.Store, func(), err
 	memory.Seed(store.SeedCameras(), store.SeedAreas())
 	log.Printf("api: in-memory store ready (6 demo cameras)")
 	return memory, func() {}, nil
+}
+
+func openBus(cfg config.Config) (*bus.Bus, error) {
+	switch cfg.BusDriver {
+	case "jsonl":
+		return bus.NewJSONL(cfg.BusDir)
+	case "memory", "":
+		return bus.NewMemory(cfg.BusBuffer), nil
+	default:
+		return nil, fmt.Errorf("unknown BUS_DRIVER %q", cfg.BusDriver)
+	}
 }
 
 func storeMode(databaseURL string) string {

@@ -276,6 +276,16 @@ export interface WsOrderUpdatedMessage {
   data: Order
 }
 
+/** P5：总线回放帧（重放的 event_created），data 为 { event, offset, replay }。 */
+export interface WsEventReplayMessage {
+  type: 'event_replay'
+  data: {
+    event: TwinEvent
+    offset: number
+    replay: boolean
+  }
+}
+
 export interface WsStatsMessage {
   type: 'stats'
   data: { events_total: number; online_cameras: number; ws_clients: number }
@@ -288,6 +298,7 @@ export type WsMessage =
   | WsCameraStatusMessage
   | WsTrackPointMessage
   | WsOrderUpdatedMessage
+  | WsEventReplayMessage
   | WsStatsMessage
 
 export type WsState = 'connecting' | 'online' | 'offline'
@@ -402,7 +413,46 @@ export interface DutyCurrent {
   operators: string[]
 }
 
-export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit'
+// ---------------- P5：可回放事件总线 ----------------
+
+/** GET /api/bus/status（admin）。 */
+export interface BusStatus {
+  driver: string
+  /** jsonl 驱动为文件路径；memory 驱动为空字符串。 */
+  path: string
+  published: number
+  replayed: number
+  oldest_offset: number
+  next_offset: number
+  last_publish_at: string
+  subscribers: number
+}
+
+/** POST /api/bus/replay 请求。 */
+export interface BusReplayRequest {
+  from_offset: number
+  to_offset?: number
+  notify: boolean
+  limit: number
+}
+
+/** POST /api/bus/replay 响应。 */
+export interface BusReplayResponse {
+  ok: boolean
+  replayed: number
+  from_offset: number
+  to_offset: number
+}
+
+/** 前端事件流中的回放条目（不进入实时事件/三维标记）。 */
+export interface ReplayFeedItem {
+  key: string
+  event: TwinEvent
+  offset: number
+  receivedAt: number
+}
+
+export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus'
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

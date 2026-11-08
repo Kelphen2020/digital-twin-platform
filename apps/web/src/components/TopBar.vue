@@ -45,7 +45,7 @@ const userTitle = computed(() =>
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P4.0 值班 / 自动派单 / 可靠性</p>
+        <p>园区三维安防 · P5.0 事件总线 / 回放</p>
       </div>
     </div>
 

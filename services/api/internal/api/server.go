@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
+	"digital-twin-platform/api/internal/bus"
 	"digital-twin-platform/api/internal/calib"
 	"digital-twin-platform/api/internal/metrics"
 	"digital-twin-platform/api/internal/model"
@@ -43,6 +44,7 @@ type Server struct {
 	escalation    model.EscalationSettings
 	notifyMu      sync.Mutex
 	notifySilence map[string]time.Time
+	bus           *bus.Bus
 }
 
 type userContextKey struct{}
@@ -99,6 +101,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/duty/groups/{id}", s.handleUpdateDutyGroup)
 	mux.HandleFunc("DELETE /api/duty/groups/{id}", s.handleDeleteDutyGroup)
 	mux.HandleFunc("GET /api/duty/current", s.handleCurrentDuty)
+	mux.HandleFunc("GET /api/bus/status", s.handleBusStatus)
+	mux.HandleFunc("POST /api/bus/replay", s.handleBusReplay)
 	mux.HandleFunc("POST /api/orders", s.handleCreateOrder)
 	mux.HandleFunc("GET /api/orders", s.handleListOrders)
 	mux.HandleFunc("GET /api/orders/{id}", s.handleGetOrder)
@@ -344,13 +348,19 @@ func (s *Server) escalateOnce(ctx context.Context) {
 	}
 	for _, event := range events {
 		s.metrics.Escalations.Add(1)
-		s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: event})
 		_ = s.store.AddAudit(ctx, model.AuditEntry{
 			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
 			Action: "event.escalate", Resource: event.ID,
 			Detail: map[string]any{"severity": event.Severity, "after_seconds": cfg.AfterSeconds},
 		})
-		go s.deliverNotification(context.Background(), "escalation", event, nil)
+		if s.bus != nil {
+			if _, err := s.bus.Publish(bus.KindEventEscalated, event, nil, "escalation"); err != nil {
+				log.Printf("api: bus publish escalation: %v", err)
+			}
+		} else {
+			s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: event})
+			go s.deliverNotification(context.Background(), "escalation", event, nil)
+		}
 		if cfg.AutoDispatch {
 			s.autoDispatch(ctx, event)
 		}
@@ -559,6 +569,110 @@ func (s *Server) cameraVisible(ctx context.Context, user auth.User, cameraID str
 		return false, err
 	}
 	return auth.InScope(user, camera.AreaID), nil
+}
+
+// AttachBus wires the event bus and routes publishes to display/notification.
+func (s *Server) AttachBus(eventBus *bus.Bus) {
+	if eventBus == nil {
+		return
+	}
+	s.bus = eventBus
+	eventBus.Subscribe(s.onBusEnvelope)
+}
+
+func (s *Server) onBusEnvelope(envelope bus.Envelope) {
+	if envelope.Source == "replay" {
+		return
+	}
+	switch envelope.Kind {
+	case bus.KindEventCreated:
+		s.hub.Broadcast(realtime.Frame{Type: "event", Data: envelope.Event})
+		go s.deliverNotification(context.Background(), "event", envelope.Event, nil)
+	case bus.KindEventEscalated:
+		s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: envelope.Event})
+		go s.deliverNotification(context.Background(), "escalation", envelope.Event, nil)
+	}
+}
+
+func (s *Server) handleBusStatus(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	if s.bus == nil {
+		writeError(w, http.StatusServiceUnavailable, "bus_unavailable", "the event bus is not attached")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.bus.Status())
+}
+
+func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	if s.bus == nil {
+		writeError(w, http.StatusServiceUnavailable, "bus_unavailable", "the event bus is not attached")
+		return
+	}
+	var body struct {
+		FromOffset int64  `json:"from_offset"`
+		ToOffset   *int64 `json:"to_offset"`
+		Notify     bool   `json:"notify"`
+		Limit      int    `json:"limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if body.FromOffset < 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "from_offset must be >= 0")
+		return
+	}
+	to := int64(-1)
+	if body.ToOffset != nil {
+		if *body.ToOffset < body.FromOffset {
+			writeError(w, http.StatusBadRequest, "bad_request", "to_offset must be >= from_offset")
+			return
+		}
+		to = *body.ToOffset
+	}
+	limit := body.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	envelopes, err := s.bus.ReadRange(body.FromOffset, to, limit)
+	if err != nil {
+		if errors.Is(err, bus.ErrRangeUnavailable) {
+			writeError(w, http.StatusConflict, "bus_driver_unsupported", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	for _, envelope := range envelopes {
+		switch envelope.Kind {
+		case bus.KindEventCreated:
+			s.hub.Broadcast(realtime.Frame{Type: "event_replay", Data: map[string]any{
+				"event": envelope.Event, "offset": envelope.Offset, "replay": true,
+			}})
+		case bus.KindEventEscalated:
+			s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: envelope.Event})
+		}
+		if body.Notify {
+			go s.deliverNotification(context.Background(), "event", envelope.Event, nil)
+		}
+	}
+	s.bus.MarkReplayed(int64(len(envelopes)))
+	s.audit(r, "bus.replay", "bus", map[string]any{
+		"from_offset": body.FromOffset, "to_offset": to, "count": len(envelopes), "notify": body.Notify,
+	})
+	lastOffset := int64(-1)
+	if len(envelopes) > 0 {
+		lastOffset = envelopes[len(envelopes)-1].Offset
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "replayed": len(envelopes),
+		"from_offset": body.FromOffset, "to_offset": lastOffset,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -996,6 +1110,12 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		s.hub.Broadcast(realtime.Frame{Type: "track_point", Data: point})
 	}
 	for _, event := range result.Events {
+		if s.bus != nil {
+			if _, err := s.bus.Publish(bus.KindEventCreated, event, nil, "ingest"); err != nil {
+				log.Printf("api: bus publish: %v", err)
+			}
+			continue
+		}
 		s.hub.Broadcast(realtime.Frame{Type: "event", Data: event})
 		go s.deliverNotification(context.Background(), "event", event, nil)
 	}
@@ -1018,9 +1138,19 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	body := s.metrics.Text(s.hub.Clients(), int(counts.OnlineCameras))
+	if s.bus != nil {
+		status := s.bus.Status()
+		lag := status.NextOffset
+		envelopes, err := s.bus.ReadRange(status.OldestOffset, -1, 1)
+		if err == nil && len(envelopes) > 0 {
+			lag = status.NextOffset - envelopes[len(envelopes)-1].Offset - 1
+		}
+		body += s.bus.MetricsText(lag)
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(s.metrics.Text(s.hub.Clients(), int(counts.OnlineCameras))))
+	_, _ = w.Write([]byte(body))
 }
 
 func (s *Server) recordAction(r *http.Request, event model.Event, action, target, note string) model.EventAction {

@@ -41,8 +41,12 @@ services:
       # Change these before any non-local deployment:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       INGEST_TOKEN: ${INGEST_TOKEN:-}
+      BUS_DRIVER: ${BUS_DRIVER:-jsonl}
+      BUS_DIR: /app/data/bus
     ports:
       - "8080:8080"
+    volumes:
+      - api-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,3 +119,4 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  api-data:

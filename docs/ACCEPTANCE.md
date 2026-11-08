@@ -293,3 +293,45 @@ P4 覆盖：
 - 自动派单只做「升级 → 建单」，不做重复工单去重与接手人二次分配。
 - 通知静默为单实例内存状态；重启后窗口重置；多实例需共享状态。
 - 真实机器人/HTTP 接收器验证用本地服务；真实视频源、GPU 帧率与画布手势仍需人工验收。
+
+---
+
+# P5.0 验收记录（2026-11-08 上午）
+
+## 27. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增 `internal/bus` 单测（memory 环形/裁剪/订阅者；jsonl 追加、重启恢复 offset、历史回放）与 P5 接口测试（status/replay/WS `event_replay`/400/403/指标） |
+
+## 28. smoke.sh（P0–P4 85 项 + P5 9 项 = 94 项 / 33 步）
+
+```
+smoke: PASS (94 checks passed)
+```
+
+P5 覆盖：admin bus status 形状；非 admin status/replay → 403；注入后 `published`/`next_offset` 增长；按 offset 区间回放 200 `replayed>=1` 且 `replayed` 计数增加；非法区间 400；`/metrics` 含 `dsh_twin_bus_published_total` / `dsh_twin_bus_replayed_total` / `errors_total` / `lag`。
+
+> 说明：当时后端以 `BUS_DRIVER=jsonl`（`data/bus/events.jsonl`）运行；memory 驱动同样支持同一契约。
+
+## 29. 前端 P5 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 总线页签 | ✅ admin 7 页签；状态卡片（driver=jsonl、路径、published/replayed/oldest/next/subscribers/last_publish）刷新后数值变化 |
+| 回放 | ✅ `from_offset=0, limit=50` 提交 → toast「回放完成：50 条」；状态 replayed 17→67；WS 实收 `event_replay` 帧（37 条）与 `event_updated`（13 条升级信封） |
+| 回放展示 | ✅ 事件流独立回放区「回放 · offset N」徽标 + 历史标记；不进入实时计数/三维标记；回放条目无确认按钮，可打开详情 |
+| 权限 | ✅ operator/viewer 无总线页签，直接调用 status/replay → 403 |
+| 错误 | ✅ 客户端校验 + 服务端 400 toast；409 映射已实现（jsonl 下无法主动触发） |
+| 控制台 | ✅ console errors=[]、page exceptions=[] |
+
+## 30. 已知限制（P5.0）
+
+- jsonl 驱动为单机持久日志，非分布式；`Driver` 接口已为 Kafka/Redpanda 预留，P6 替换驱动即可。
+- 回放为只读重放（不修改事件/工单），默认不重复通知；回放窗口受 `limit` 500 限制。
+- 总线 lag 指标为「尾部差」，不跟踪多消费者组；多消费者场景需改用 Kafka 语义。
+- 真实 GPU 帧率、真实视频源、真实机器人投递仍需人工验收。

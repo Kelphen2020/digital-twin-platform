@@ -2,15 +2,20 @@ import { reactive } from 'vue'
 import {
   apiErrorMessage,
   fetchAudit,
+  fetchBusStatus,
   fetchEscalationSettings,
   fetchNotificationSettings,
   fetchNotifications,
+  replayBus as requestReplayBus,
   saveEscalationSettings,
   saveNotificationSettings,
 } from '../api'
 import { pushToast } from './ui'
 import type {
   AuditEntry,
+  BusReplayRequest,
+  BusReplayResponse,
+  BusStatus,
   EscalationSettings,
   NotificationLogEntry,
   NotificationSettings,
@@ -29,6 +34,13 @@ interface AdminState {
   notifications: NotificationLogEntry[]
   notificationsLoading: boolean
   notificationsError: string | null
+  // ---- P5：事件总线 ----
+  busStatus: BusStatus | null
+  busStatusLoading: boolean
+  busStatusError: string | null
+  busReplayPending: boolean
+  busReplayResult: BusReplayResponse | null
+  busReplayError: string | null
 }
 
 const state = reactive<AdminState>({
@@ -44,6 +56,12 @@ const state = reactive<AdminState>({
   notifications: [],
   notificationsLoading: false,
   notificationsError: null,
+  busStatus: null,
+  busStatusLoading: false,
+  busStatusError: null,
+  busReplayPending: false,
+  busReplayResult: null,
+  busReplayError: null,
 })
 
 /** 拉取通知 + 升级两组设置（admin）。 */
@@ -127,6 +145,41 @@ async function refreshAudit(): Promise<void> {
   await Promise.all([loadAudit(), loadNotifications()])
 }
 
+/** GET /api/bus/status（admin）。 */
+async function loadBusStatus(): Promise<void> {
+  state.busStatusLoading = true
+  state.busStatusError = null
+  try {
+    state.busStatus = await fetchBusStatus()
+  } catch (error) {
+    state.busStatusError = apiErrorMessage(error)
+  } finally {
+    state.busStatusLoading = false
+  }
+}
+
+/** POST /api/bus/replay（admin）；400/409 通过 Toast 提示。 */
+async function replayBus(payload: BusReplayRequest): Promise<BusReplayResponse | null> {
+  if (state.busReplayPending) return null
+  state.busReplayPending = true
+  state.busReplayError = null
+  state.busReplayResult = null
+  try {
+    const result = await requestReplayBus(payload)
+    state.busReplayResult = result
+    pushToast(`回放完成：${result.replayed} 条（offset ${result.from_offset}–${result.to_offset}）`, 'success')
+    await loadBusStatus()
+    return result
+  } catch (error) {
+    const message = apiErrorMessage(error)
+    state.busReplayError = message
+    pushToast(message, 'error')
+    return null
+  } finally {
+    state.busReplayPending = false
+  }
+}
+
 function reset(): void {
   state.notificationSettings = null
   state.escalationSettings = null
@@ -140,6 +193,12 @@ function reset(): void {
   state.notifications = []
   state.notificationsLoading = false
   state.notificationsError = null
+  state.busStatus = null
+  state.busStatusLoading = false
+  state.busStatusError = null
+  state.busReplayPending = false
+  state.busReplayResult = null
+  state.busReplayError = null
 }
 
 export function useAdminStore() {
@@ -151,6 +210,8 @@ export function useAdminStore() {
     loadAudit,
     loadNotifications,
     refreshAudit,
+    loadBusStatus,
+    replayBus,
     reset,
   }
 }

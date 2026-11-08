@@ -45,7 +45,15 @@
 #   the receiver log; silence: silence_seconds=60 suppresses the second
 #   identical event (dsh_twin_notifications_suppressed_total > 0); P4 metrics;
 #   cleanup deletes the duty group and restores settings defaults.
-#   Total: 85 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0).
+#
+# P5.0 additions (docs/API_P5.md):
+#   admin GET /api/bus/status shape (driver/published/next_offset/subscribers),
+#   non-admin status/replay -> 403; a token-free ingest advances
+#   published/next_offset; admin replay of the freshly published offset returns
+#   ok=true with replayed>=1 and increases status.replayed; an invalid range
+#   (from_offset > to_offset) -> 400 bad_request; /metrics exposes
+#   dsh_twin_bus_published_total and dsh_twin_bus_replayed_total.
+#   Total: 94 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0).
 #
 # Dependencies: bash, curl, python3 only.
 #
@@ -556,7 +564,7 @@ fi
 # ===========================================================================
 # 1. health (exempt from auth, retry briefly while the API starts)
 # ===========================================================================
-step "1/28 health"
+step "1/33 health"
 health_code=""
 attempt=0
 while [ "$attempt" -lt 5 ]; do
@@ -590,7 +598,7 @@ fi
 # ===========================================================================
 # 2. P2 auth: unauthenticated 401, admin login, GET /api/auth/me
 # ===========================================================================
-step "2/28 auth (P2: no-token 401, login, /api/auth/me)"
+step "2/33 auth (P2: no-token 401, login, /api/auth/me)"
 noauth_code="$(http_get "/api/cameras")"
 if [ "$noauth_code" = "401" ]; then
   noauth_error="$(python3 -c 'import json,sys
@@ -632,7 +640,7 @@ fi
 # ===========================================================================
 # 3. camera inventory: >= 1 camera and the six seeded codes CAM-001..CAM-006
 # ===========================================================================
-step "3/28 cameras"
+step "3/33 cameras"
 cameras_code="$(http_get "/api/cameras" "$admin_token")"
 if [ "$cameras_code" != "200" ]; then
   fail "GET /api/cameras -> HTTP ${cameras_code:-none}"
@@ -688,7 +696,7 @@ fi
 # ===========================================================================
 # 4. ingest one high-confidence person detection for CAM-001 (token-free)
 # ===========================================================================
-step "4/28 ingest detection (P0, token-free machine entry)"
+step "4/33 ingest detection (P0, token-free machine entry)"
 ingest_code=""
 event_id=""
 ingest_attempt=0
@@ -733,7 +741,7 @@ fi
 # ===========================================================================
 # 5. poll GET /api/events?limit=20 until the event is visible (<= 5 s)
 # ===========================================================================
-step "5/28 event appears in /api/events (<= 5s)"
+step "5/33 event appears in /api/events (<= 5s)"
 found_id=""
 attempt=0
 while [ "$attempt" -lt 10 ]; do
@@ -791,7 +799,7 @@ fi
 # ===========================================================================
 # 6. ack the event (admin token; operator RBAC is covered in step 15)
 # ===========================================================================
-step "6/28 ack event (P0)"
+step "6/33 ack event (P0)"
 if [ -n "$found_id" ]; then
   ack_code="$(http_post_json "/api/events/$found_id/ack" '{}' "$admin_token")"
   if python3 - "$TMP/body.json" "$ack_code" <<'PY'
@@ -819,7 +827,7 @@ fi
 # ===========================================================================
 # 7. /metrics exposes the required counters (auth-exempt)
 # ===========================================================================
-step "7/28 metrics"
+step "7/33 metrics"
 metrics_code="$(curl -s -o "$TMP/metrics.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_code" != "200" ]; then
   fail "GET /metrics -> HTTP ${metrics_code:-none}"
@@ -841,7 +849,7 @@ fi
 # ===========================================================================
 # 8. P1.0 calibration: solve -> PUT -> GET camera shows calibration (admin)
 # ===========================================================================
-step "8/28 calibration (P1: solve -> PUT -> GET camera, admin)"
+step "8/33 calibration (P1: solve -> PUT -> GET camera, admin)"
 solve_payload='{"camera_id":"cam_001","points":[{"px":320,"py":800,"x":-84.0,"y":-30.0},{"px":1600,"py":800,"x":-20.0,"y":-30.0},{"px":320,"py":280,"x":-84.0,"y":-56.0},{"px":1600,"py":280,"x":-20.0,"y":-56.0},{"px":960,"py":540,"x":-52.0,"y":-43.0}]}'
 if [ -n "$cam1_id" ]; then
   solve_payload="$(python3 - "$TMP/cameras.json" <<'PY'
@@ -968,7 +976,7 @@ fi
 # ===========================================================================
 # 9. P1.0 tracks: ingest a detection with track_id -> GET /api/tracks returns it
 # ===========================================================================
-step "9/28 tracks (P1: ingest with track_id -> GET /api/tracks)"
+step "9/33 tracks (P1: ingest with track_id -> GET /api/tracks)"
 track_id="trk-smoke-$(python3 -c 'import time; print(int(time.time() * 1000))')"
 track_payload="$(printf '{"camera_code":"CAM-001","detections":[{"class":"person","confidence":0.77,"bbox":[0.40,0.30,0.60,0.80],"track_id":"%s","world":%s}]}' "$track_id" "$world_json")"
 track_ingest_code="$(http_post_json "/api/ingest/detections" "$track_payload")"
@@ -1020,7 +1028,7 @@ fi
 # ===========================================================================
 # 10. P1.0 workflow: create event -> GET detail with empty actions
 # ===========================================================================
-step "10/28 event workflow (P1: create -> detail actions empty)"
+step "10/33 event workflow (P1: create -> detail actions empty)"
 wf_event_id=""
 attempt=0
 while [ "$attempt" -lt 3 ] && [ -z "$wf_event_id" ]; do
@@ -1073,7 +1081,7 @@ fi
 # ===========================================================================
 # 11. P1.0 workflow: dispatch (no status change) then close
 # ===========================================================================
-step "11/28 event workflow (P1: dispatch -> close)"
+step "11/33 event workflow (P1: dispatch -> close)"
 if [ -n "$wf_event_id" ]; then
   dispatch_code="$(http_post_json "/api/events/$wf_event_id/dispatch" '{"target":"安保A组","note":"请5分钟内到场"}' "$admin_token")"
 else
@@ -1127,7 +1135,7 @@ fi
 # ===========================================================================
 # 12. P1.0 workflow: event detail now lists the dispatch + close actions
 # ===========================================================================
-step "12/28 event detail shows actions (P1)"
+step "12/33 event detail shows actions (P1)"
 if [ -n "$wf_event_id" ]; then
   wf_detail2_code="$(http_get "/api/events/$wf_event_id" "$admin_token")"
 else
@@ -1167,7 +1175,7 @@ fi
 # ===========================================================================
 # 13. P1.0 audit log records the write operations
 # ===========================================================================
-step "13/28 audit (P1)"
+step "13/33 audit (P1)"
 audit_code="$(http_get '/api/audit?limit=100' "$admin_token")"
 if python3 - "$TMP/body.json" "$audit_code" <<'PY'
 import json, sys
@@ -1194,7 +1202,7 @@ fi
 # ===========================================================================
 # 14. P1.0 stats summary + events CSV export
 # ===========================================================================
-step "14/28 stats (P1: summary + events.csv)"
+step "14/33 stats (P1: summary + events.csv)"
 summary_code="$(http_get '/api/stats/summary' "$admin_token")"
 if python3 - "$TMP/body.json" "$summary_code" <<'PY'
 import json, sys
@@ -1238,7 +1246,7 @@ fi
 # ===========================================================================
 # 15. P2.0 RBAC: viewer read-only, operator ack; prepare event for orders
 # ===========================================================================
-step "15/28 RBAC (P2: viewer read-only, operator ack)"
+step "15/33 RBAC (P2: viewer read-only, operator ack)"
 read -r viewer_login_code viewer_token < <(login_user viewer 'Viewer@123')
 read -r operator_login_code operator_token < <(login_user operator 'Operator@123')
 printf '      logins: viewer=%s operator=%s\n' "$viewer_login_code" "$operator_login_code"
@@ -1312,7 +1320,7 @@ fi
 # ===========================================================================
 # 16. P2.0 orders: create -> processing -> done (closed_at) -> GET
 # ===========================================================================
-step "16/28 orders (P2: create -> processing -> done -> GET)"
+step "16/33 orders (P2: create -> processing -> done -> GET)"
 order_id=""
 if [ -n "$rbac_event_id" ]; then
   order_payload="$(printf '{"event_id":"%s","title":"人员入侵 · 测试工单","priority":"high","assignee":"安保A组","note":"5分钟内到场"}' "$rbac_event_id")"
@@ -1409,7 +1417,7 @@ fi
 # ===========================================================================
 # 17. P2.0 camera rules (admin): high threshold suppresses events, restore
 # ===========================================================================
-step "17/28 camera rules (P2: confidence_threshold effect, restore defaults)"
+step "17/33 camera rules (P2: confidence_threshold effect, restore defaults)"
 rules_high='{"confidence_threshold":0.99,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]}'
 rules_default='{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}'
 if [ -n "$cam1_id" ]; then
@@ -1499,7 +1507,7 @@ fi
 # ===========================================================================
 # 18. P2.0 operator camera scope + audit of P2 write operations
 # ===========================================================================
-step "18/28 operator camera scope + P2 audit"
+step "18/33 operator camera scope + P2 audit"
 if [ -n "$cam2_id" ]; then
   scope_out_code="$(http_patch_json "/api/cameras/$cam2_id" '{"status":"degraded"}' "$operator_token")"
 else
@@ -1577,7 +1585,7 @@ fi
 # ===========================================================================
 # 19. P3.0 data-level filtering (operator scoped reads, admin-only lists)
 # ===========================================================================
-step "19/28 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
+step "19/33 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
 
 op_cams_code="$(http_get "/api/cameras" "$operator_token")"
 op_cams=""
@@ -1697,7 +1705,7 @@ fi
 # ===========================================================================
 # 20. P3.0 escalation settings (admin): baseline reset, PUT, GET reflects
 # ===========================================================================
-step "20/28 escalation settings (P3: PUT -> GET reflects)"
+step "20/33 escalation settings (P3: PUT -> GET reflects)"
 # Baseline reset so an interrupted previous run cannot affect the checks.
 http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token" >/dev/null
@@ -1748,7 +1756,7 @@ fi
 # ===========================================================================
 # 21. P3.0 escalation effect: stale warn event gets escalated_at (<= 25 s)
 # ===========================================================================
-step "21/28 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
+step "21/33 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
 # The stale event must carry occurred_at = now-10s, but the normal 5 s dedupe
 # window compares that timestamp against the last event for the same
 # camera+class: a concurrently running simulator could make a backdated event
@@ -1903,7 +1911,7 @@ fi
 # ===========================================================================
 # 22. P3.0 notifications + webhook delivery (local receiver)
 # ===========================================================================
-step "22/28 notifications + webhook (P3: invalid URL 400, delivery ok)"
+step "22/33 notifications + webhook (P3: invalid URL 400, delivery ok)"
 if start_receiver; then
   pass "webhook receiver listening on http://127.0.0.1:$WS_RECEIVER_PORT (log=$WS_RECEIVER_LOG)"
 else
@@ -2059,7 +2067,7 @@ fi
 # ===========================================================================
 # 23. P3.0 restore defaults + receiver cleanup
 # ===========================================================================
-step "23/28 restore P3 defaults + receiver cleanup"
+step "23/33 restore P3 defaults + receiver cleanup"
 restore_esc_code="$(http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token")"
 if python3 - "$TMP/body.json" "$restore_esc_code" <<'PY'
@@ -2124,7 +2132,7 @@ fi
 # ===========================================================================
 # 24. P4.0 duty groups: CRUD + /api/duty/current + RBAC
 # ===========================================================================
-step "24/28 duty groups (P4: CRUD + /api/duty/current + RBAC)"
+step "24/33 duty groups (P4: CRUD + /api/duty/current + RBAC)"
 duty_group_name="东门值班组"
 duty_group_payload='{"name":"东门值班组","areas":["area_gate","area_parking"],"operators":["operator"],"active":true}'
 
@@ -2261,7 +2269,7 @@ fi
 # ===========================================================================
 # 25. P4.0 auto-dispatch: escalation -> duty-group order
 # ===========================================================================
-step "25/28 auto-dispatch (P4: escalation creates order for duty group)"
+step "25/33 auto-dispatch (P4: escalation creates order for duty group)"
 auto_esc_payload='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}'
 auto_esc_code="$(http_put_json "/api/settings/escalation" "$auto_esc_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$auto_esc_code" <<'PY'
@@ -2450,7 +2458,7 @@ fi
 # ===========================================================================
 # 26. P4.0 notification retry: receiver --fail-first 2, max_attempts=3
 # ===========================================================================
-step "26/28 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
+step "26/33 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
 # Keep other event traffic out of the retry/silence checks (shared demo env may
 # run the simulator concurrently); restored at the end of step 27.
 isolate_events
@@ -2601,7 +2609,7 @@ fi
 # ===========================================================================
 # 27. P4.0 notification silence: silence_seconds=60 suppresses duplicates
 # ===========================================================================
-step "27/28 notification silence (P4: silence_seconds=60, suppressed metric)"
+step "27/33 notification silence (P4: silence_seconds=60, suppressed metric)"
 silence_notif_payload="$(printf '{"enabled":true,"webhook_url":"http://127.0.0.1:%s/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":1,"silence_seconds":60}' "$WS_RECEIVER_PORT")"
 silence_put_code="$(http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$silence_put_code" <<'PY'
@@ -2812,7 +2820,7 @@ release_events
 # ===========================================================================
 # 28. P4.0 metrics + cleanup
 # ===========================================================================
-step "28/28 P4 metrics + cleanup"
+step "28/33 P4 metrics + cleanup"
 metrics_p4_code="$(curl -s -o "$TMP/metrics_p4.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_p4_code" = "200" ] \
   && grep -q 'dsh_twin_notifications_total{result="ok"}' "$TMP/metrics_p4.txt" \
@@ -2942,6 +2950,264 @@ if [ -n "$WS_RECEIVER_PID" ]; then
   wait "$WS_RECEIVER_PID" 2>/dev/null || true
   printf '      webhook receiver stopped (pid %s)\n' "$WS_RECEIVER_PID"
   WS_RECEIVER_PID=""
+fi
+
+# ===========================================================================
+# 29. P5.0 bus status: admin shape + RBAC
+# ===========================================================================
+step "29/33 bus status (P5: admin status shape, RBAC)"
+bus_status_code="$(http_get "/api/bus/status" "$admin_token")"
+bus_status_summary=""
+bus_next_offset=""
+bus_published_before=""
+bus_replayed_before=""
+if [ "$bus_status_code" = "200" ]; then
+  bus_status_summary="$(python3 - "$TMP/body.json" <<'PY'
+import json, sys
+try:
+    status = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(status, dict):
+    sys.exit(1)
+driver = status.get("driver")
+published = status.get("published")
+next_offset = status.get("next_offset")
+replayed = status.get("replayed")
+subscribers = status.get("subscribers")
+ok = isinstance(driver, str) and bool(driver)
+ok = ok and isinstance(published, int) and published >= 0
+ok = ok and isinstance(next_offset, int) and next_offset >= 0
+ok = ok and isinstance(replayed, int) and replayed >= 0
+ok = ok and isinstance(subscribers, int) and subscribers >= 0
+if not ok:
+    sys.exit(1)
+print(json.dumps({
+    "driver": driver,
+    "published": published,
+    "next_offset": next_offset,
+    "subscribers": subscribers,
+    "replayed": replayed,
+    "oldest_offset": status.get("oldest_offset"),
+    "path": status.get("path"),
+}))
+PY
+)"
+fi
+if [ -n "$bus_status_summary" ]; then
+  bus_next_offset="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["next_offset"])' "$bus_status_summary")"
+  bus_published_before="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["published"])' "$bus_status_summary")"
+  bus_replayed_before="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["replayed"])' "$bus_status_summary")"
+  pass "admin GET /api/bus/status -> 200 ($bus_status_summary)"
+else
+  fail "admin GET /api/bus/status failed or malformed (HTTP ${bus_status_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+op_bus_status_code="$(http_get "/api/bus/status" "$operator_token")"
+if [ "$op_bus_status_code" = "403" ]; then
+  pass "operator GET /api/bus/status -> 403 forbidden (admin only)"
+else
+  fail "operator GET /api/bus/status -> HTTP ${op_bus_status_code:-none} (expected 403)"
+fi
+
+# ===========================================================================
+# 30. P5.0 bus publish: token-free ingest advances published/next_offset
+# ===========================================================================
+step "30/33 bus publish (P5: token-free ingest advances the bus)"
+wait_dedup_event CAM-002 vehicle
+bus_ingest_payload='{"camera_code":"CAM-002","detections":[{"class":"vehicle","confidence":0.91,"bbox":[0.40,0.30,0.60,0.80]}]}'
+bus_ingest_code="$(http_post_json "/api/ingest/detections" "$bus_ingest_payload")"
+if [ "$bus_ingest_code" = "200" ] || [ "$bus_ingest_code" = "202" ]; then
+  pass "token-free ingest for bus publish -> HTTP $bus_ingest_code"
+else
+  fail "token-free ingest failed (HTTP ${bus_ingest_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+bus_advanced=""
+attempt=0
+while [ "$attempt" -lt 20 ] && [ -z "$bus_advanced" ]; do
+  attempt=$((attempt + 1))
+  bus_poll_code="$(http_get "/api/bus/status" "$admin_token")"
+  if [ "$bus_poll_code" = "200" ]; then
+    bus_advanced="$(python3 - "$TMP/body.json" "${bus_next_offset:-0}" "${bus_published_before:-0}" <<'PY'
+import json, sys
+try:
+    status = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    sys.exit(0)
+if not isinstance(status, dict):
+    print("")
+    sys.exit(0)
+try:
+    before_next = int(sys.argv[2] or 0)
+    before_published = int(sys.argv[3] or 0)
+except ValueError:
+    before_next = 0
+    before_published = 0
+next_offset = status.get("next_offset")
+published = status.get("published")
+if not (isinstance(next_offset, int) and isinstance(published, int)):
+    print("")
+    sys.exit(0)
+if next_offset > before_next and published > before_published:
+    print(json.dumps({
+        "before_next_offset": before_next,
+        "next_offset": next_offset,
+        "before_published": before_published,
+        "published": published,
+        "last_publish_at": status.get("last_publish_at"),
+    }))
+else:
+    print("")
+PY
+)"
+  fi
+  if [ -n "$bus_advanced" ]; then
+    break
+  fi
+  sleep 0.5
+done
+if [ -n "$bus_advanced" ]; then
+  pass "GET /api/bus/status advanced after ingest -> $bus_advanced"
+else
+  fail "bus published/next_offset did not advance within 10s (before next_offset=${bus_next_offset:-?}, published=${bus_published_before:-?})"
+fi
+
+# ===========================================================================
+# 31. P5.0 replay: replay the freshly published offset
+# ===========================================================================
+step "31/33 bus replay (P5: replay freshly published offset)"
+bus_replay_from="${bus_next_offset:-0}"
+bus_replay_to=$((bus_replay_from + 1))
+bus_replay_payload="$(printf '{"from_offset":%s,"to_offset":%s,"notify":false,"limit":10}' "$bus_replay_from" "$bus_replay_to")"
+bus_replay_code="$(http_post_json "/api/bus/replay" "$bus_replay_payload" "$admin_token")"
+bus_replay_result=""
+if [ "$bus_replay_code" = "200" ]; then
+  bus_replay_result="$(python3 - "$TMP/body.json" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("ok") is not True:
+    sys.exit(1)
+replayed = data.get("replayed")
+if not (isinstance(replayed, int) and replayed >= 1):
+    sys.exit(1)
+print(json.dumps({
+    "replayed": replayed,
+    "from_offset": data.get("from_offset"),
+    "to_offset": data.get("to_offset"),
+}))
+PY
+)"
+fi
+if [ -n "$bus_replay_result" ]; then
+  pass "admin POST /api/bus/replay [$bus_replay_from,$bus_replay_to] -> 200 $bus_replay_result"
+else
+  fail "admin replay failed (HTTP ${bus_replay_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+bus_replayed_after=""
+if [ -n "$bus_replay_result" ]; then
+  attempt=0
+  while [ "$attempt" -lt 10 ] && [ -z "$bus_replayed_after" ]; do
+    attempt=$((attempt + 1))
+    bus_after_code="$(http_get "/api/bus/status" "$admin_token")"
+    if [ "$bus_after_code" = "200" ]; then
+      bus_replayed_after="$(python3 - "$TMP/body.json" "${bus_replayed_before:-0}" <<'PY'
+import json, sys
+try:
+    status = json.load(open(sys.argv[1]))
+except Exception:
+    print("")
+    sys.exit(0)
+try:
+    before = int(sys.argv[2] or 0)
+except ValueError:
+    before = 0
+replayed = status.get("replayed") if isinstance(status, dict) else None
+if isinstance(replayed, int) and replayed > before:
+    print(json.dumps({"before_replayed": before, "replayed": replayed}))
+else:
+    print("")
+PY
+)"
+    fi
+    if [ -n "$bus_replayed_after" ]; then
+      break
+    fi
+    sleep 0.5
+  done
+fi
+if [ -n "$bus_replayed_after" ]; then
+  pass "GET /api/bus/status replayed counter increased -> $bus_replayed_after"
+else
+  fail "bus replayed counter did not increase (before=${bus_replayed_before:-?})"
+fi
+
+# ===========================================================================
+# 32. P5.0 replay validation: invalid range 400, non-admin 403
+# ===========================================================================
+step "32/33 bus replay validation (P5: 400 invalid range, 403 non-admin)"
+invalid_replay_code="$(http_post_json "/api/bus/replay" \
+  '{"from_offset":100,"to_offset":10,"notify":false,"limit":10}' "$admin_token")"
+if [ "$invalid_replay_code" = "400" ]; then
+  invalid_replay_error="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("error",""))
+except Exception: print("")' "$TMP/body.json" 2>/dev/null || echo '')"
+  if [ "$invalid_replay_error" = "bad_request" ]; then
+    pass "admin POST /api/bus/replay invalid range (from>to) -> 400 bad_request"
+  else
+    pass "admin POST /api/bus/replay invalid range (from>to) -> 400 ${invalid_replay_error}"
+  fi
+else
+  fail "invalid replay range -> HTTP ${invalid_replay_code:-none} (expected 400 bad_request)"
+fi
+
+op_bus_replay_code="$(http_post_json "/api/bus/replay" "$bus_replay_payload" "$operator_token")"
+if [ "$op_bus_replay_code" = "403" ]; then
+  pass "operator POST /api/bus/replay -> 403 forbidden (admin only)"
+else
+  fail "operator POST /api/bus/replay -> HTTP ${op_bus_replay_code:-none} (expected 403)"
+fi
+
+# ===========================================================================
+# 33. P5.0 bus metrics
+# ===========================================================================
+step "33/33 bus metrics (P5)"
+bus_metrics_code="$(curl -s -o "$TMP/metrics_p5.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
+bus_metrics_summary="$(python3 - "$TMP/metrics_p5.txt" <<'PY'
+import sys
+
+values = {}
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except Exception:
+    lines = []
+for line in lines:
+    parts = line.split()
+    if len(parts) < 2:
+        continue
+    name = parts[0].split("{")[0]
+    if name in ("dsh_twin_bus_published_total", "dsh_twin_bus_replayed_total"):
+        try:
+            values[name] = values.get(name, 0.0) + float(parts[1])
+        except ValueError:
+            values[name] = 0.0
+ok = "dsh_twin_bus_published_total" in values and "dsh_twin_bus_replayed_total" in values
+if ok:
+    print("ok=1 published=%.0f replayed=%.0f" % (
+        values["dsh_twin_bus_published_total"], values["dsh_twin_bus_replayed_total"]))
+else:
+    print("ok=0")
+PY
+)"
+if [ "$bus_metrics_code" = "200" ] && [ "${bus_metrics_summary#ok=1}" != "$bus_metrics_summary" ]; then
+  pass "metrics contain P5 bus counters ($bus_metrics_summary)"
+else
+  fail "metrics missing dsh_twin_bus_published_total/dsh_twin_bus_replayed_total (HTTP ${bus_metrics_code:-none}, $bus_metrics_summary)"
 fi
 
 summary

@@ -5,33 +5,207 @@
   "version": 1,
   "refresh": "10s",
   "panels": [
-    {"type": "stat", "title": "事件总数", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
-     "targets": [{"expr": "sum(dsh_twin_events_total)", "refId": "A"}],
-     "fieldConfig": {"defaults": {"unit": "short"}}},
-    {"type": "stat", "title": "在线相机", "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
-     "targets": [{"expr": "dsh_twin_cameras_online", "refId": "A"}],
-     "fieldConfig": {"defaults": {"unit": "short"}}},
-    {"type": "stat", "title": "WS 连接", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
-     "targets": [{"expr": "dsh_twin_ws_clients", "refId": "A"}]},
-    {"type": "stat", "title": "通知失败", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
-     "targets": [{"expr": "dsh_twin_notifications_total{result=\"failed\"}", "refId": "A"}],
-     "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}}}},
-    {"type": "timeseries", "title": "事件速率", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
-     "targets": [{"expr": "sum(rate(dsh_twin_events_total[1m]))", "refId": "A", "legendFormat": "events/s"}]},
-    {"type": "timeseries", "title": "通知 / 升级 / 派单", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
-     "targets": [
-       {"expr": "sum(rate(dsh_twin_notifications_total{result=\"ok\"}[1m]))", "refId": "A", "legendFormat": "notify ok/s"},
-       {"expr": "sum(rate(dsh_twin_notifications_total{result=\"failed\"}[1m]))", "refId": "B", "legendFormat": "notify fail/s"},
-       {"expr": "sum(rate(dsh_twin_escalations_total[1m]))", "refId": "C", "legendFormat": "escalations/s"},
-       {"expr": "sum(rate(dsh_twin_duty_dispatches_total[1m]))", "refId": "D", "legendFormat": "duty dispatch/s"}
-     ]},
-    {"type": "timeseries", "title": "注入延迟 p95", "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
-     "targets": [{"expr": "rate(dsh_twin_ingest_duration_seconds_sum[1m]) / rate(dsh_twin_ingest_duration_seconds_count[1m])", "refId": "A", "legendFormat": "avg s"}]},
-    {"type": "timeseries", "title": "工单 / 抑制", "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
-     "targets": [
-       {"expr": "sum(rate(dsh_twin_orders_total[1m]))", "refId": "A", "legendFormat": "orders/s"},
-       {"expr": "sum(rate(dsh_twin_notifications_suppressed_total[1m]))", "refId": "B", "legendFormat": "suppressed/s"},
-       {"expr": "sum(rate(dsh_twin_duty_skipped_total[1m]))", "refId": "C", "legendFormat": "duty skipped/s"}
-     ]}
+    {
+      "type": "stat",
+      "title": "事件总数",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(dsh_twin_events_total)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "在线相机",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "dsh_twin_cameras_online",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WS 连接",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "dsh_twin_ws_clients",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "通知失败",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "dsh_twin_notifications_total{result=\"failed\"}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "事件速率",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(dsh_twin_events_total[1m]))",
+          "refId": "A",
+          "legendFormat": "events/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "通知 / 升级 / 派单",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(dsh_twin_notifications_total{result=\"ok\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "notify ok/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_notifications_total{result=\"failed\"}[1m]))",
+          "refId": "B",
+          "legendFormat": "notify fail/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_escalations_total[1m]))",
+          "refId": "C",
+          "legendFormat": "escalations/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_duty_dispatches_total[1m]))",
+          "refId": "D",
+          "legendFormat": "duty dispatch/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "注入延迟 p95",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(dsh_twin_ingest_duration_seconds_sum[1m]) / rate(dsh_twin_ingest_duration_seconds_count[1m])",
+          "refId": "A",
+          "legendFormat": "avg s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "工单 / 抑制",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(dsh_twin_orders_total[1m]))",
+          "refId": "A",
+          "legendFormat": "orders/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_notifications_suppressed_total[1m]))",
+          "refId": "B",
+          "legendFormat": "suppressed/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_duty_skipped_total[1m]))",
+          "refId": "C",
+          "legendFormat": "duty skipped/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "事件总线",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(dsh_twin_bus_published_total[1m]))",
+          "refId": "A",
+          "legendFormat": "published/s"
+        },
+        {
+          "expr": "sum(rate(dsh_twin_bus_replayed_total[1m]))",
+          "refId": "B",
+          "legendFormat": "replayed/s"
+        },
+        {
+          "expr": "dsh_twin_bus_lag",
+          "refId": "C",
+          "legendFormat": "lag"
+        }
+      ]
+    }
   ]
 }

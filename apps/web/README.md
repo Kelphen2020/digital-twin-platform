@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P4.0）
+# 数字孪生安防平台 · Web 前端（P5.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5，均为固定契约）。
 
 ## 快速开始
 
@@ -60,6 +60,7 @@ pnpm dev          # http://127.0.0.1:5173
 | 相机标定 | ❌ | ❌ | ✅ |
 | 平台设置（通知/升级/自动派单）与审计/通知投递 | ❌ | ❌ | ✅ |
 | 值班组 | 只读（值班 tab） | 只读（值班 tab） | ✅ 新建/编辑/删除 |
+| 事件总线状态 / 回放 | ❌（tab 隐藏） | ❌（tab 隐藏） | ✅（总线 tab） |
 
 权限错误统一以顶部 Toast 提示（`403 out_of_scope` / 无权限 / 登录过期）。
 
@@ -130,6 +131,15 @@ pnpm dev          # http://127.0.0.1:5173
 - 「审计 → 通知投递」展示每条记录的 `attempts`（实际尝试次数，如“尝试 2 次”）。
 - 相关指标由后端 `/metrics` 暴露（`dsh_twin_notifications_*`、`dsh_twin_escalations_total`、`dsh_twin_orders_total`、`dsh_twin_duty_dispatches_total`、`dsh_twin_duty_skipped_total`）。
 
+### 事件总线与回放（P5）
+
+- 右侧「总线」页签（仅 admin）：
+  - **状态卡片**：驱动程序、存储路径、已发布 / 已回放条数、缓冲起点 offset、下一条 offset、订阅者数、最近发布时间；支持刷新。
+  - **回放表单**：`from_offset`（≥0）、`to_offset`（可选，留空到当前尾部）、`limit`（1–5000，默认 500）、`notify`（是否触发 Webhook，默认关闭）；提交调用 `POST /api/bus/replay`，成功 Toast 显示回放条数，随后自动刷新状态。
+  - 异常处理：后端 `400 bad_request`（区间非法）与 `409 bus_driver_unsupported`（驱动/缓冲不支持）以 Toast 提示；同时保留客户端基础校验（区间、limit）。
+- **回放事件流**：WS `event_replay` 帧（`data: {event, offset, replay}`）追加到事件流顶部回放区，显示紫色「回放 · offset N」徽标与「回放」计数；回放条目不计入事件总数、不生成实时告警与三维标记、不提供确认按钮（仅「历史」标记），可点击打开事件详情。`event_escalated` 回放仍走 `event_updated` 正常更新。
+- 回放 feed 最多保留 100 条，实时事件原有 200 条上限不变。
+
 ## 后端契约（前端实际调用）
 
 | 方法 | 路径 | 角色 | 用途 |
@@ -155,7 +165,9 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/duty/groups` | 已登录 | 值班组列表 |
 | POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删 |
 | GET | `/api/duty/current?area_id=` | 已登录 | 区域当前值班组 |
-| WS | `/ws?token=` | 已登录 | `hello/event/event_updated/camera_status/track_point/order_updated/stats` |
+| GET | `/api/bus/status` | admin | 事件总线运行状态 |
+| POST | `/api/bus/replay` | admin | 按 offset 区间回放事件 |
+| WS | `/ws?token=` | 已登录 | `hello/event/event_updated/event_replay/camera_status/track_point/order_updated/stats` |
 
 ## 坐标与渲染约定
 
@@ -179,7 +191,7 @@ apps/web/
    ├─ store/
    │  ├─ auth.ts                 # 登录/会话/角色权限矩阵/区域判定
    │  ├─ twin.ts                 # 相机/事件/轨迹/统计/工单/选择状态（含升级 Toast）
-   │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递记录
+   │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递、P5 总线状态/回放
    │  ├─ duty.ts                 # P4 值班组 / 区域当前值班解析
    │  └─ ui.ts                   # Toast 队列
    ├─ components/
@@ -189,6 +201,7 @@ apps/web/
    │  ├─ SettingsPanel.vue       # P3 通知/升级设置（admin）
    │  ├─ AuditPanel.vue          # P3 操作审计 + 通知投递（admin，P4 显示 attempts）
    │  ├─ DutyPanel.vue           # P4 值班组（admin 增改删；其他角色只读）
+   │  ├─ BusPanel.vue            # P5 事件总线状态 / 回放（admin）
    │  └─ （其余见代码）
    ├─ scene/                     # TwinScene + 环境/相机标记/事件标记/轨迹/坐标/资源释放
    └─ styles/main.css            # 深蓝指挥中心风格（1280–1920）
@@ -211,6 +224,7 @@ apps/web/
 | 升级设置 | **实时**：`/api/settings/escalation` |
 | 操作审计 | **实时**：`/api/audit`（含 `duty.*`、`order.auto_dispatch*`） |
 | 值班组 / 自动派单 | **实时**：`/api/duty/*` + 升级设置 `auto_dispatch` + WS `order_updated` |
+| 事件总线状态 / 回放 | **实时**：`/api/bus/status` + `POST /api/bus/replay` + WS `event_replay`（当前后端驱动为 `jsonl`，路径 `data/bus/events.jsonl`） |
 | AI 推理 | **未接入**，由 `services/simulator` 按 `/api/ingest/detections` 契约模拟 |
 
 ## 验证方式
@@ -256,6 +270,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
 
+# P5：总线状态与回放（admin）
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/bus/status
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"from_offset":0,"limit":20,"notify":false}' http://localhost:5173/api/bus/replay
+# 非法区间 → 400 bad_request；非 admin → 403 forbidden（总线 tab 隐藏）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"from_offset":5,"to_offset":2,"limit":10}' http://localhost:5173/api/bus/replay
+
 # 升级链路手工验证：把 after_seconds 设为 0 并注入一条 critical 检测，等待 ≤15s
 # curl -X PUT .../api/settings/escalation -d '{"enabled":true,"after_seconds":0,"severities":["critical"]}'
 # curl -X POST .../api/ingest/detections -d '{"camera_code":"CAM-001","detections":[{"class":"smoke","confidence":0.9}]}'
@@ -283,3 +305,5 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/esc
 - 已升级事件的 `escalated_at` 由服务端写入后不可撤销（P3 契约），仅用于展示与通知。
 - 值班人员勾选目前使用 P4 种子用户（`admin/operator/viewer`）；后端校验必须是已知用户名，新增用户后需同步前端列表。
 - 自动派单依赖升级设置 `enabled + auto_dispatch` 与区域/全局值班组；无匹配值班组时后端审计 `order.auto_dispatch_skipped`，前端不显示工单。
+- P5 当前后端驱动为 `jsonl`（可跨重启回放）；`409 bus_driver_unsupported` 仅在不支持回放的驱动或 memory 缓冲区间滚出时出现，界面已映射为 Toast，但当前驱动下无法主动触发。
+- 回放条目只进入事件流回放区，不进入三维场景与实时告警统计；回放 feed 上限 100 条。

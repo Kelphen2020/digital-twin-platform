@@ -39,6 +39,7 @@ const WS_MESSAGE_TYPES = new Set([
   'camera_status',
   'track_point',
   'order_updated',
+  'event_replay',
   'stats',
 ])
 

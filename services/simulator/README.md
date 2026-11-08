@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -8,9 +8,11 @@ calibration, alarm workflow, audit, stats/CSV export), the P2.0 additions in
 [`docs/API_P2.md`](../../docs/API_P2.md) (JWT auth + RBAC, per-camera rules,
 work orders), the P3.0 additions in
 [`docs/API_P3.md`](../../docs/API_P3.md) (data-level filtering, escalation,
-webhook notifications, settings) and the P4.0 additions in
+webhook notifications, settings), the P4.0 additions in
 [`docs/API_P4.md`](../../docs/API_P4.md) (duty groups, auto-dispatch,
-notification retry/silence, extra metrics).
+notification retry/silence, extra metrics) and the P5.0 additions in
+[`docs/API_P5.md`](../../docs/API_P5.md) (replayable event bus: bus status,
+replay, bus metrics).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -19,7 +21,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 = **85 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 = **94 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay). |
 | `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -192,7 +194,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**85 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0):
+(**94 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -275,6 +277,22 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     `dsh_twin_notifications_suppressed_total`), the duty group is deleted
     (204), notifications disabled and escalation defaults
     (`after_seconds=300, auto_dispatch=true`) verified.
+
+**P5.0 (steps 29–33, 9 checks)**
+
+29. bus status: admin `GET /api/bus/status` → 200 with
+    `driver/published/next_offset/subscribers/oldest_offset/last_publish_at`
+    (a `path` is present for the `jsonl` driver); non-admin `GET` → `403`;
+30. bus publish: a token-free ingest (CAM-002/vehicle) advances
+    `published`/`next_offset` (polled via `/api/bus/status`);
+31. bus replay: admin `POST /api/bus/replay {from_offset: N, to_offset: N+1,
+    notify: false}` for the freshly published offset → `200 ok=true
+    replayed>=1`, and the status `replayed` counter increases;
+32. replay validation: invalid range (`from_offset > to_offset`) → `400
+    bad_request`; non-admin replay → `403 forbidden`;
+33. bus metrics: `/metrics` exposes `dsh_twin_bus_published_total` and
+    `dsh_twin_bus_replayed_total` (plus `dsh_twin_bus_errors_total` /
+    `dsh_twin_bus_lag`).
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -450,7 +468,54 @@ dsh_twin_duty_skipped_total 1
 
 ---
 
-## 6. Typical demo sequence
+## 6. P5.0 event bus status & replay demo
+
+The P5 backend publishes every new event (and escalation) to a replayable bus
+(`BUS_DRIVER=memory|jsonl`; `memory` keeps an in-process ring buffer, `jsonl`
+appends to `data/bus/events.jsonl` and survives restarts). The admin endpoints
+expose the bus state and allow replaying an offset range:
+
+```bash
+ADMIN="$TOKEN"
+
+# 1) inspect the bus state (driver, published/replayed counters, offsets)
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/bus/status
+
+# 2) publish a new event (token-free machine entry), then note the new offsets
+N=$(curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/bus/status \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["next_offset"])')
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"camera_code":"CAM-002","detections":[{"class":"vehicle","confidence":0.91}]}' \
+  http://127.0.0.1:8080/api/ingest/detections
+
+# 3) replay the freshly published offset (notify=false -> no webhook spam);
+#    WS clients receive "event_replay" frames with replay:true + offset
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d "{\"from_offset\": $N, \"to_offset\": $((N+1)), \"notify\": false, \"limit\": 10}" \
+  http://127.0.0.1:8080/api/bus/replay
+# -> {"ok":true,"replayed":1,"from_offset":N,"to_offset":N}
+
+# 4) invalid range -> 400 bad_request; replay is admin-only (403 for others)
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"from_offset": 100, "to_offset": 10}' http://127.0.0.1:8080/api/bus/replay
+```
+
+Bus metrics to watch in `GET /metrics`:
+
+```
+dsh_twin_bus_published_total 1280
+dsh_twin_bus_replayed_total 12
+dsh_twin_bus_errors_total 0
+dsh_twin_bus_lag 0
+```
+
+> `notify: false` is the default-safe mode: replay pushes to WebSocket clients
+> but does not re-trigger webhook notifications. Set `notify: true` only for
+> deliberate re-notification demos.
+
+---
+
+## 7. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

@@ -19,6 +19,9 @@ type Config struct {
 	AuthMode     string
 	JWTSecret    string
 	IngestToken  string
+	BusDriver    string
+	BusDir       string
+	BusBuffer    int
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -33,6 +36,9 @@ func Load() Config {
 		AuthMode:     env("AUTH_MODE", "on"),
 		JWTSecret:    env("JWT_SECRET", "dev-secret-change-me"),
 		IngestToken:  env("INGEST_TOKEN", ""),
+		BusDriver:    env("BUS_DRIVER", "memory"),
+		BusDir:       env("BUS_DIR", "data/bus"),
+		BusBuffer:    envInt("BUS_BUFFER", 10000),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

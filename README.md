@@ -113,6 +113,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P4.md`](docs/API_P4.md)。
 
+![P5.0 总线状态与回放](docs/screenshots/p5-bus-panel.png)
+
+## P5.0 能力（可回放事件总线）
+
+- **事件总线**：事件产生后写入总线（`memory` 环形缓冲 或 `jsonl` 持久日志），再由订阅者统一驱动 WebSocket 推送与 Webhook 通知；写库仍是同步事实源。
+- **持久与回放**：`BUS_DRIVER=jsonl` 时事件追加到 `data/bus/events.jsonl`，重启后继续 offset；admin 可按 offset 区间回放，WS 以 `event_replay` 帧重推（可选是否重复通知）。
+- **管理接口**：`GET /api/bus/status`、`POST /api/bus/replay`（仅 admin，写审计 `bus.replay`）。
+- **指标**：`dsh_twin_bus_published_total`、`..._replayed_total`、`..._errors_total`、`..._lag`；Grafana 看板增加总线面板。
+
+契约见 [`docs/API_P5.md`](docs/API_P5.md)。
+
 ## 目录
 
 ```

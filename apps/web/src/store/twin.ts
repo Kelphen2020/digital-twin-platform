@@ -34,6 +34,7 @@ import type {
   FocusRequest,
   Order,
   OrderStatus,
+  ReplayFeedItem,
   Severity,
   SidebarTab,
   StatsRange,
@@ -59,6 +60,8 @@ const TRACKS_MAX_TOTAL = 2000
 const TRACKS_RETENTION_MS = 10 * 60_000
 /** 统计时间窗口。 */
 const STATS_RANGES_MS: Record<StatsRange, number> = { '1h': 3_600_000, '24h': 86_400_000 }
+/** 事件流中最多保留的回放条目。 */
+const REPLAY_FEED_LIMIT = 100
 
 interface TwinState {
   siteName: string
@@ -99,6 +102,8 @@ interface TwinState {
   statsError: string | null
   // ---- P1：侧栏页签 ----
   sidebarTab: SidebarTab
+  // ---- P5：总线回放 feed（仅事件流展示，不计入实时事件/三维标记） ----
+  replayEvents: ReplayFeedItem[]
   // ---- P2：工单 ----
   orders: Order[]
   ordersLoading: boolean
@@ -141,6 +146,7 @@ const state = reactive<TwinState>({
   statsLoading: false,
   statsError: null,
   sidebarTab: 'events',
+  replayEvents: [],
   orders: [],
   ordersLoading: false,
   ordersError: null,
@@ -156,6 +162,7 @@ let started = false
 let focusSeq = 0
 let trackRequestSeq = 0
 let eventDetailSeq = 0
+let replaySeq = 0
 
 // ---------------- 派生状态 ----------------
 
@@ -621,6 +628,21 @@ function handleWsMessage(message: WsMessage): void {
       }
       break
     }
+    case 'event_replay': {
+      // 回放事件：只追加到事件流回放区（带 offset），不计入事件总数、不生成三维标记
+      const payload = message.data
+      if (!payload?.event) break
+      replaySeq += 1
+      const offset = typeof payload.offset === 'number' ? payload.offset : -1
+      const item: ReplayFeedItem = {
+        key: `replay-${offset}-${payload.event.id}-${replaySeq}`,
+        event: payload.event,
+        offset,
+        receivedAt: Date.now(),
+      }
+      state.replayEvents = [item, ...state.replayEvents].slice(0, REPLAY_FEED_LIMIT)
+      break
+    }
     case 'stats': {
       state.eventsTotal = message.data.events_total
       state.onlineCamerasFromStats = message.data.online_cameras
@@ -713,6 +735,16 @@ function clearSelection(): void {
   void loadTracks(null)
 }
 
+/** 打开回放事件详情：回放条目不在实时事件列表中，单独处理选中/聚焦。 */
+function openReplayEvent(item: ReplayFeedItem): void {
+  state.selectedCameraId = item.event.camera_id
+  state.selectedEventId = item.event.id
+  state.actionError = null
+  void loadTracks(item.event.camera_id)
+  void loadEventDetail(item.event.id)
+  requestFocus(item.event.camera_id)
+}
+
 /** 登出/切换账号时清空历史数据，避免下一会话看到上一角色残留数据。 */
 function reset(): void {
   stop()
@@ -751,6 +783,7 @@ function reset(): void {
   state.statsLoading = false
   state.statsError = null
   state.sidebarTab = 'events'
+  state.replayEvents = []
   state.orders = []
   state.ordersLoading = false
   state.ordersError = null
@@ -799,6 +832,7 @@ export function useTwinStore() {
     selectEvent,
     focusCamera,
     focusEvent,
+    openReplayEvent,
     acknowledgeEvent,
     closeEvent,
     dispatchEvent,

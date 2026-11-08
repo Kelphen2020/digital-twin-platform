@@ -3,6 +3,9 @@ import type {
   Area,
   AreaListResponse,
   AuditEntry,
+  BusReplayRequest,
+  BusReplayResponse,
+  BusStatus,
   AuditListResponse,
   AuthUser,
   CalibrationSavePayload,
@@ -146,7 +149,14 @@ export function apiErrorMessage(error: unknown): string {
       }
       return `当前角色无此操作权限（403）：${error.message}`
     }
+    if (error.status === 400) return `请求参数不合法（400）：${error.message}`
     if (error.status === 404) return `资源不存在（404 ${error.message}）`
+    if (error.status === 409) {
+      if (error.code === 'bus_driver_unsupported' || error.message.includes('bus_driver_unsupported')) {
+        return '当前总线驱动不支持该回放区间（409 bus_driver_unsupported）'
+      }
+      return `操作冲突（409）：${error.message}`
+    }
     return error.message
   }
   if (error instanceof TypeError) return '无法连接后端 API'
@@ -410,6 +420,18 @@ export async function deleteDutyGroup(groupId: string): Promise<void> {
     if (response.status === 401) notifyUnauthorized('/api/duty/groups')
     throw error
   }
+}
+
+// ---------------- P5 事件总线 ----------------
+
+/** GET /api/bus/status（admin）→ 总线运行状态。 */
+export async function fetchBusStatus(): Promise<BusStatus> {
+  return requestJson<BusStatus>('/api/bus/status')
+}
+
+/** POST /api/bus/replay（admin）→ 回放指定 offset 区间。 */
+export async function replayBus(payload: BusReplayRequest): Promise<BusReplayResponse> {
+  return postJson<BusReplayResponse>('/api/bus/replay', payload)
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

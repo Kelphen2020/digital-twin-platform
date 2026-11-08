@@ -10,3 +10,4 @@ coverage/
 .pnpm-store/
 playwright-report/
 apps/web/public/hls/
+data/
