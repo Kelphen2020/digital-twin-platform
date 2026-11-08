@@ -25,6 +25,8 @@ import type {
   EscalationSettings,
   EventListResponse,
   LoginResponse,
+  CreateUserPayload,
+  ManagedUser,
   NotificationListResponse,
   NotificationLogEntry,
   NotificationSettings,
@@ -37,6 +39,8 @@ import type {
   TrackPoint,
   TwinEvent,
   UpdateOrderPayload,
+  UpdateUserPayload,
+  UserListResponse,
 } from './types'
 
 /**
@@ -150,9 +154,17 @@ export function apiErrorMessage(error: unknown): string {
       }
       return `当前角色无此操作权限（403）：${error.message}`
     }
-    if (error.status === 400) return `请求参数不合法（400）：${error.message}`
+    if (error.status === 400) {
+      if (error.code === 'self_protected' || error.message.includes('self_protected')) {
+        return '不能停用、降级或删除当前登录账号（400 self_protected）'
+      }
+      return `请求参数不合法（400）：${error.message}`
+    }
     if (error.status === 404) return `资源不存在（404 ${error.message}）`
     if (error.status === 409) {
+      if (error.code === 'username_taken' || error.message.includes('username_taken')) {
+        return '用户名已存在（409 username_taken）'
+      }
       if (error.code === 'bus_driver_unsupported' || error.message.includes('bus_driver_unsupported')) {
         return '当前总线驱动不支持该回放区间（409 bus_driver_unsupported）'
       }
@@ -440,6 +452,37 @@ export async function replayBus(payload: BusReplayRequest): Promise<BusReplayRes
 /** GET /api/site（登录用户）→ 站点范围 / 模型清单 / 底图配置。 */
 export async function fetchSite(): Promise<SiteConfig> {
   return requestJson<SiteConfig>('/api/site')
+}
+
+// ---------------- P7 用户管理（admin） ----------------
+
+/** GET /api/users（admin）→ 用户列表。 */
+export async function fetchUsers(): Promise<ManagedUser[]> {
+  const data = await requestJson<UserListResponse>('/api/users')
+  return data.items ?? []
+}
+
+/** POST /api/users（admin）→ 创建用户。 */
+export async function createUser(payload: CreateUserPayload): Promise<ManagedUser> {
+  return postJson<ManagedUser>('/api/users', payload)
+}
+
+/** PATCH /api/users/{id}（admin）→ 修改显示名/密码/角色/区域/启用状态。 */
+export async function updateUser(userId: string, payload: UpdateUserPayload): Promise<ManagedUser> {
+  return patchJson<ManagedUser>(`/api/users/${encodeURIComponent(userId)}`, payload)
+}
+
+/** DELETE /api/users/{id}（admin）→ 删除用户（不能删除自己）。 */
+export async function deleteUser(userId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(userId)}`), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json', ...authHeaders() },
+  })
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized('/api/users')
+    throw error
+  }
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

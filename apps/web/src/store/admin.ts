@@ -1,24 +1,31 @@
 import { reactive } from 'vue'
 import {
   apiErrorMessage,
+  createUser as requestCreateUser,
+  deleteUser as requestDeleteUser,
   fetchAudit,
   fetchBusStatus,
   fetchEscalationSettings,
   fetchNotificationSettings,
   fetchNotifications,
   replayBus as requestReplayBus,
+  fetchUsers,
   saveEscalationSettings,
   saveNotificationSettings,
+  updateUser as requestUpdateUser,
 } from '../api'
 import { pushToast } from './ui'
 import type {
   AuditEntry,
   BusReplayRequest,
+  CreateUserPayload,
+  ManagedUser,
   BusReplayResponse,
   BusStatus,
   EscalationSettings,
   NotificationLogEntry,
   NotificationSettings,
+  UpdateUserPayload,
 } from '../types'
 
 interface AdminState {
@@ -41,6 +48,12 @@ interface AdminState {
   busReplayPending: boolean
   busReplayResult: BusReplayResponse | null
   busReplayError: string | null
+  // ---- P7：用户管理 ----
+  users: ManagedUser[]
+  usersLoading: boolean
+  usersError: string | null
+  userSaving: boolean
+  userDeletingId: string | null
 }
 
 const state = reactive<AdminState>({
@@ -62,6 +75,11 @@ const state = reactive<AdminState>({
   busReplayPending: false,
   busReplayResult: null,
   busReplayError: null,
+  users: [],
+  usersLoading: false,
+  usersError: null,
+  userSaving: false,
+  userDeletingId: null,
 })
 
 /** 拉取通知 + 升级两组设置（admin）。 */
@@ -145,6 +163,70 @@ async function refreshAudit(): Promise<void> {
   await Promise.all([loadAudit(), loadNotifications()])
 }
 
+/** GET /api/users（admin）。 */
+async function loadUsers(): Promise<void> {
+  state.usersLoading = true
+  state.usersError = null
+  try {
+    state.users = await fetchUsers()
+  } catch (error) {
+    state.usersError = apiErrorMessage(error)
+  } finally {
+    state.usersLoading = false
+  }
+}
+
+/** POST /api/users（admin）→ 新建用户；409 username_taken / 400 校验错误自动 Toast。 */
+async function createManagedUser(payload: CreateUserPayload): Promise<ManagedUser | null> {
+  if (state.userSaving) return null
+  state.userSaving = true
+  try {
+    const user = await requestCreateUser(payload)
+    state.users = [...state.users, user]
+    pushToast('用户已创建', 'success')
+    return user
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.userSaving = false
+  }
+}
+
+/** PATCH /api/users/{id}（admin）→ 修改用户；400 self_protected 自动 Toast。 */
+async function updateManagedUser(userId: string, payload: UpdateUserPayload): Promise<ManagedUser | null> {
+  if (state.userSaving) return null
+  state.userSaving = true
+  try {
+    const user = await requestUpdateUser(userId, payload)
+    state.users = state.users.map((item) => (item.id === user.id ? user : item))
+    pushToast('用户已更新', 'success')
+    return user
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.userSaving = false
+  }
+}
+
+/** DELETE /api/users/{id}（admin）→ 删除用户；不能删除自己（400 self_protected）。 */
+async function deleteManagedUser(userId: string): Promise<boolean> {
+  if (state.userDeletingId) return false
+  state.userDeletingId = userId
+  try {
+    await requestDeleteUser(userId)
+    state.users = state.users.filter((item) => item.id !== userId)
+    pushToast('用户已删除', 'success')
+    return true
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return false
+  } finally {
+    state.userDeletingId = null
+  }
+}
+
 /** GET /api/bus/status（admin）。 */
 async function loadBusStatus(): Promise<void> {
   state.busStatusLoading = true
@@ -199,6 +281,11 @@ function reset(): void {
   state.busReplayPending = false
   state.busReplayResult = null
   state.busReplayError = null
+  state.users = []
+  state.usersLoading = false
+  state.usersError = null
+  state.userSaving = false
+  state.userDeletingId = null
 }
 
 export function useAdminStore() {
@@ -212,6 +299,10 @@ export function useAdminStore() {
     refreshAudit,
     loadBusStatus,
     replayBus,
+    loadUsers,
+    createManagedUser,
+    updateManagedUser,
+    deleteManagedUser,
     reset,
   }
 }

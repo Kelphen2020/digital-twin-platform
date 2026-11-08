@@ -46,6 +46,12 @@ type Store interface {
 	CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error
 	ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error)
 	EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
+	GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error)
+	GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error)
+	ListUserAccounts(ctx context.Context) ([]model.UserAccount, error)
+	CreateUserAccount(ctx context.Context, account model.UserAccount) error
+	UpdateUserAccount(ctx context.Context, account model.UserAccount) error
+	DeleteUserAccount(ctx context.Context, id string) error
 	CreateDutyGroup(ctx context.Context, group model.DutyGroup) error
 	GetDutyGroup(ctx context.Context, id string) (model.DutyGroup, error)
 	ListDutyGroups(ctx context.Context) ([]model.DutyGroup, error)
@@ -67,6 +73,8 @@ type Memory struct {
 	settings  map[string][]byte
 	logs      []model.NotificationLog
 	duty      []model.DutyGroup
+	users     map[string]model.UserAccount
+	usernames map[string]string
 	tracks    []model.TrackPoint
 	actions   map[string][]model.EventAction
 	audit     []model.AuditEntry
@@ -88,6 +96,8 @@ func NewMemory(maxEvents int) *Memory {
 		actions:   make(map[string][]model.EventAction),
 		rules:     make(map[string]model.CameraRules),
 		settings:  make(map[string][]byte),
+		users:     make(map[string]model.UserAccount),
+		usernames: make(map[string]string),
 	}
 }
 
@@ -496,6 +506,68 @@ func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (m *Memory) GetUserAccountByUsername(_ context.Context, username string) (model.UserAccount, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.usernames[username]
+	if !ok {
+		return model.UserAccount{}, false, nil
+	}
+	account, exists := m.users[id]
+	return account, exists, nil
+}
+
+func (m *Memory) GetUserAccountByID(_ context.Context, id string) (model.UserAccount, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	account, ok := m.users[id]
+	return account, ok, nil
+}
+
+func (m *Memory) ListUserAccounts(context.Context) ([]model.UserAccount, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.UserAccount, 0, len(m.users))
+	for _, account := range m.users {
+		out = append(out, account)
+	}
+	return out, nil
+}
+
+func (m *Memory) CreateUserAccount(_ context.Context, account model.UserAccount) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.usernames[account.Username]; exists {
+		return model.ErrConflict
+	}
+	m.users[account.ID] = account
+	m.usernames[account.Username] = account.ID
+	return nil
+}
+
+func (m *Memory) UpdateUserAccount(_ context.Context, account model.UserAccount) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.users[account.ID]; !exists {
+		return model.ErrNotFound
+	}
+	m.users[account.ID] = account
+	m.usernames[account.Username] = account.ID
+	return nil
+}
+
+func (m *Memory) DeleteUserAccount(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	account, exists := m.users[id]
+	if !exists {
+		return model.ErrNotFound
+	}
+	delete(m.users, id)
+	delete(m.usernames, account.Username)
+	return nil
 }
 
 func (m *Memory) CreateDutyGroup(_ context.Context, group model.DutyGroup) error {

@@ -413,6 +413,42 @@ export interface DutyCurrent {
   operators: string[]
 }
 
+// ---------------- P7：用户与账号管理 ----------------
+
+/** GET /api/users 用户对象（密码永不返回）。 */
+export interface ManagedUser {
+  id: string
+  username: string
+  display_name: string
+  role: Role
+  /** 负责区域；空/ null 表示全部区域。 */
+  areas: string[] | null
+  active?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+export interface UserListResponse {
+  items: ManagedUser[]
+}
+
+export interface CreateUserPayload {
+  username: string
+  password: string
+  display_name: string
+  role: Role
+  areas: string[]
+  active: boolean
+}
+
+export interface UpdateUserPayload {
+  display_name?: string
+  password?: string
+  role?: Role
+  areas?: string[]
+  active?: boolean
+}
+
 // ---------------- P6：三维站点配置 ----------------
 
 export interface SiteOrigin {
@@ -504,7 +540,7 @@ export interface ReplayFeedItem {
   receivedAt: number
 }
 
-export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus'
+export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus' | 'users'
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

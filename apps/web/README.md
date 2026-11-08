@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P6.0）
+# 数字孪生安防平台 · Web 前端（P7.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7，均为固定契约）。
 
 ## 快速开始
 
@@ -61,6 +61,7 @@ pnpm dev          # http://127.0.0.1:5173
 | 平台设置（通知/升级/自动派单）与审计/通知投递 | ❌ | ❌ | ✅ |
 | 值班组 | 只读（值班 tab） | 只读（值班 tab） | ✅ 新建/编辑/删除 |
 | 事件总线状态 / 回放 | ❌（tab 隐藏） | ❌（tab 隐藏） | ✅（总线 tab） |
+| 用户与账号管理 | ❌（tab 隐藏，API 403） | ❌（tab 隐藏，API 403） | ✅（用户 tab） |
 
 权限错误统一以顶部 Toast 提示（`403 out_of_scope` / 无权限 / 登录过期）。
 
@@ -149,6 +150,15 @@ pnpm dev          # http://127.0.0.1:5173
 - **视频纹理融合**（默认关闭，顶栏「视频融合」切换）：为选中相机创建**独立**隐藏 `<video>` + hls.js 实例播放 `stream_url`，把 `VideoTexture` 贴到视锥内量程 60% 处的平面（尺寸按 `fov_h`/`fov_v` 计算），带边框、暗角与 LIVE 标签；相机切换/关闭开关时销毁播放器与纹理，不影响右侧相机详情里的 HLS 播放器。
 - **工具栏**：顶栏紧凑工具栏含 轨迹 / 视频融合 / 模型细节 / 2.5D底图 四个开关（会话内状态，刷新恢复默认）；7 个侧栏 tab 保持不变。
 
+### 用户与账号管理（P7，admin）
+
+- 右侧「用户」页签（第 8 个 tab，仅 admin）：`GET /api/users` 列表展示用户名、显示名、角色、负责区域、启用状态与创建/更新时间；「当前用户」「已停用」「启用中」徽标。
+- **新建用户**弹窗：用户名（3–32 字符）、密码（≥8）、显示名、角色（viewer/operator/admin）、负责区域多选（`GET /api/areas`）、启用开关；重复用户名 `409 username_taken` 与 400 校验错误以 Toast 提示。
+- **编辑用户**弹窗：显示名/角色/区域/启用状态 + 可选新密码（留空不修改）；编辑自己时禁用角色与启用开关并提示 self_protected，保存按钮同时禁用；若仍触发后端保护（400 self_protected）以 Toast 提示。
+- **删除用户**：两步确认（删除 → 确认删除）；当前登录账号删除按钮禁用（self_protected 保护），后端同样会拒绝。
+- 角色/区域/启用状态变更在**下一次登录**生效（JWT 内容不变）；停用账号无法登录（`401 invalid_credentials`），已有会话的 401 自动登出逻辑沿用 P2。
+- 审计新增 `user.create` / `user.update` / `user.delete`（actor=当前管理员）。
+
 ## 后端契约（前端实际调用）
 
 | 方法 | 路径 | 角色 | 用途 |
@@ -175,6 +185,8 @@ pnpm dev          # http://127.0.0.1:5173
 | POST/PATCH/DELETE | `/api/duty/groups`、`/api/duty/groups/{id}` | admin | 值班组增改删 |
 | GET | `/api/duty/current?area_id=` | 已登录 | 区域当前值班组 |
 | GET | `/api/site` | 已登录 | 站点范围 / glTF 模型清单 / 底图配置 |
+| GET/POST | `/api/users` | admin | 用户列表 / 新建用户 |
+| PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
 | POST | `/api/bus/replay` | admin | 按 offset 区间回放事件 |
 | WS | `/ws?token=` | 已登录 | `hello/event/event_updated/event_replay/camera_status/track_point/order_updated/stats` |
@@ -201,7 +213,7 @@ apps/web/
    ├─ store/
    │  ├─ auth.ts                 # 登录/会话/角色权限矩阵/区域判定
    │  ├─ twin.ts                 # 相机/事件/轨迹/统计/工单/选择状态（含升级 Toast）
-   │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递、P5 总线状态/回放
+   │  ├─ admin.ts                # P3 通知/升级设置、审计、通知投递、P5 总线状态/回放、P7 用户管理
    │  ├─ duty.ts                 # P4 值班组 / 区域当前值班解析
    │  └─ ui.ts                   # Toast 队列
    ├─ components/
@@ -212,6 +224,7 @@ apps/web/
    │  ├─ AuditPanel.vue          # P3 操作审计 + 通知投递（admin，P4 显示 attempts）
    │  ├─ DutyPanel.vue           # P4 值班组（admin 增改删；其他角色只读）
    │  ├─ BusPanel.vue            # P5 事件总线状态 / 回放（admin）
+   │  ├─ UserPanel.vue           # P7 用户与账号管理（admin）
    │  └─ （其余见代码）
    ├─ scene/                     # TwinScene + 环境/相机标记/事件标记/轨迹/坐标/资源释放
    │  ├─ buildings.ts            # 建筑 LOD（近细节/中盒体/远轮廓）与 glTF 近景接线
@@ -240,6 +253,7 @@ apps/web/
 | 操作审计 | **实时**：`/api/audit`（含 `duty.*`、`order.auto_dispatch*`） |
 | 值班组 / 自动派单 | **实时**：`/api/duty/*` + 升级设置 `auto_dispatch` + WS `order_updated` |
 | 事件总线状态 / 回放 | **实时**：`/api/bus/status` + `POST /api/bus/replay` + WS `event_replay`（当前后端驱动为 `jsonl`，路径 `data/bus/events.jsonl`） |
+| 用户与账号 | **实时**：`/api/users` CRUD（密码不返回；角色/区域下次登录生效；停用即禁止登录） |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -288,6 +302,16 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
 
+# P7：用户管理（admin）
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/users
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"username":"operator2","password":"Passw0rd!","display_name":"值班员二","role":"operator","areas":["area_gate"],"active":true}' \
+  http://localhost:5173/api/users
+# 示例错误：重复用户名 → 409 username_taken；停用/降级/删除自己 → 400 self_protected
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"active":false}' http://localhost:5173/api/users/usr_admin
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/users/usr_admin
+
 # P6：站点配置与 glTF 资源
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/site
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5173/models/site.gltf
@@ -335,3 +359,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - glTF transform 的 `rotation_y` 按项目约定视为角度（度）；多模型/超大模型未做 Draco/KTX2 压缩解码。
 - 视频融合仅对选中相机生效，使用独立隐藏 hls.js 实例（与右侧 CameraVideo 面板互不影响）；关闭/切换相机时释放资源。
 - 四个三维开关为会话内存状态，刷新页面恢复默认（轨迹开/视频融合关/模型细节开/2.5D底图开）。
+- P7 用户管理为**单租户**；角色/区域/启用状态变更在下次登录生效（JWT 内容不变），停用账号的现有会话在下一次 API 401 时自动登出。
+- 用户名创建后不可修改（PATCH 不开放 username）；密码永不返回，编辑时留空表示不修改。
+- 用户管理仅 admin 可见/可调用；operator/viewer 的 `GET /api/users` 等均返回 403 forbidden（tab 隐藏）。

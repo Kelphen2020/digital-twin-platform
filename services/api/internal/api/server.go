@@ -98,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings/escalation", s.handlePutEscalationSettings)
 	mux.HandleFunc("GET /api/notifications", s.handleListNotifications)
 	mux.HandleFunc("GET /api/users", s.handleListUsers)
+	mux.HandleFunc("POST /api/users", s.handleCreateUser)
+	mux.HandleFunc("PATCH /api/users/{id}", s.handleUpdateUser)
+	mux.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
 	mux.HandleFunc("GET /api/duty/groups", s.handleListDutyGroups)
 	mux.HandleFunc("POST /api/duty/groups", s.handleCreateDutyGroup)
 	mux.HandleFunc("PATCH /api/duty/groups/{id}", s.handleUpdateDutyGroup)
@@ -271,7 +274,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
-	token, expires, user, err := s.auth.Login(strings.TrimSpace(request.Username), request.Password)
+	token, expires, user, err := s.auth.Login(r.Context(), strings.TrimSpace(request.Username), request.Password)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
@@ -1562,7 +1565,144 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.auth.Users()})
+	users, err := s.auth.Users(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if users == nil {
+		users = []model.UserAccount{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": users})
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	var body struct {
+		Username    string   `json:"username"`
+		Password    string   `json:"password"`
+		DisplayName string   `json:"display_name"`
+		Role        string   `json:"role"`
+		Areas       []string `json:"areas"`
+		Active      *bool    `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if err := s.validateUserAreas(r.Context(), body.Areas); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	active := true
+	if body.Active != nil {
+		active = *body.Active
+	}
+	account, err := s.auth.CreateUser(r.Context(), auth.CreateUserInput{
+		Username: body.Username, Password: body.Password, DisplayName: body.DisplayName,
+		Role: body.Role, Areas: body.Areas, Active: active,
+	})
+	if err != nil {
+		s.writeUserError(w, err)
+		return
+	}
+	s.audit(r, "user.create", account.ID, map[string]any{"username": account.Username, "role": account.Role})
+	writeJSON(w, http.StatusCreated, account)
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	current := userOf(r)
+	id := r.PathValue("id")
+	var body struct {
+		DisplayName *string   `json:"display_name"`
+		Password    *string   `json:"password"`
+		Role        *string   `json:"role"`
+		Areas       *[]string `json:"areas"`
+		Active      *bool     `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if id == current.ID && body.Active != nil && !*body.Active {
+		writeError(w, http.StatusBadRequest, "self_protected", "you cannot deactivate your own account")
+		return
+	}
+	if id == current.ID && body.Role != nil && *body.Role != current.Role {
+		writeError(w, http.StatusBadRequest, "self_protected", "you cannot change your own role")
+		return
+	}
+	if body.Areas != nil {
+		if err := s.validateUserAreas(r.Context(), *body.Areas); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	}
+	account, err := s.auth.UpdateUser(r.Context(), id, auth.UpdateUserInput{
+		DisplayName: body.DisplayName, Password: body.Password, Role: body.Role,
+		Areas: body.Areas, Active: body.Active,
+	})
+	if err != nil {
+		s.writeUserError(w, err)
+		return
+	}
+	s.audit(r, "user.update", account.ID, map[string]any{"role": account.Role, "active": account.Active})
+	writeJSON(w, http.StatusOK, account)
+}
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == userOf(r).ID {
+		writeError(w, http.StatusBadRequest, "self_protected", "you cannot delete your own account")
+		return
+	}
+	if err := s.auth.DeleteUser(r.Context(), id); err != nil {
+		s.writeUserError(w, err)
+		return
+	}
+	s.audit(r, "user.delete", id, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) validateUserAreas(ctx context.Context, areas []string) error {
+	if len(areas) == 0 {
+		return nil
+	}
+	known, err := s.store.ListAreas(ctx)
+	if err != nil {
+		return err
+	}
+	valid := make(map[string]struct{}, len(known))
+	for _, area := range known {
+		valid[area.ID] = struct{}{}
+	}
+	for _, area := range areas {
+		if _, ok := valid[area]; !ok {
+			return fmt.Errorf("unknown area %q", area)
+		}
+	}
+	return nil
+}
+
+func (s *Server) writeUserError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, auth.ErrUsernameTaken), errors.Is(err, model.ErrConflict):
+		writeError(w, http.StatusConflict, "username_taken", "username already exists")
+	case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, model.ErrNotFound):
+		writeError(w, http.StatusNotFound, "user_not_found", "user not found")
+	case errors.Is(err, auth.ErrBadInput):
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	}
 }
 
 func (s *Server) handleListDutyGroups(w http.ResponseWriter, r *http.Request) {
@@ -1709,7 +1849,11 @@ func (s *Server) validateDutyGroups(ctx context.Context, areas, operators *[]str
 	}
 	if operators != nil {
 		for _, username := range *operators {
-			if !s.auth.UserExists(username) {
+			exists, err := s.auth.UserExists(ctx, username)
+			if err != nil {
+				return err
+			}
+			if !exists {
 				return fmt.Errorf("unknown operator %q", username)
 			}
 		}

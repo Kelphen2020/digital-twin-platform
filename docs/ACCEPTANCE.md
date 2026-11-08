@@ -377,3 +377,43 @@ P6 覆盖：admin `GET /api/site` → 200（name/extent 数值/models[id,format,
 - 2.5D 底图为程序化矢量绘制，未接正射影像（`map.image_url` 目前为空，接口已预留）。
 - 视频融合使用 HLS 演示流；真实 WebRTC 低时延融合需媒体服务器（本机 Docker 网络受限未验证）。
 - 真机 GPU 帧率、视频面流畅度与大模型加载性能需人工验收。
+
+---
+
+# P7.0 验收记录（2026-11-08 中午）
+
+## 35. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增用户生命周期测试：列表/无密码泄漏、创建校验与冲突、登录、角色/区域变更后重登生效、改密、停用、删除、自我保护（停用/删除/降级自己）、审计 |
+
+## 36. smoke.sh（P0–P6 97 项 + P7 16 项 = 113 项 / 35 步）
+
+```
+smoke: PASS (113 checks passed)
+```
+
+P7 覆盖：admin 列表（3 个种子账号、无密码字段）；operator 403；创建 201 / 重复 409 / 短密码 400；新用户登录；角色+区域修改后重登生效且数据级相机范围正确（area_gate = CAM-001/006）；停用后登录 401；删除后 401；自我保护 DELETE/停用 → 400；审计 `user.*` actor=admin；清理临时账号。
+
+## 37. 前端 P7 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 用户页签 | ✅ admin 8 页签；列表含显示名/@用户名/角色/区域/创建更新时间；当前用户与启用状态徽标；自我删除按钮禁用 |
+| 新建/编辑/删除 | ✅ UI 创建 operator 用户（API 验证）、编辑角色/区域/改密（新密码可登录、旧密码 401）、两步确认删除；用户名编辑只读 |
+| 自我保护 | ✅ 编辑自己时角色/启用控件禁用；后端降级自己 → 400 `self_protected`（本轮已修复该缺口并加测试） |
+| 权限 | ✅ operator/viewer 仅 4 页签，无用户管理；直接调用 `/api/users` → 403 |
+| 回归 | ✅ P0–P6（三维场景/模型/视频/总线/设置等）正常；console errors=[]、page exceptions=[] |
+| 截图 | `docs/screenshots/p7-user-list.png`、`p7-user-create.png`、`p7-user-edit.png`、`p7-self-protect.png`、`p7-user-deleted.png`、`p7-admin-users-final.png`、`p7-operator.png` |
+
+## 38. 已知限制（P7.0）
+
+- 内部修复：`PATCH /api/users/{id}` 降级自己此前返回 200，现已返回 400 `self_protected` 并补测试。
+- 账号持久化：内存模式下重启会回到 3 个种子账号；设置 `DATABASE_URL` 使用 PostgreSQL 时账号持久化。
+- JWT 无刷新令牌：角色/区域变更在下次登录生效，停用后旧 token 最长 12h 内仍有效（下次请求不主动吊销）。
+- `/api/auth/me` 返回的是 JWT 快照，`created_at/updated_at` 为零值（列表接口返回真实时间）；不影响权限。

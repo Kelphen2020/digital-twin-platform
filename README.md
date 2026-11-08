@@ -136,6 +136,18 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P6.md`](docs/API_P6.md)。
 
+![P7.0 用户管理](docs/screenshots/p7-user-list.png)
+
+## P7.0 能力（用户与账号管理）
+
+- **账号持久化**：登录账号从存储读取（内存模式启动时写入种子账号；`DATABASE_URL` 下持久化到 `users` 表）。
+- **管理员 CRUD**：`GET/POST/PATCH/DELETE /api/users` —— 新建（用户名唯一、密码 ≥8 位、角色/区域校验）、改角色/区域/显示名/密码/启停、删除；不能停用或删除自己（`self_protected`）。
+- **登录语义**：停用账号登录返回 401；改密后旧密码立即失效；角色/区域变更在下次登录时生效（JWT 12h 有效期内旧 token 仍可用）。
+- **审计**：`user.create` / `user.update` / `user.delete`（actor=管理员用户名）。
+- **前端**：admin 新增「用户」页签（列表/新建/编辑/启停/删除/改密），operator/viewer 不可见。
+
+契约见 [`docs/API_P7.md`](docs/API_P7.md)。
+
 ## 目录
 
 ```

@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -12,9 +12,11 @@ webhook notifications, settings), the P4.0 additions in
 [`docs/API_P4.md`](../../docs/API_P4.md) (duty groups, auto-dispatch,
 notification retry/silence, extra metrics) and the P5.0 additions in
 [`docs/API_P5.md`](../../docs/API_P5.md) (replayable event bus: bus status,
-replay, bus metrics) and the P6.0 addition in
+replay, bus metrics), the P6.0 addition in
 [`docs/API_P6.md`](../../docs/API_P6.md) (`GET /api/site`: site name, ENU
-extent, glTF model manifest, map style for the 2.5D/3D scene).
+extent, glTF model manifest, map style for the 2.5D/3D scene) and the P7.0
+addition in [`docs/API_P7.md`](../../docs/API_P7.md) (admin user management:
+`/api/users` CRUD, roles/areas/active, self-protection).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -23,7 +25,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 = **97 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 = **113 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management). |
 | `../../scripts/load.py` | Threaded load injector: target QPS, achieved QPS, accepted/dropped, HTTP p50/p95/p99 latency, optional `--track-ratio` and machine-entry tokens. |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -196,7 +198,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**97 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0):
+(**113 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -303,6 +305,21 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     `id`/`format` (`gltf`|`glb`)/`url`, and `map.style`; viewer `GET
     /api/site` → 200 (authenticated read); unauthenticated `GET /api/site`
     → `401 unauthorized`.
+
+**P7.0 (step 35, 16 checks)**
+
+35. user management: admin `GET /api/users` → 200 with the ≥3 seeded users
+    (admin/operator/viewer) and **no password fields anywhere**; operator
+    `GET /api/users` → `403 forbidden`; admin `POST /api/users` → 201 (unique
+    `smoke_user_<ts>`, viewer); duplicate username → `409 username_taken`;
+    password < 8 chars → 400; login as the new user → 200 (role viewer);
+    `PATCH` role→operator + `areas:[area_gate]` → 200, re-login shows
+    `role=operator` via `/api/auth/me` and `GET /api/cameras` is area-scoped
+    (exactly the `area_gate` cameras); `PATCH active=false` → 200 then login →
+    `401 invalid_credentials`; `DELETE` → 204 then login → 401; self `DELETE`
+    and self `PATCH active=false` → `400 self_protected`; audit contains
+    `user.create`/`user.update`/`user.delete` with `actor=admin`. Cleanup
+    deletes the temporary user (also via the EXIT trap).
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -558,7 +575,48 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/site
 - `smoke.sh` validates this payload shape plus the viewer/no-token permission
   behaviour (step 34).
 
-## 8. Typical demo sequence
+## 8. P7.0 user management (`/api/users`)
+
+Admins maintain the account store (the P2 seed users `admin`/`operator`/
+`viewer` are auto-created when the user table is empty; passwords are never
+returned; `active=false` users cannot log in):
+
+```bash
+ADMIN="$TOKEN"
+
+# list users
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/users
+
+# create a viewer account
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"username":"operator2","password":"Passw0rd!","display_name":"值班员二",
+       "role":"viewer","areas":[],"active":true}' http://127.0.0.1:8080/api/users
+
+# promote + assign an area (takes effect on the next login: NEW JWT)
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"role":"operator","areas":["area_gate"],"active":true}' \
+  http://127.0.0.1:8080/api/users/<id>
+
+# disable (login -> 401 invalid_credentials), re-enable, or delete
+curl -s -X PATCH -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"active":false}' http://127.0.0.1:8080/api/users/<id>
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN" \
+  http://127.0.0.1:8080/api/users/<id>
+
+# self-protection: an admin cannot disable or delete their own account
+# -> 400 self_protected
+```
+
+Notes:
+
+- All `/api/users` endpoints are admin-only (`403 forbidden` for other roles).
+- Role/areas/active changes are picked up on the next login (the JWT carries
+  the user snapshot; stale tokens keep their old role until expiry).
+- New operator `areas` are enforced by P3 data-level filtering, e.g.
+  `GET /api/cameras` returns exactly the cameras in those areas.
+- Audit entries: `user.create`, `user.update`, `user.delete` (`actor=<admin>`).
+
+## 9. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

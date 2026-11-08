@@ -43,7 +43,10 @@ func main() {
 		log.Fatalf("api: load site config: %v", err)
 	}
 
-	authService := auth.New(cfg.AuthMode, cfg.JWTSecret)
+	authService := auth.NewWithRepo(cfg.AuthMode, cfg.JWTSecret, database)
+	if err := authService.EnsureSeed(ctx); err != nil {
+		log.Fatalf("api: seed users: %v", err)
+	}
 	server := api.New(database, engine, hub, meters, cfg.Version, authService, cfg.IngestToken)
 
 	eventBus, err := openBus(cfg)

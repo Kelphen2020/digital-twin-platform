@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"digital-twin-platform/api/internal/model"
@@ -845,4 +847,110 @@ func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 	group.CreatedAt = group.CreatedAt.UTC()
 	group.UpdatedAt = group.UpdatedAt.UTC()
 	return group, nil
+}
+
+func (p *Postgres) GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error) {
+	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE username=$1`, username))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return model.UserAccount{}, false, nil
+		}
+		return model.UserAccount{}, false, err
+	}
+	return account, true, nil
+}
+
+func (p *Postgres) GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error) {
+	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE id=$1`, id))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return model.UserAccount{}, false, nil
+		}
+		return model.UserAccount{}, false, err
+	}
+	return account, true, nil
+}
+
+func (p *Postgres) ListUserAccounts(ctx context.Context) ([]model.UserAccount, error) {
+	rows, err := p.pool.Query(ctx, userSelect+` ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	accounts := make([]model.UserAccount, 0, 8)
+	for rows.Next() {
+		account, err := scanUserAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, rows.Err()
+}
+
+func (p *Postgres) CreateUserAccount(ctx context.Context, account model.UserAccount) error {
+	areas, _ := json.Marshal(account.Areas)
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO users (id, username, display_name, role, areas, active, password_hash, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		account.ID, account.Username, account.DisplayName, account.Role, areas, account.Active,
+		account.PasswordHash, account.CreatedAt, account.UpdatedAt)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return model.ErrConflict
+	}
+	return err
+}
+
+func (p *Postgres) UpdateUserAccount(ctx context.Context, account model.UserAccount) error {
+	areas, _ := json.Marshal(account.Areas)
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE users SET username=$2, display_name=$3, role=$4, areas=$5, active=$6,
+                         password_hash=$7, updated_at=now()
+        WHERE id=$1`,
+		account.ID, account.Username, account.DisplayName, account.Role, areas,
+		account.Active, account.PasswordHash)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return model.ErrConflict
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) DeleteUserAccount(ctx context.Context, id string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const userSelect = `SELECT id, username, display_name, role, areas, active, password_hash, created_at, updated_at FROM users`
+
+func scanUserAccount(row rowScanner) (model.UserAccount, error) {
+	var account model.UserAccount
+	var areas []byte
+	err := row.Scan(&account.ID, &account.Username, &account.DisplayName, &account.Role,
+		&areas, &account.Active, &account.PasswordHash, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.UserAccount{}, ErrNotFound
+		}
+		return model.UserAccount{}, err
+	}
+	if len(areas) > 0 {
+		_ = json.Unmarshal(areas, &account.Areas)
+	}
+	account.CreatedAt = account.CreatedAt.UTC()
+	account.UpdatedAt = account.UpdatedAt.UTC()
+	return account, nil
 }

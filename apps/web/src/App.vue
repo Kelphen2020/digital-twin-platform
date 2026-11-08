@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import AuditPanel from './components/AuditPanel.vue'
 import BusPanel from './components/BusPanel.vue'
+import UserPanel from './components/UserPanel.vue'
 import CameraDetail from './components/CameraDetail.vue'
 import DutyPanel from './components/DutyPanel.vue'
 import EventDetail from './components/EventDetail.vue'
@@ -166,6 +167,16 @@ watch(isAuthenticated, (authenticated) => {
           >
             总线
           </button>
+          <button
+            v-if="isAdmin"
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'users' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'users'"
+            @click="setSidebarTab('users')"
+          >
+            用户
+          </button>
         </div>
         <EventFeed v-if="state.sidebarTab === 'events'" />
         <StatsPanel v-else-if="state.sidebarTab === 'stats'" />
@@ -174,6 +185,7 @@ watch(isAuthenticated, (authenticated) => {
         <SettingsPanel v-else-if="state.sidebarTab === 'settings' && isAdmin" />
         <AuditPanel v-else-if="state.sidebarTab === 'audit' && isAdmin" />
         <BusPanel v-else-if="state.sidebarTab === 'bus' && isAdmin" />
+        <UserPanel v-else-if="state.sidebarTab === 'users' && isAdmin" />
         <EventFeed v-else />
       </aside>
     </div>

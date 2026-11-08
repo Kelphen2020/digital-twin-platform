@@ -116,7 +116,16 @@
 | glTF | `apps/web` GLTFLoader | 示例模型 `tools/make_site_model.py` → `public/models/site.gltf` |
 | 视频融合 | `apps/web` VideoTexture | 选中相机 HLS 流贴到视锥内视频面 |
 
-## 12. P1 建议优先级
+## 12. P7.0 已落地（用户与账号）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 账号存储 | `auth.Repo` + `users` 表/内存 | 种子账号在空库时写入；登录从 Repo 校验 PBKDF2 哈希 |
+| 管理接口 | `/api/users` CRUD（admin） | 用户名唯一、密码策略、区域/角色校验、自我保护 |
+| 会话语义 | JWT claims | 停用后旧 token 仍到过期（12h），下次登录即拒绝；改密立即使旧密码失效 |
+| 审计 | `user.*` | actor=管理员用户名 |
+
+## 13. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

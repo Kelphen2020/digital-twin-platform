@@ -2,7 +2,16 @@
 // layers. Field names are the JSON contract in docs/API.md and docs/API_P1.md.
 package model
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// Shared repository sentinels.
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+)
 
 // Calibration is the pixel → world homography of one camera.
 type Calibration struct {
@@ -393,4 +402,17 @@ func DefaultSite() Site {
 		}},
 		Map: SiteMap{Style: "vector", ImageURL: nil},
 	}
+}
+
+// UserAccount is one login account. PasswordHash never leaves the server.
+type UserAccount struct {
+	ID           string    `json:"id"`
+	Username     string    `json:"username"`
+	DisplayName  string    `json:"display_name"`
+	Role         string    `json:"role"`
+	Areas        []string  `json:"areas"`
+	Active       bool      `json:"active"`
+	PasswordHash string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
