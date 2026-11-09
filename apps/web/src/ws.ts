@@ -41,6 +41,7 @@ const WS_MESSAGE_TYPES = new Set([
   'track_point',
   'order_updated',
   'event_replay',
+  'patrol_execution',
   'stats',
 ])
 

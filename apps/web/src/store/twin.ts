@@ -24,6 +24,7 @@ import {
 import { TwinSocket } from '../ws'
 import { EVENT_TYPE_LABELS } from '../labels'
 import { pushToast } from './ui'
+import { usePatrolStore } from './patrol'
 import type {
   Area,
   CalibrationSavePayload,
@@ -658,6 +659,8 @@ async function saveCameraCalibration(cameraId: string, payload: CalibrationSaveP
   return camera
 }
 
+const patrolStore = usePatrolStore()
+
 async function removeCameraCalibration(cameraId: string): Promise<Camera> {
   const camera = await requestDeleteCalibration(cameraId)
   applyCameraUpdate(camera)
@@ -724,6 +727,11 @@ function handleWsMessage(message: WsMessage): void {
         receivedAt: Date.now(),
       }
       state.replayEvents = [item, ...state.replayEvents].slice(0, REPLAY_FEED_LIMIT)
+      break
+    }
+    case 'patrol_execution': {
+      // P13：执行状态变化 → 刷新列表（待执行角标随 loadExecutions 更新）
+      void patrolStore.loadExecutions()
       break
     }
     case 'stats': {

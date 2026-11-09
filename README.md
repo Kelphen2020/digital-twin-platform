@@ -206,6 +206,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P12.md`](docs/API_P12.md)。
 
+![P13.0 巡检执行与异常工单](docs/screenshots/p13-execution-issue.png)
+
+## P13.0 能力（巡检计划与执行）
+
+- **巡检计划**：`/api/patrol/schedules` CRUD（operator/admin，创建者或 admin 可改删）；`interval_minutes` 1–10080，`next_run_at` 自动推进；调度器每 15s 扫描到期计划生成任务。
+- **执行工作流**：`/api/patrol/executions` 列表/筛选；认领（pending→running）、完成（running→done）；`result=issue` 自动创建「巡检异常 · 路线」工单（assignee=提交人，status=open，带执行 id），响应返回 `order_id`。
+- **立即执行**：`POST /api/patrol/schedules/{id}/run` 手动生成任务；WS 推送 `patrol_execution`。
+- 审计：patrol.schedule.create/update/delete/run、patrol.execution.claim/complete、order.created。
+
+契约见 [`docs/API_P13.md`](docs/API_P13.md)。
+
 ## 目录
 
 ```

@@ -33,9 +33,15 @@ import type {
   Order,
   OrderListResponse,
   OrderStatus,
+  PatrolExecution,
+  PatrolExecutionCompletePayload,
+  PatrolExecutionListResponse,
+  PatrolExecutionStatus,
   PatrolRoute,
   PatrolRouteListResponse,
   PatrolRoutePayload,
+  PatrolSchedule,
+  PatrolSchedulePayload,
   RefreshResponse,
   SiteConfig,
   StatsSummary,
@@ -665,6 +671,60 @@ export async function updatePatrolRoute(routeId: string, payload: Partial<Patrol
 export async function deletePatrolRoute(routeId: string): Promise<void> {
   const response = await fetchWithAuth(`/api/patrol/routes/${encodeURIComponent(routeId)}`, { method: 'DELETE' })
   if (!response.ok) throw await parseError(response)
+}
+
+// ---------------- P13 巡检计划 / 执行 ----------------
+
+/** GET /api/patrol/schedules（登录用户）。 */
+export async function fetchPatrolSchedules(): Promise<PatrolSchedule[]> {
+  const data = await requestJson<{ items: PatrolSchedule[] }>('/api/patrol/schedules')
+  return data.items ?? []
+}
+
+/** POST /api/patrol/schedules（operator/admin）。 */
+export async function createPatrolSchedule(payload: PatrolSchedulePayload): Promise<PatrolSchedule> {
+  return postJson<PatrolSchedule>('/api/patrol/schedules', payload)
+}
+
+/** PATCH /api/patrol/schedules/{id}（创建者/admin）。 */
+export async function updatePatrolSchedule(scheduleId: string, payload: Partial<PatrolSchedulePayload>): Promise<PatrolSchedule> {
+  return patchJson<PatrolSchedule>(`/api/patrol/schedules/${encodeURIComponent(scheduleId)}`, payload)
+}
+
+/** DELETE /api/patrol/schedules/{id}（创建者/admin）。 */
+export async function deletePatrolSchedule(scheduleId: string): Promise<void> {
+  const response = await fetchWithAuth(`/api/patrol/schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' })
+  if (!response.ok) throw await parseError(response)
+}
+
+/** POST /api/patrol/schedules/{id}/run（operator/admin）→ 立即生成执行任务。 */
+export async function runPatrolSchedule(scheduleId: string): Promise<PatrolExecution> {
+  return postJson<PatrolExecution>(`/api/patrol/schedules/${encodeURIComponent(scheduleId)}/run`)
+}
+
+/** GET /api/patrol/executions?status=&schedule_id=&limit=（登录用户）。 */
+export async function fetchPatrolExecutions(
+  params: { status?: PatrolExecutionStatus | ''; scheduleId?: string; limit?: number } = {},
+): Promise<PatrolExecution[]> {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.scheduleId) query.set('schedule_id', params.scheduleId)
+  query.set('limit', String(params.limit ?? 100))
+  const data = await requestJson<PatrolExecutionListResponse>(`/api/patrol/executions?${query.toString()}`)
+  return data.items ?? []
+}
+
+/** POST /api/patrol/executions/{id}/claim（operator/admin）→ pending → running。 */
+export async function claimPatrolExecution(executionId: string): Promise<PatrolExecution> {
+  return postJson<PatrolExecution>(`/api/patrol/executions/${encodeURIComponent(executionId)}/claim`)
+}
+
+/** POST /api/patrol/executions/{id}/complete（认领人/admin）→ done/issue；issue 时响应带 order_id。 */
+export async function completePatrolExecution(
+  executionId: string,
+  payload: PatrolExecutionCompletePayload,
+): Promise<PatrolExecution> {
+  return postJson<PatrolExecution>(`/api/patrol/executions/${encodeURIComponent(executionId)}/complete`, payload)
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

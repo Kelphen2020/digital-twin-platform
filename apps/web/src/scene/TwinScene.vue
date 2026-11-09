@@ -44,6 +44,7 @@ const props = defineProps<{
   patrolRoute: PatrolRoute | null
   patrolPlaying: boolean
   patrolIndex: number
+  patrolPendingCount: number
 }>()
 
 const emit = defineEmits<{
@@ -1036,6 +1037,7 @@ onBeforeUnmount(disposeScene)
     :data-box-selected="boxSelectedIds.length"
     :data-patrol-playing="patrolPlaying ? 'on' : 'off'"
     :data-patrol-index="patrolIndex"
+    :data-patrol-pending="patrolPendingCount"
   >
     <div class="scene-hud">
       <span class="scene-fps">{{ fpsDisplay > 0 ? fpsDisplay : '—' }} FPS</span>
@@ -1045,8 +1047,9 @@ onBeforeUnmount(disposeScene)
       <button class="hud-tool" :class="{ active: measureMode }" title="测距：点击地面两点" @click.stop="emit('toggle-measure')">
         测距
       </button>
-      <button class="hud-tool" :class="{ active: !!patrolRoute }" title="巡检路线 / 播放" @click.stop="emit('open-patrol')">
+      <button class="hud-tool" :class="{ active: !!patrolRoute || patrolPendingCount > 0 }" title="巡检路线 / 计划 / 执行" @click.stop="emit('open-patrol')">
         巡检
+        <span v-if="patrolPendingCount > 0" class="hud-badge">{{ patrolPendingCount }}</span>
       </button>
       <span class="scene-hint">左键旋转 · Shift+拖拽框选 · 右键平移 · 滚轮缩放</span>
     </div>

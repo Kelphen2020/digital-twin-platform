@@ -466,3 +466,40 @@ type PatrolRoute struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
+
+// PatrolSchedule schedules a patrol route to run periodically.
+type PatrolSchedule struct {
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	RouteID         string    `json:"route_id"`
+	IntervalMinutes int       `json:"interval_minutes"`
+	Enabled         bool      `json:"enabled"`
+	CreatedBy       string    `json:"created_by"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	NextRunAt       time.Time `json:"next_run_at"`
+}
+
+// PatrolExecution is one due/manual patrol run with its workflow state.
+type PatrolExecution struct {
+	ID          string     `json:"id"`
+	ScheduleID  string     `json:"schedule_id"`
+	RouteID     string     `json:"route_id"`
+	RouteName   string     `json:"route_name"`
+	Status      string     `json:"status"`
+	Assignee    string     `json:"assignee"`
+	Result      string     `json:"result"`
+	Note        string     `json:"note"`
+	OrderID     string     `json:"order_id"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+}
+
+// PatrolExecutionFilter narrows execution listings.
+type PatrolExecutionFilter struct {
+	Status     string
+	ScheduleID string
+	Limit      int
+}

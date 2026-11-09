@@ -175,7 +175,17 @@
 | 框选 | `apps/web` | Shift+拖拽矩形按屏幕投影选相机 |
 | 播放 | `apps/web` 巡检面板 | 相机沿航点飞行、折线与当前航点高亮、可暂停/停止 |
 
-## 18. P1 建议优先级
+## 18. P13.0 已落地（巡检计划与执行）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 计划 | `patrol_schedules` 表 + `/api/patrol/schedules` | 间隔 1–10080 分钟，next_run_at 推进，创建者/admin 权限 |
+| 调度器 | `RunPatrolScheduler`（15s） | 到期生成 pending 执行任务并广播 `patrol_execution` |
+| 执行工作流 | `patrol_executions` + claim/complete | pending→running→done/issue；认领人/admin 权限 |
+| 工单联动 | `complete(issue)` → `CreateOrder` | 标题「巡检异常 · 路线」，assignee=提交人，带 order_id |
+| 前端 | 巡检面板「计划/执行」tab | 立即执行、认领、完成（done/issue）、异常工单提示 |
+
+## 19. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

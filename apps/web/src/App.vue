@@ -34,6 +34,7 @@ const measureMode = ref(false)
 const patrolOpen = ref(false)
 const boxSelectedCameraIds = ref<string[]>([])
 const patrolRoute = computed(() => patrol.selectedRoute.value)
+const patrolPendingCount = computed(() => patrol.pendingCount.value)
 
 function toggleMeasureMode(): void {
   measureMode.value = !measureMode.value
@@ -66,7 +67,10 @@ onBeforeUnmount(() => {
 
 // 登录成功 → 启动数据/WS；登出/过期 → 停止并清空历史数据
 watch(isAuthenticated, (authenticated) => {
-  if (authenticated) start()
+  if (authenticated) {
+    start()
+    void patrol.loadExecutions()
+  }
   else {
     reset()
     admin.reset()
@@ -110,6 +114,7 @@ watch(isAuthenticated, (authenticated) => {
           :patrol-route="patrolRoute"
           :patrol-playing="patrol.state.playing"
           :patrol-index="patrol.state.currentIndex"
+          :patrol-pending-count="patrolPendingCount"
           @select-camera="selectCamera"
           @open-event="selectEvent"
           @fps="setFps"

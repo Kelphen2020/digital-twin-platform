@@ -53,6 +53,15 @@ type Store interface {
 	ListPatrolRoutes(ctx context.Context) ([]model.PatrolRoute, error)
 	UpdatePatrolRoute(ctx context.Context, route model.PatrolRoute) error
 	DeletePatrolRoute(ctx context.Context, id string) error
+	CreatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error
+	GetPatrolSchedule(ctx context.Context, id string) (model.PatrolSchedule, bool, error)
+	ListPatrolSchedules(ctx context.Context) ([]model.PatrolSchedule, error)
+	UpdatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error
+	DeletePatrolSchedule(ctx context.Context, id string) error
+	CreatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error
+	GetPatrolExecution(ctx context.Context, id string) (model.PatrolExecution, bool, error)
+	ListPatrolExecutions(ctx context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error)
+	UpdatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error
 	CreateRefreshToken(ctx context.Context, token model.RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
@@ -90,6 +99,8 @@ type Memory struct {
 	refresh       map[string]model.RefreshToken
 	refreshByHash map[string]string
 	patrols       map[string]model.PatrolRoute
+	schedules     map[string]model.PatrolSchedule
+	executions    map[string]model.PatrolExecution
 	tracks        []model.TrackPoint
 	actions       map[string][]model.EventAction
 	audit         []model.AuditEntry
@@ -116,6 +127,8 @@ func NewMemory(maxEvents int) *Memory {
 		refresh:       make(map[string]model.RefreshToken),
 		refreshByHash: make(map[string]string),
 		patrols:       make(map[string]model.PatrolRoute),
+		schedules:     make(map[string]model.PatrolSchedule),
+		executions:    make(map[string]model.PatrolExecution),
 	}
 }
 
@@ -615,6 +628,93 @@ func (m *Memory) DeletePatrolRoute(_ context.Context, id string) error {
 		return model.ErrNotFound
 	}
 	delete(m.patrols, id)
+	return nil
+}
+
+func (m *Memory) CreatePatrolSchedule(_ context.Context, schedule model.PatrolSchedule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedules[schedule.ID] = schedule
+	return nil
+}
+
+func (m *Memory) GetPatrolSchedule(_ context.Context, id string) (model.PatrolSchedule, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	schedule, ok := m.schedules[id]
+	return schedule, ok, nil
+}
+
+func (m *Memory) ListPatrolSchedules(_ context.Context) ([]model.PatrolSchedule, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.PatrolSchedule, 0, len(m.schedules))
+	for _, schedule := range m.schedules {
+		out = append(out, schedule)
+	}
+	return out, nil
+}
+
+func (m *Memory) UpdatePatrolSchedule(_ context.Context, schedule model.PatrolSchedule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.schedules[schedule.ID]; !ok {
+		return model.ErrNotFound
+	}
+	m.schedules[schedule.ID] = schedule
+	return nil
+}
+
+func (m *Memory) DeletePatrolSchedule(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.schedules[id]; !ok {
+		return model.ErrNotFound
+	}
+	delete(m.schedules, id)
+	return nil
+}
+
+func (m *Memory) CreatePatrolExecution(_ context.Context, execution model.PatrolExecution) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.executions[execution.ID] = execution
+	return nil
+}
+
+func (m *Memory) GetPatrolExecution(_ context.Context, id string) (model.PatrolExecution, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	execution, ok := m.executions[id]
+	return execution, ok, nil
+}
+
+func (m *Memory) ListPatrolExecutions(_ context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.PatrolExecution, 0, len(m.executions))
+	for _, execution := range m.executions {
+		if filter.Status != "" && execution.Status != filter.Status {
+			continue
+		}
+		if filter.ScheduleID != "" && execution.ScheduleID != filter.ScheduleID {
+			continue
+		}
+		out = append(out, execution)
+	}
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+
+func (m *Memory) UpdatePatrolExecution(_ context.Context, execution model.PatrolExecution) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.executions[execution.ID]; !ok {
+		return model.ErrNotFound
+	}
+	m.executions[execution.ID] = execution
 	return nil
 }
 

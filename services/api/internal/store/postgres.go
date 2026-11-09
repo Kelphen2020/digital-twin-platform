@@ -1163,3 +1163,175 @@ func scanPatrolRoute(row rowScanner) (model.PatrolRoute, error) {
 	route.UpdatedAt = route.UpdatedAt.UTC()
 	return route, nil
 }
+
+func (p *Postgres) CreatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO patrol_schedules (id, name, route_id, interval_minutes, enabled, created_by, created_at, updated_at, next_run_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		schedule.ID, schedule.Name, schedule.RouteID, schedule.IntervalMinutes, schedule.Enabled,
+		schedule.CreatedBy, schedule.CreatedAt, schedule.UpdatedAt, schedule.NextRunAt)
+	return err
+}
+
+func (p *Postgres) GetPatrolSchedule(ctx context.Context, id string) (model.PatrolSchedule, bool, error) {
+	schedule, err := scanPatrolSchedule(p.pool.QueryRow(ctx, patrolScheduleSelect+` WHERE id=$1`, id))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return model.PatrolSchedule{}, false, nil
+		}
+		return model.PatrolSchedule{}, false, err
+	}
+	return schedule, true, nil
+}
+
+func (p *Postgres) ListPatrolSchedules(ctx context.Context) ([]model.PatrolSchedule, error) {
+	rows, err := p.pool.Query(ctx, patrolScheduleSelect+` ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	schedules := make([]model.PatrolSchedule, 0, 4)
+	for rows.Next() {
+		schedule, err := scanPatrolSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		schedules = append(schedules, schedule)
+	}
+	return schedules, rows.Err()
+}
+
+func (p *Postgres) UpdatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error {
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE patrol_schedules SET name=$2, route_id=$3, interval_minutes=$4, enabled=$5, updated_at=now(), next_run_at=$6
+        WHERE id=$1`, schedule.ID, schedule.Name, schedule.RouteID, schedule.IntervalMinutes, schedule.Enabled, schedule.NextRunAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) DeletePatrolSchedule(ctx context.Context, id string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM patrol_schedules WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) CreatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO patrol_executions (id, schedule_id, route_id, route_name, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		execution.ID, execution.ScheduleID, execution.RouteID, execution.RouteName, execution.Status,
+		execution.Assignee, execution.Result, execution.Note, execution.OrderID,
+		execution.ScheduledAt, execution.CreatedAt, execution.StartedAt, execution.FinishedAt)
+	return err
+}
+
+func (p *Postgres) GetPatrolExecution(ctx context.Context, id string) (model.PatrolExecution, bool, error) {
+	execution, err := scanPatrolExecution(p.pool.QueryRow(ctx, patrolExecutionSelect+` WHERE id=$1`, id))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return model.PatrolExecution{}, false, nil
+		}
+		return model.PatrolExecution{}, false, err
+	}
+	return execution, true, nil
+}
+
+func (p *Postgres) ListPatrolExecutions(ctx context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error) {
+	where := " WHERE 1=1"
+	args := make([]any, 0, 3)
+	if filter.Status != "" {
+		args = append(args, filter.Status)
+		where += fmt.Sprintf(" AND status=$%d", len(args))
+	}
+	if filter.ScheduleID != "" {
+		args = append(args, filter.ScheduleID)
+		where += fmt.Sprintf(" AND schedule_id=$%d", len(args))
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	args = append(args, limit)
+	rows, err := p.pool.Query(ctx, patrolExecutionSelect+where+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	executions := make([]model.PatrolExecution, 0, limit)
+	for rows.Next() {
+		execution, err := scanPatrolExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, execution)
+	}
+	return executions, rows.Err()
+}
+
+func (p *Postgres) UpdatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE patrol_executions SET status=$2, assignee=$3, result=$4, note=$5, order_id=$6, started_at=$7, finished_at=$8
+        WHERE id=$1`, execution.ID, execution.Status, execution.Assignee, execution.Result,
+		execution.Note, execution.OrderID, execution.StartedAt, execution.FinishedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const patrolScheduleSelect = `SELECT id, name, route_id, interval_minutes, enabled, created_by, created_at, updated_at, next_run_at FROM patrol_schedules`
+
+func scanPatrolSchedule(row rowScanner) (model.PatrolSchedule, error) {
+	var schedule model.PatrolSchedule
+	err := row.Scan(&schedule.ID, &schedule.Name, &schedule.RouteID, &schedule.IntervalMinutes,
+		&schedule.Enabled, &schedule.CreatedBy, &schedule.CreatedAt, &schedule.UpdatedAt, &schedule.NextRunAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.PatrolSchedule{}, ErrNotFound
+		}
+		return model.PatrolSchedule{}, err
+	}
+	schedule.CreatedAt = schedule.CreatedAt.UTC()
+	schedule.UpdatedAt = schedule.UpdatedAt.UTC()
+	schedule.NextRunAt = schedule.NextRunAt.UTC()
+	return schedule, nil
+}
+
+const patrolExecutionSelect = `SELECT id, schedule_id, route_id, route_name, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at FROM patrol_executions`
+
+func scanPatrolExecution(row rowScanner) (model.PatrolExecution, error) {
+	var execution model.PatrolExecution
+	err := row.Scan(&execution.ID, &execution.ScheduleID, &execution.RouteID, &execution.RouteName,
+		&execution.Status, &execution.Assignee, &execution.Result, &execution.Note, &execution.OrderID,
+		&execution.ScheduledAt, &execution.CreatedAt, &execution.StartedAt, &execution.FinishedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.PatrolExecution{}, ErrNotFound
+		}
+		return model.PatrolExecution{}, err
+	}
+	execution.ScheduledAt = execution.ScheduledAt.UTC()
+	execution.CreatedAt = execution.CreatedAt.UTC()
+	if execution.StartedAt != nil {
+		stamp := execution.StartedAt.UTC()
+		execution.StartedAt = &stamp
+	}
+	if execution.FinishedAt != nil {
+		stamp := execution.FinishedAt.UTC()
+		execution.FinishedAt = &stamp
+	}
+	return execution, nil
+}

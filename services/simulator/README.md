@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0 + P12.0 + P13.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -23,8 +23,11 @@ security hardening in [`docs/API_P10.md`](../../docs/API_P10.md) (security
 headers, login brute-force lockout, password policy, audit CSV export) and the
 P11.0 session lifecycle in [`docs/API_P11.md`](../../docs/API_P11.md) (refresh
 token rotation, logout/logout-all, admin force-logout, password-change
-invalidation, session listing). P9.0 performance tooling/numbers live in
-[`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
+invalidation, session listing), the P12.0 patrol routes in
+[`docs/API_P12.md`](../../docs/API_P12.md) and the P13.0 patrol
+schedules/executions in [`docs/API_P13.md`](../../docs/API_P13.md) (scheduled
+executions, claim/complete lifecycle, issue → order link). P9.0 performance
+tooling/numbers live in [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -33,7 +36,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 = **169 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 = **209 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation, patrol routes, patrol schedules/executions). |
 | `../../scripts/load.py` | Threaded load injector: steady or `--ramp` QPS, optional `--read-ratio` event reads, achieved QPS, accepted/dropped, HTTP p50/p95/p99, `/metrics` counter deltas, `--report` Markdown rows + `--json` run records (see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)). |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -206,7 +209,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**169 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0):
+(**209 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -388,6 +391,32 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     token → 401 and sessions drop to 0; self force-logout → 400
     `self_protected`; operator force-logout → 403;
 46. cleanup: throwaway viewer deleted (204) and admin login still works.
+
+**P12.0 (steps 47–49, 18 checks)** and **P13.0 (steps 50–52, 22 checks)**
+
+P12: admin/operator `GET /api/patrol/routes` (200 items) and viewer read-only
+(200) with viewer POST → 403; operator creates a route (2 waypoints,
+`camera_ids:[cam_001,cam_006]`, interval 2) → 201 + list contains + PATCH →
+200; validation (1 waypoint / 51 waypoints / unknown camera
+`400 unknown_camera` / interval 0) → 400; operator deletes own route → 204,
+admin deletes an operator-created route → 204; audit has
+`patrol.create`/`patrol.update`/`patrol.delete`.
+
+P13: an operator-created patrol route backs a schedule: POST
+`/api/patrol/schedules` (`interval_minutes:60`, `enabled:true`) → 201 with
+`next_run_at`, list contains it, PATCH name/interval → 200; viewer POST → 403 /
+viewer GET → 200; validation (missing/unknown `route_id`, interval 0 or 10081)
+→ 400; `POST …/run` → 201 execution `pending` listed by
+`GET /api/patrol/executions`; `claim` → 200 `running` with
+`assignee=operator`; `complete {result:"done"}` → 200 `done` with
+`finished_at`; issue flow (`run` → `claim` → `complete {result:"issue"}`) →
+200 `issue` with `order_id`, and the linked order has title
+`巡检异常 · <route>`, `assignee=operator`, `status=open`; viewer claim/complete
+→ 403; admin deletes the operator's schedule → 204; audit has
+`patrol.schedule.create`/`patrol.schedule.run` +
+`patrol.execution.claim`/`patrol.execution.complete`; cleanup deletes the test
+route and leaves no `smoke 计划 P13` schedules (executions are demo records
+without a delete endpoint).
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -861,7 +890,70 @@ Notes:
   memory mode loses sessions on restart (PostgreSQL mode persists them).
 - `smoke.sh` verifies the whole lifecycle (steps 43–46).
 
-## 12. Typical demo sequence
+## 12. P13.0 patrol schedules & executions
+
+Routes become schedulable tasks with an execution lifecycle
+(`pending → running → done|issue`); an `issue` completion auto-creates a work
+order:
+
+```bash
+ADMIN="$TOKEN"
+OP=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"operator","password":"Operator@123"}' \
+  http://127.0.0.1:8080/api/auth/login \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+
+# 1) create a patrol route, then a schedule for it (operator/admin only)
+curl -s -X POST -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
+  -d '{"name":"东门夜巡路线","waypoints":[{"x":-90,"y":-60,"z":12},{"x":-20,"y":-40,"z":12}],
+       "camera_ids":["cam_001"],"interval_seconds":2}' http://127.0.0.1:8080/api/patrol/routes
+curl -s -X POST -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
+  -d '{"name":"东门夜巡","route_id":"<route_id>","interval_minutes":60,"enabled":true}' \
+  http://127.0.0.1:8080/api/patrol/schedules
+# -> 201 {id, name, route_id, interval_minutes, enabled, next_run_at, created_by, ...}
+
+# 2) run now -> pending execution; claim -> running; complete -> done
+curl -s -X POST -H "Authorization: Bearer $OP" \
+  http://127.0.0.1:8080/api/patrol/schedules/<schedule_id>/run
+curl -s -H "Authorization: Bearer $OP" 'http://127.0.0.1:8080/api/patrol/executions?limit=100'
+curl -s -X POST -H "Authorization: Bearer $OP" \
+  http://127.0.0.1:8080/api/patrol/executions/<exec_id>/claim
+curl -s -X POST -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
+  -d '{"result":"done","note":"ok"}' \
+  http://127.0.0.1:8080/api/patrol/executions/<exec_id>/complete
+
+# 3) issue flow: completing with result=issue creates a linked work order
+curl -s -X POST -H "Authorization: Bearer $OP" \
+  http://127.0.0.1:8080/api/patrol/schedules/<schedule_id>/run
+curl -s -X POST -H "Authorization: Bearer $OP" \
+  http://127.0.0.1:8080/api/patrol/executions/<exec_id2>/claim
+curl -s -X POST -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
+  -d '{"result":"issue","note":"发现设备异常"}' \
+  http://127.0.0.1:8080/api/patrol/executions/<exec_id2>/complete
+# -> {status:"issue", order_id:"ord_...", finished_at:...}
+# order: title "巡检异常 · <route_name>", assignee=<submitter>, status=open,
+#        note "巡检发现异常（执行 <execution_id>）：<note>", camera_id=第一台相机
+curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:8080/api/orders?limit=200'
+
+# 4) schedules are cron-like (interval_minutes 1–10080, next_run_at = now+interval);
+#    the scheduler scans every PATROL_TICK_SECONDS (default 15 s) and creates a
+#    pending execution when due. viewer is read-only; creator/admin can
+#    PATCH/DELETE a schedule, admin can manage others' schedules.
+```
+
+Notes:
+
+- `interval_minutes` 1–10080; `next_run_at` is advanced by one interval on each
+  automatic run. Validation errors are `400 bad_request` (unknown route id is
+  also `400`).
+- Executions have no delete endpoint; issue completions leave an order and
+  `done`/`issue` execution records as audit/demo history.
+- Audit entries: `patrol.schedule.create/update/delete/run`,
+  `patrol.execution.claim/complete` (+ `patrol.execution.created` by the
+  scheduler, `order.created` for issue orders).
+- `smoke.sh` verifies the full lifecycle (steps 50–52).
+
+## 13. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

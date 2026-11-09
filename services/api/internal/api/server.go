@@ -136,6 +136,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/patrol/routes", s.handleCreatePatrolRoute)
 	mux.HandleFunc("PATCH /api/patrol/routes/{id}", s.handleUpdatePatrolRoute)
 	mux.HandleFunc("DELETE /api/patrol/routes/{id}", s.handleDeletePatrolRoute)
+	mux.HandleFunc("GET /api/patrol/schedules", s.handleListPatrolSchedules)
+	mux.HandleFunc("POST /api/patrol/schedules", s.handleCreatePatrolSchedule)
+	mux.HandleFunc("PATCH /api/patrol/schedules/{id}", s.handleUpdatePatrolSchedule)
+	mux.HandleFunc("DELETE /api/patrol/schedules/{id}", s.handleDeletePatrolSchedule)
+	mux.HandleFunc("POST /api/patrol/schedules/{id}/run", s.handleRunPatrolSchedule)
+	mux.HandleFunc("GET /api/patrol/executions", s.handleListPatrolExecutions)
+	mux.HandleFunc("POST /api/patrol/executions/{id}/claim", s.handleClaimPatrolExecution)
+	mux.HandleFunc("POST /api/patrol/executions/{id}/complete", s.handleCompletePatrolExecution)
 	mux.HandleFunc("GET /api/site", s.handleSite)
 	mux.HandleFunc("GET /api/bus/status", s.handleBusStatus)
 	mux.HandleFunc("POST /api/bus/replay", s.handleBusReplay)
@@ -2469,6 +2477,351 @@ type patrolBody struct {
 	Waypoints       *[]model.Waypoint `json:"waypoints"`
 	CameraIDs       *[]string         `json:"camera_ids"`
 	IntervalSeconds *int              `json:"interval_seconds"`
+}
+
+type patrolScheduleBody struct {
+	Name            string `json:"name"`
+	RouteID         string `json:"route_id"`
+	IntervalMinutes *int   `json:"interval_minutes"`
+	Enabled         *bool  `json:"enabled"`
+}
+
+func (s *Server) handleListPatrolSchedules(w http.ResponseWriter, r *http.Request) {
+	schedules, err := s.store.ListPatrolSchedules(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if schedules == nil {
+		schedules = []model.PatrolSchedule{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": schedules})
+}
+
+func (s *Server) handleCreatePatrolSchedule(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	var body patrolScheduleBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	schedule, err := s.validateScheduleBody(r, body, nil)
+	if err != nil {
+		s.writePatrolError(w, err)
+		return
+	}
+	now := time.Now().UTC()
+	schedule.ID = newID("psc")
+	schedule.CreatedBy = user.Username
+	schedule.CreatedAt = now
+	schedule.UpdatedAt = now
+	schedule.NextRunAt = now.Add(time.Duration(schedule.IntervalMinutes) * time.Minute)
+	if err := s.store.CreatePatrolSchedule(r.Context(), *schedule); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.schedule.create", schedule.ID, map[string]any{"name": schedule.Name, "route_id": schedule.RouteID})
+	writeJSON(w, http.StatusCreated, schedule)
+}
+
+func (s *Server) handleUpdatePatrolSchedule(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	existing, found, err := s.store.GetPatrolSchedule(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "patrol_schedule_not_found", "patrol schedule not found")
+		return
+	}
+	if user.Role != auth.RoleAdmin && existing.CreatedBy != user.Username {
+		writeError(w, http.StatusForbidden, "forbidden", "only the creator or an admin can modify this schedule")
+		return
+	}
+	var body patrolScheduleBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	updated, err := s.validateScheduleBody(r, body, &existing)
+	if err != nil {
+		s.writePatrolError(w, err)
+		return
+	}
+	updated.ID = existing.ID
+	updated.CreatedBy = existing.CreatedBy
+	updated.CreatedAt = existing.CreatedAt
+	updated.UpdatedAt = time.Now().UTC()
+	updated.NextRunAt = existing.NextRunAt
+	if body.IntervalMinutes != nil || body.RouteID != "" {
+		updated.NextRunAt = time.Now().UTC().Add(time.Duration(updated.IntervalMinutes) * time.Minute)
+	}
+	if err := s.store.UpdatePatrolSchedule(r.Context(), *updated); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.schedule.update", updated.ID, map[string]any{"name": updated.Name})
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDeletePatrolSchedule(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	existing, found, err := s.store.GetPatrolSchedule(r.Context(), r.PathValue("id"))
+	if err != nil || !found {
+		writeError(w, http.StatusNotFound, "patrol_schedule_not_found", "patrol schedule not found")
+		return
+	}
+	if user.Role != auth.RoleAdmin && existing.CreatedBy != user.Username {
+		writeError(w, http.StatusForbidden, "forbidden", "only the creator or an admin can delete this schedule")
+		return
+	}
+	if err := s.store.DeletePatrolSchedule(r.Context(), existing.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.schedule.delete", existing.ID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRunPatrolSchedule(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	schedule, found, err := s.store.GetPatrolSchedule(r.Context(), r.PathValue("id"))
+	if err != nil || !found {
+		writeError(w, http.StatusNotFound, "patrol_schedule_not_found", "patrol schedule not found")
+		return
+	}
+	execution, err := s.createPatrolExecution(r.Context(), schedule, time.Now().UTC(), "manual")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.schedule.run", schedule.ID, map[string]any{"execution_id": execution.ID, "actor": user.Username})
+	writeJSON(w, http.StatusCreated, execution)
+}
+
+func (s *Server) handleListPatrolExecutions(w http.ResponseWriter, r *http.Request) {
+	filter := model.PatrolExecutionFilter{
+		Status:     r.URL.Query().Get("status"),
+		ScheduleID: r.URL.Query().Get("schedule_id"),
+		Limit:      parseIntDefault(r.URL.Query().Get("limit"), 100),
+	}
+	if filter.Limit > 500 {
+		filter.Limit = 500
+	}
+	executions, err := s.store.ListPatrolExecutions(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if executions == nil {
+		executions = []model.PatrolExecution{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": executions})
+}
+
+func (s *Server) handleClaimPatrolExecution(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	execution, found, err := s.store.GetPatrolExecution(r.Context(), r.PathValue("id"))
+	if err != nil || !found {
+		writeError(w, http.StatusNotFound, "patrol_execution_not_found", "patrol execution not found")
+		return
+	}
+	if execution.Status != "pending" {
+		writeError(w, http.StatusConflict, "invalid_state", "only pending executions can be claimed")
+		return
+	}
+	now := time.Now().UTC()
+	execution.Status = "running"
+	execution.Assignee = user.Username
+	execution.StartedAt = &now
+	if err := s.store.UpdatePatrolExecution(r.Context(), execution); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.execution.claim", execution.ID, nil)
+	writeJSON(w, http.StatusOK, execution)
+}
+
+func (s *Server) handleCompletePatrolExecution(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	execution, found, err := s.store.GetPatrolExecution(r.Context(), r.PathValue("id"))
+	if err != nil || !found {
+		writeError(w, http.StatusNotFound, "patrol_execution_not_found", "patrol execution not found")
+		return
+	}
+	if execution.Status != "running" {
+		writeError(w, http.StatusConflict, "invalid_state", "only running executions can be completed")
+		return
+	}
+	if user.Role != auth.RoleAdmin && execution.Assignee != user.Username {
+		writeError(w, http.StatusForbidden, "forbidden", "only the assignee or an admin can complete this execution")
+		return
+	}
+	var body struct {
+		Result string `json:"result"`
+		Note   string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if body.Result != "done" && body.Result != "issue" {
+		writeError(w, http.StatusBadRequest, "bad_request", "result must be done or issue")
+		return
+	}
+	now := time.Now().UTC()
+	execution.Status = body.Result
+	execution.Result = body.Result
+	execution.Note = strings.TrimSpace(body.Note)
+	execution.FinishedAt = &now
+	if body.Result == "issue" {
+		routeName := execution.RouteName
+		cameraID := ""
+		if route, ok, _ := s.store.GetPatrolRoute(r.Context(), execution.RouteID); ok {
+			if routeName == "" {
+				routeName = route.Name
+			}
+			if len(route.CameraIDs) > 0 {
+				cameraID = route.CameraIDs[0]
+			}
+		}
+		order := model.Order{
+			ID: newID("ord"), EventID: "", CameraID: cameraID,
+			Title:     "巡检异常 · " + routeName,
+			Status:    "open",
+			Priority:  "normal",
+			Assignee:  user.Username,
+			Note:      fmt.Sprintf("巡检发现异常（执行 %s）：%s", execution.ID, execution.Note),
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := s.store.CreateOrder(r.Context(), order); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		s.metrics.Orders.Add(1)
+		execution.OrderID = order.ID
+		s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
+		s.audit(r, "order.created", order.ID, map[string]any{"source": "patrol", "execution_id": execution.ID})
+	}
+	if err := s.store.UpdatePatrolExecution(r.Context(), execution); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.execution.complete", execution.ID, map[string]any{"result": body.Result, "order_id": execution.OrderID})
+	writeJSON(w, http.StatusOK, execution)
+}
+
+func (s *Server) validateScheduleBody(r *http.Request, body patrolScheduleBody, existing *model.PatrolSchedule) (*model.PatrolSchedule, error) {
+	schedule := model.PatrolSchedule{IntervalMinutes: 60, Enabled: true}
+	if existing != nil {
+		schedule = *existing
+	}
+	if name := strings.TrimSpace(body.Name); name != "" {
+		schedule.Name = name
+	}
+	if schedule.Name == "" {
+		return nil, errors.New("name is required")
+	}
+	if body.RouteID != "" {
+		schedule.RouteID = body.RouteID
+	}
+	if schedule.RouteID == "" {
+		return nil, errors.New("route_id is required")
+	}
+	if _, found, err := s.store.GetPatrolRoute(r.Context(), schedule.RouteID); err != nil || !found {
+		return nil, errors.New("unknown route_id")
+	}
+	if body.IntervalMinutes != nil {
+		schedule.IntervalMinutes = *body.IntervalMinutes
+	}
+	if schedule.IntervalMinutes < 1 || schedule.IntervalMinutes > 10080 {
+		return nil, errors.New("interval_minutes must be within [1,10080]")
+	}
+	if body.Enabled != nil {
+		schedule.Enabled = *body.Enabled
+	}
+	return &schedule, nil
+}
+
+// createPatrolExecution records one patrol run and notifies connected clients.
+func (s *Server) createPatrolExecution(ctx context.Context, schedule model.PatrolSchedule, scheduledAt time.Time, source string) (model.PatrolExecution, error) {
+	now := time.Now().UTC()
+	routeName := ""
+	if route, ok, _ := s.store.GetPatrolRoute(ctx, schedule.RouteID); ok {
+		routeName = route.Name
+	}
+	execution := model.PatrolExecution{
+		ID: newID("pex"), ScheduleID: schedule.ID, RouteID: schedule.RouteID,
+		RouteName: routeName, Status: "pending", ScheduledAt: scheduledAt, CreatedAt: now,
+	}
+	if err := s.store.CreatePatrolExecution(ctx, execution); err != nil {
+		return model.PatrolExecution{}, err
+	}
+	_ = s.store.AddAudit(ctx, model.AuditEntry{
+		ID: newID("aud"), At: now, Actor: "system",
+		Action: "patrol.execution.created", Resource: execution.ID,
+		Detail: map[string]any{"schedule_id": schedule.ID, "source": source},
+	})
+	s.hub.Broadcast(realtime.Frame{Type: "patrol_execution", Data: execution})
+	return execution, nil
+}
+
+// RunPatrolScheduler scans due schedules on a fixed interval.
+func (s *Server) RunPatrolScheduler(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.RunPatrolOnce(ctx)
+		}
+	}
+}
+
+// RunPatrolOnce materializes executions for every due schedule.
+func (s *Server) RunPatrolOnce(ctx context.Context) {
+	schedules, err := s.store.ListPatrolSchedules(ctx)
+	if err != nil {
+		log.Printf("api: patrol schedule scan: %v", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, schedule := range schedules {
+		if !schedule.Enabled || schedule.NextRunAt.After(now) {
+			continue
+		}
+		if _, err := s.createPatrolExecution(ctx, schedule, schedule.NextRunAt, "schedule"); err != nil {
+			log.Printf("api: patrol execution create: %v", err)
+			continue
+		}
+		schedule.NextRunAt = now.Add(time.Duration(schedule.IntervalMinutes) * time.Minute)
+		schedule.UpdatedAt = now
+		if err := s.store.UpdatePatrolSchedule(ctx, schedule); err != nil {
+			log.Printf("api: patrol schedule advance: %v", err)
+		}
+	}
 }
 
 func (s *Server) writePatrolError(w http.ResponseWriter, err error) {

@@ -326,6 +326,7 @@ export type WsMessage =
   | WsTrackPointMessage
   | WsOrderUpdatedMessage
   | WsEventReplayMessage
+  | WsPatrolExecutionMessage
   | WsStatsMessage
 
 export type WsState = 'connecting' | 'online' | 'offline'
@@ -463,6 +464,60 @@ export interface DutyCurrent {
   /** P8：当前生效班次（无班次/非值班时间为 null）。 */
   shift?: { id?: string; name: string; start: string; end: string } | null
   operators: string[]
+}
+
+// ---------------- P13：巡检计划与执行 ----------------
+
+export type PatrolExecutionStatus = 'pending' | 'running' | 'done' | 'issue'
+
+export interface PatrolSchedule {
+  id: string
+  name: string
+  route_id: string
+  interval_minutes: number
+  enabled: boolean
+  created_by: string
+  created_at: string
+  updated_at: string
+  next_run_at: string
+}
+
+export interface PatrolSchedulePayload {
+  name: string
+  route_id: string
+  interval_minutes: number
+  enabled: boolean
+}
+
+export interface PatrolExecution {
+  id: string
+  schedule_id: string
+  route_id: string
+  route_name: string
+  status: PatrolExecutionStatus
+  assignee: string
+  result: string
+  note: string
+  order_id: string
+  scheduled_at: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface PatrolExecutionListResponse {
+  items: PatrolExecution[]
+}
+
+export interface PatrolExecutionCompletePayload {
+  result: 'done' | 'issue'
+  note: string
+}
+
+/** WS：巡检执行状态变化（P13；后端广播则刷新列表）。 */
+export interface WsPatrolExecutionMessage {
+  type: 'patrol_execution'
+  data: PatrolExecution
 }
 
 // ---------------- P12：巡检路线 ----------------

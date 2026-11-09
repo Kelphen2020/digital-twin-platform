@@ -32,6 +32,7 @@ type Config struct {
 	LoginLockoutSeconds    int
 	AccessTokenTTLSeconds  int
 	RefreshTokenTTLSeconds int
+	PatrolTickSeconds      int
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -59,6 +60,7 @@ func Load() Config {
 		LoginLockoutSeconds:    envInt("LOGIN_LOCKOUT_SECONDS", 60),
 		AccessTokenTTLSeconds:  envInt("ACCESS_TOKEN_TTL_SECONDS", 3600),
 		RefreshTokenTTLSeconds: envInt("REFRESH_TOKEN_TTL_SECONDS", 604800),
+		PatrolTickSeconds:      envInt("PATROL_TICK_SECONDS", 15),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

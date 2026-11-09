@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P12.0）
+# 数字孪生安防平台 · Web 前端（P13.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,16 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 巡检计划 / 执行工作流（P13）
+
+- **巡检浮层三 tab**：路线 / 计划 / 执行，保留 P12 的全部路线创建、播放、暂停、停止能力。
+- **计划（schedule）**：`GET /api/patrol/schedules` 展示名称、关联路线、间隔（1–10080 分钟）、启用状态、下次执行时间；operator/admin 可新建计划（名称、路线选择、间隔、启用开关）→ `POST`；创建者或 admin 可编辑/两步删除；「立即执行」调用 `POST /api/patrol/schedules/{id}/run` 生成待执行任务并 Toast + 刷新执行列表。
+- **执行（execution）**：`GET /api/patrol/executions?status=&limit=100` 展示路线名、状态徽标（待执行/进行中/已完成/异常）、计划/立即执行来源、认领人、时间与备注；状态筛选下拉。
+  - **认领**：pending → running（`POST /api/patrol/executions/{id}/claim`）。
+  - **完成**：running 且为认领人或 admin → 弹窗填写备注 + 结果 `done`/`issue` → `POST .../complete`；`issue` 时后端自动创建工单并在响应带 `order_id`，前端 Toast「已创建工单：<order_id>」并刷新执行列表。
+- **待执行角标**：场景 HUD「巡检」按钮显示 pending 数量；登录后加载执行列表，WS `patrol_execution` 帧触发执行列表刷新（角标同步）。
+- **权限**：operator/admin 可创建计划、认领/完成；创建者/admin 可改删计划；viewer 只读（可查看列表，不显示写操作）。
+
 ### 三维测距 / 框选 / 巡检路线（P12）
 
 - **测距**：场景 HUD「测距」开关（可再次点击或清除关闭）；开启后点击地面两次 → 场景内黄色连线 + 距离标签（ENU 米制，如 `98.4 m`），第三次点击重新开始，面板「清除」复位；测距模式下跳过相机/事件拾取，不影响原有选择。
@@ -229,6 +239,12 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/patrol/routes` | 已登录 | 巡检路线列表 |
 | POST | `/api/patrol/routes` | operator/admin | 创建巡检路线 |
 | PATCH/DELETE | `/api/patrol/routes/{id}` | 创建者/admin | 修改/删除巡检路线 |
+| GET/POST | `/api/patrol/schedules` | 登录 / operator+admin | 计划列表 / 新建计划 |
+| PATCH/DELETE | `/api/patrol/schedules/{id}` | 创建者/admin | 修改 / 删除计划 |
+| POST | `/api/patrol/schedules/{id}/run` | operator/admin | 立即生成执行任务 |
+| GET | `/api/patrol/executions` | 登录 | 执行列表（status/limit 过滤） |
+| POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
+| POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
 | GET | `/api/audit/export` | admin | 审计 CSV（from/to/action/actor/limit，text/csv） |
 | PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
@@ -303,6 +319,7 @@ apps/web/
 | 登录锁定 / 密码策略 / 审计导出 | **实时**：`429 too_many_attempts`+`Retry-After`、用户密码 `400` 策略、`GET /api/audit/export` CSV |
 | 令牌续期 / 会话吊销 | **实时**：`POST /api/auth/refresh` 轮换、`/api/auth/logout`、管理员 `/api/users/{id}/sessions` 与 `/logout` |
 | 巡检路线 | **实时**：`/api/patrol/routes` CRUD；航点/相机高亮/相机飞行均为前端实现 |
+| 巡检计划 / 执行 | **实时**：schedules CRUD/run、executions claim/complete（issue 自动建工单）、WS `patrol_execution` 刷新 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -350,6 +367,15 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P13：巡检计划/执行（operator/admin）
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/patrol/schedules
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"东门夜巡","route_id":"<patrol_route_id>","interval_minutes":60,"enabled":true}' \
+  http://localhost:8080/api/patrol/schedules
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/patrol/schedules/<id>/run
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/patrol/executions?limit=20"
+# 前端：场景 HUD「巡检」→ 计划/执行 tab；执行卡认领/完成（issue 建单）
 
 # P12：巡检路线（operator/admin）
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/patrol/routes
@@ -468,3 +494,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P12 巡检路线的 UI 航点由**所选相机坐标**按勾选顺序生成（不提供任意地面点编辑）；`interval_seconds` 同时用作航点推进与飞行时长参考（飞行动画约 0.9s，其余为停留）。
 - 播放为纯前端定时器 + 运镜（不修改后端状态）；暂停/继续不重置已播放航点，停止会清理折线/高亮；viewer 可播放但不可写。
 - 测距基于 y=0 地面平面（ENU 米制），框选按相机标记的屏幕投影中心判定；两者与相机/事件拾取互斥或互不干扰。
+- P13 计划调度由后端每 `PATROL_TICK_SECONDS`（默认 15s）扫描；前端「立即执行」即时生成任务；计划 `next_run_at` 由后端推进。
+- 执行完成 `issue` 时后端自动创建工单（title=巡检异常 · route_name），前端依靠响应 `order_id` Toast 并刷新；工单也会通过既有 WS `order_updated` 出现在工单 tab。
+- 待执行角标依赖执行列表（登录后加载 + WS 刷新 + 进入执行 tab 刷新），非独立轮询。

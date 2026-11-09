@@ -629,3 +629,43 @@ P12 覆盖：admin/operator 列表、operator 创建（2 航点、cam_001+cam_00
 - 航点由选中相机位置生成（含朝向），不支持自由拖拽任意路径点；路线按创建者+admin 权限管理。
 - 测距基于地面平面（z=0 投影），不支持点云/建筑表面精确测距。
 - 路线存储在内存模式重启后丢失（PostgreSQL 持久化）。
+
+---
+
+# P13.0 验收记录（2026-11-09 晚间）
+
+## 60. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：计划 CRUD/校验（未知路线、间隔越界）、立即执行、认领/完成、issue 自动建单（标题/负责人/状态/备注/camera）、调度器到期生成任务并推进 next_run_at、viewer/operator 权限、审计 |
+
+## 61. smoke.sh（P0–P12 187 项 + P13 22 项 = 209 项 / 52 步）
+
+```
+smoke: PASS (209 checks passed)
+```
+
+P13 覆盖：计划创建 201（next_run_at/created_by）、列表、PATCH、viewer 403/读取 200、校验矩阵（缺路线/未知路线/间隔 0 与 10081 → 400）、立即执行 pending、认领 running assignee=operator、完成 done（finished_at）、issue 流程（status=issue、order_id、工单标题「巡检异常 · …」、assignee/status/priority/camera 正确）、viewer claim/complete 403、admin 删除他人计划 204、审计、清理无残留计划/路线。
+
+## 62. 前端 P13 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 巡检浮层 | ✅ 路线/计划/执行 三 tab；计划列表（名称/路线/间隔/启用/next_run_at）、创建表单、编辑/两步删除、立即执行 Toast |
+| 执行工作流 | ✅ 状态 chip（待执行/进行中/已完成/异常）、筛选、认领、完成弹窗（note + done/issue）；issue 后 Toast「已创建工单：ord_…」，卡片显示关联工单 |
+| 角标/WS | ✅ HUD 巡检按钮待执行角标；WS `patrol_execution` 帧实测捕获并刷新列表/角标 |
+| 权限 | ✅ viewer 只读（无写按钮，可播放）；admin 可管理他人计划（两步删除） |
+| 回归 | ✅ 8 页签/4 开关/场景/测距/框选/路线播放；console errors=[]、exceptions=[] |
+| 截图 | `docs/screenshots/p13-schedules.png`、`p13-schedule-form.png`、`p13-execution-pending.png`、`p13-execution-claim.png`、`p13-complete-issue-form.png`、`p13-execution-issue.png`、`p13-issue-order.png`、`p13-admin-schedules.png`、`p13-viewer.png` |
+
+## 63. 已知限制（P13.0）
+
+- 执行记录无删除接口，历史记录会累积（可加归档/清理策略）。
+- 调度器为单实例进程内 ticker；多实例需分布式锁或数据库抢占（`FOR UPDATE SKIP LOCKED`）。
+- issue 工单固定 priority=normal、assignee=提交人，未接值班轮转/升级链路。
+- 计划与执行在内存模式重启后丢失（PostgreSQL 持久化）。

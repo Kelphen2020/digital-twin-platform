@@ -67,6 +67,7 @@ func main() {
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)
 	go server.RunEscalation(ctx, 15*time.Second)
+	go server.RunPatrolScheduler(ctx, time.Duration(cfg.PatrolTickSeconds)*time.Second)
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
