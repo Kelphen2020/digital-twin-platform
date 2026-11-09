@@ -83,7 +83,7 @@ async function submit(): Promise<void> {
         <span class="brand-mark login-mark">DT</span>
         <div>
           <h1>数字孪生安防平台</h1>
-          <p>P10.0 · 登录安全 / 密码策略 / 审计导出</p>
+          <p>P11.0 · 刷新令牌 / 会话吊销 / 在线会话</p>
         </div>
       </header>
 
@@ -152,8 +152,11 @@ async function submit(): Promise<void> {
       <p class="login-hint">
         登录后按角色显示权限：观察员只读；值班员可处置事件/工单并修改负责区域内相机；管理员额外可配置规则与标定。
       </p>
+      <p class="login-hint session-renew-hint">
+        会话有效期 1 小时，过期前自动续期（refresh token 7 天）；修改密码或被强制下线后需重新登录。
+      </p>
     </main>
 
-    <footer class="login-footer">数字孪生安防平台 · P10.0 演示环境 · 请勿用于生产</footer>
+    <footer class="login-footer">数字孪生安防平台 · P11.0 演示环境 · 请勿用于生产</footer>
   </div>
 </template>

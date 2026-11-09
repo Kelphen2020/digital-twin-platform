@@ -5,7 +5,9 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -55,6 +57,7 @@ type Server struct {
 	loginFailures map[string]loginFailure
 	loginMax      int
 	loginLockout  time.Duration
+	refreshTTL    time.Duration
 	trackSequence atomic.Uint64
 	ingestLimiter *RateLimiter
 	maxBodyBytes  int64
@@ -85,6 +88,7 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		loginFailures: make(map[string]loginFailure),
 		loginMax:      5,
 		loginLockout:  60 * time.Second,
+		refreshTTL:    7 * 24 * time.Hour,
 	}
 }
 
@@ -94,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	mux.HandleFunc("GET /api/auth/me", s.handleMe)
+	mux.HandleFunc("POST /api/auth/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/auth/logout-all", s.handleLogoutAll)
 	mux.HandleFunc("GET /api/areas", s.handleAreas)
 	mux.HandleFunc("GET /api/cameras", s.handleCameras)
 	mux.HandleFunc("GET /api/cameras/{id}", s.handleCamera)
@@ -118,6 +125,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/users", s.handleCreateUser)
 	mux.HandleFunc("PATCH /api/users/{id}", s.handleUpdateUser)
 	mux.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
+	mux.HandleFunc("GET /api/users/{id}/sessions", s.handleUserSessions)
+	mux.HandleFunc("POST /api/users/{id}/logout", s.handleForceLogout)
 	mux.HandleFunc("GET /api/duty/groups", s.handleListDutyGroups)
 	mux.HandleFunc("POST /api/duty/groups", s.handleCreateDutyGroup)
 	mux.HandleFunc("PATCH /api/duty/groups/{id}", s.handleUpdateDutyGroup)
@@ -189,7 +198,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch path {
-		case "/api/health", "/metrics", "/api/auth/login":
+		case "/api/health", "/metrics", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout":
 			next.ServeHTTP(w, r)
 			return
 		case "/api/ingest/detections":
@@ -212,7 +221,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
+		account, ok, err := s.auth.GetUser(r.Context(), user.ID)
+		if err != nil || !ok || !account.Active || account.TokenVersion != user.TokenVersion {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "this session is no longer valid; sign in again")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, account)))
 	})
 }
 
@@ -354,6 +368,133 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+func newRefreshToken() (string, string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+	return token, hex.EncodeToString(sum[:]), nil
+}
+
+// issueRefresh stores one refresh token and returns the raw value and expiry.
+func (s *Server) issueRefresh(ctx context.Context, userID, ip, userAgent string) (string, time.Time, error) {
+	token, hash, err := newRefreshToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	now := time.Now().UTC()
+	expires := now.Add(s.refreshTTL)
+	entry := model.RefreshToken{
+		ID: newID("rft"), UserID: userID, TokenHash: hash, ExpiresAt: expires,
+		CreatedAt: now, IP: ip, UserAgent: userAgent,
+	}
+	if err := s.store.CreateRefreshToken(ctx, entry); err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expires, nil
+}
+
+func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.RefreshToken) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "refresh_token is required")
+		return
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(body.RefreshToken)))
+	stored, ok, err := s.store.GetRefreshTokenByHash(r.Context(), hex.EncodeToString(sum[:]))
+	if err != nil || !ok || stored.Revoked || time.Now().UTC().After(stored.ExpiresAt) {
+		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "refresh token is invalid or expired")
+		return
+	}
+	account, found, err := s.auth.GetUser(r.Context(), stored.UserID)
+	if err != nil || !found || !account.Active {
+		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "the account is unavailable")
+		return
+	}
+	_ = s.store.RevokeRefreshToken(r.Context(), stored.ID)
+	refreshToken, refreshExpires, err := s.issueRefresh(r.Context(), account.ID, clientIP(r), r.UserAgent())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	accessToken, accessExpires, err := s.auth.IssueAccessToken(account)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": accessToken, "expires_at": accessExpires.Format(time.RFC3339),
+		"refresh_token": refreshToken, "refresh_expires_at": refreshExpires.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if token := strings.TrimSpace(body.RefreshToken); token != "" {
+		sum := sha256.Sum256([]byte(token))
+		if stored, ok, err := s.store.GetRefreshTokenByHash(r.Context(), hex.EncodeToString(sum[:])); err == nil && ok {
+			_ = s.store.RevokeRefreshToken(r.Context(), stored.ID)
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
+	user := userOf(r)
+	if _, err := s.auth.RevokeUserSessions(r.Context(), user.ID); err != nil {
+		s.writeUserError(w, err)
+		return
+	}
+	_ = s.store.RevokeUserRefreshTokens(r.Context(), user.ID)
+	s.audit(r, "user.logout_all", user.ID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUserSessions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	tokens, err := s.store.ListUserRefreshTokens(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	items := make([]model.RefreshToken, 0, len(tokens))
+	for _, token := range tokens {
+		if token.Revoked || now.After(token.ExpiresAt) {
+			continue
+		}
+		items = append(items, token)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleForceLogout(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == userOf(r).ID {
+		writeError(w, http.StatusBadRequest, "self_protected", "use /api/auth/logout-all for your own sessions")
+		return
+	}
+	if _, err := s.auth.RevokeUserSessions(r.Context(), id); err != nil {
+		s.writeUserError(w, err)
+		return
+	}
+	_ = s.store.RevokeUserRefreshTokens(r.Context(), id)
+	s.audit(r, "user.logout_forced", id, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Username string `json:"username"`
@@ -377,11 +518,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.clearLoginFailures(key)
-	writeJSON(w, http.StatusOK, map[string]any{
+	refreshToken, refreshExpires, refreshErr := s.issueRefresh(r.Context(), user.ID, clientIP(r), r.UserAgent())
+	if refreshErr != nil {
+		log.Printf("api: issue refresh token: %v", refreshErr)
+	}
+	response := map[string]any{
 		"token":      token,
 		"expires_at": expires.Format(time.RFC3339),
 		"user":       user,
-	})
+	}
+	if refreshToken != "" {
+		response["refresh_token"] = refreshToken
+		response["refresh_expires_at"] = refreshExpires.Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -938,6 +1088,13 @@ func (s *Server) SetTrackSample(sample int) {
 		sample = 1
 	}
 	s.trackSample = sample
+}
+
+// SetSessionTTL configures refresh-token lifetime.
+func (s *Server) SetSessionTTL(ttl time.Duration) {
+	if ttl > 0 {
+		s.refreshTTL = ttl
+	}
 }
 
 // SetIngestGuard configures the ingest rate limiter and body size cap.
@@ -1992,7 +2149,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeUserError(w, err)
 		return
 	}
-	s.audit(r, "user.update", account.ID, map[string]any{"role": account.Role, "active": account.Active})
+	if body.Password != nil {
+		_ = s.store.RevokeUserRefreshTokens(r.Context(), account.ID)
+	}
+	s.audit(r, "user.update", account.ID, map[string]any{"role": account.Role, "active": account.Active, "password_reset": body.Password != nil})
 	writeJSON(w, http.StatusOK, account)
 }
 

@@ -48,6 +48,11 @@ type Store interface {
 	ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error)
 	EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
 	ReEscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
+	CreateRefreshToken(ctx context.Context, token model.RefreshToken) error
+	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error)
+	RevokeRefreshToken(ctx context.Context, id string) error
+	RevokeUserRefreshTokens(ctx context.Context, userID string) error
+	ListUserRefreshTokens(ctx context.Context, userID string) ([]model.RefreshToken, error)
 	GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error)
 	GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error)
 	ListUserAccounts(ctx context.Context) ([]model.UserAccount, error)
@@ -65,24 +70,26 @@ type Store interface {
 
 // Memory is the in-memory Store used without a database.
 type Memory struct {
-	mu        sync.RWMutex
-	cameras   map[string]*model.Camera
-	order     []string
-	areas     []model.Area
-	events    []model.Event
-	rules     map[string]model.CameraRules
-	orders    []model.Order
-	settings  map[string][]byte
-	logs      []model.NotificationLog
-	duty      []model.DutyGroup
-	users     map[string]model.UserAccount
-	usernames map[string]string
-	tracks    []model.TrackPoint
-	actions   map[string][]model.EventAction
-	audit     []model.AuditEntry
-	maxEvents int
-	maxTracks int
-	maxAudit  int
+	mu            sync.RWMutex
+	cameras       map[string]*model.Camera
+	order         []string
+	areas         []model.Area
+	events        []model.Event
+	rules         map[string]model.CameraRules
+	orders        []model.Order
+	settings      map[string][]byte
+	logs          []model.NotificationLog
+	duty          []model.DutyGroup
+	users         map[string]model.UserAccount
+	usernames     map[string]string
+	refresh       map[string]model.RefreshToken
+	refreshByHash map[string]string
+	tracks        []model.TrackPoint
+	actions       map[string][]model.EventAction
+	audit         []model.AuditEntry
+	maxEvents     int
+	maxTracks     int
+	maxAudit      int
 }
 
 // NewMemory creates an empty in-memory store.
@@ -91,15 +98,17 @@ func NewMemory(maxEvents int) *Memory {
 		maxEvents = 100
 	}
 	return &Memory{
-		cameras:   make(map[string]*model.Camera),
-		maxEvents: maxEvents,
-		maxTracks: 50000,
-		maxAudit:  5000,
-		actions:   make(map[string][]model.EventAction),
-		rules:     make(map[string]model.CameraRules),
-		settings:  make(map[string][]byte),
-		users:     make(map[string]model.UserAccount),
-		usernames: make(map[string]string),
+		cameras:       make(map[string]*model.Camera),
+		maxEvents:     maxEvents,
+		maxTracks:     50000,
+		maxAudit:      5000,
+		actions:       make(map[string][]model.EventAction),
+		rules:         make(map[string]model.CameraRules),
+		settings:      make(map[string][]byte),
+		users:         make(map[string]model.UserAccount),
+		usernames:     make(map[string]string),
+		refresh:       make(map[string]model.RefreshToken),
+		refreshByHash: make(map[string]string),
 	}
 }
 
@@ -556,6 +565,60 @@ func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (m *Memory) CreateRefreshToken(_ context.Context, token model.RefreshToken) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refresh[token.ID] = token
+	m.refreshByHash[token.TokenHash] = token.ID
+	return nil
+}
+
+func (m *Memory) GetRefreshTokenByHash(_ context.Context, tokenHash string) (model.RefreshToken, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.refreshByHash[tokenHash]
+	if !ok {
+		return model.RefreshToken{}, false, nil
+	}
+	return m.refresh[id], true, nil
+}
+
+func (m *Memory) RevokeRefreshToken(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	token, ok := m.refresh[id]
+	if !ok {
+		return model.ErrNotFound
+	}
+	token.Revoked = true
+	m.refresh[id] = token
+	return nil
+}
+
+func (m *Memory) RevokeUserRefreshTokens(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, token := range m.refresh {
+		if token.UserID == userID {
+			token.Revoked = true
+			m.refresh[id] = token
+		}
+	}
+	return nil
+}
+
+func (m *Memory) ListUserRefreshTokens(_ context.Context, userID string) ([]model.RefreshToken, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.RefreshToken, 0, 4)
+	for _, token := range m.refresh {
+		if token.UserID == userID {
+			out = append(out, token)
+		}
+	}
+	return out, nil
 }
 
 func (m *Memory) GetUserAccountByUsername(_ context.Context, username string) (model.UserAccount, bool, error) {

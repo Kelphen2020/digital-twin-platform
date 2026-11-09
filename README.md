@@ -183,6 +183,18 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P10.md`](docs/API_P10.md)。
 
+![P11.0 在线会话与强制下线](docs/screenshots/p11-user-sessions.png)
+
+## P11.0 能力（刷新令牌 / 会话吊销）
+
+- **短效 access + 轮换 refresh**：登录返回 access（默认 1h）与 refresh（默认 7d）；`POST /api/auth/refresh` 轮换，旧 refresh 立即失效。
+- **主动吊销**：`/api/auth/logout` 吊销单个 refresh；`/api/auth/logout-all` 吊销全部并递增 token 版本，已签发 access 立即失效。
+- **会话管理（admin）**：`GET /api/users/{id}/sessions` 查看在线会话（IP/UA/有效期），`POST /api/users/{id}/logout` 强制下线（不能对自己，用 logout-all）。
+- **密码变更即失效**：管理员重置密码会吊销该用户全部 refresh 并递增版本，旧 access 立即 401。
+- 前端：401 自动 refresh 一次并重试、失败自动登出；用户页「强制下线」与在线会话数。
+
+契约见 [`docs/API_P11.md`](docs/API_P11.md)。
+
 ## 目录
 
 ```

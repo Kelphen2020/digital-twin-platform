@@ -27,6 +27,8 @@ WS 健康：浏览器 DevTools Network → `ws://…/ws`（101）。
 | `WS_TRACK_SAMPLE` | 1 | 轨迹广播采样 |
 | `HUB_CLIENT_BUFFER` | 256 | 单客户端 WS 队列 |
 | `MAX_BODY_BYTES` | 1048576 | 请求体上限 |
+| `ACCESS_TOKEN_TTL_SECONDS` | 3600 | access token 有效期 |
+| `REFRESH_TOKEN_TTL_SECONDS` | 604800 | refresh token 有效期（7 天） |
 | `SITE_CONFIG_FILE` | 空 | 站点/模型配置覆盖 |
 | `NOTIFY_*` | 运行时设置 | 通知 webhook 由管理页配置 |
 
@@ -65,6 +67,7 @@ docker compose -f deploy/docker-compose.yml start api
 | 现象 | 排查 |
 |---|---|
 | 登录 401 | 用户被停用/密码变更；管理员在「用户」页确认 `active` |
+| 会话频繁掉线 | 检查是否被强制下线/改密（token 版本变更）；内存模式重启会清空 refresh 会话（需重新登录） |
 | 相机为空 | 数据级权限（用户 areas）或相机全部离线 |
 | 事件不上图 | WS 断连（顶栏指示器）、`event` 帧被采样丢弃、权限过滤 |
 | 轨迹闪烁/缺帧 | `WS_TRACK_SAMPLE` 过大或 `HUB_CLIENT_BUFFER` 过小，查看 `ws_dropped_total` |

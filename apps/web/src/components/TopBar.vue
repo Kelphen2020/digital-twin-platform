@@ -88,7 +88,9 @@ const areaText = computed(() => {
   return areas.length > 0 ? areas.map(formatArea).join('、') : '全部区域'
 })
 const userTitle = computed(() =>
-  authState.user ? `${authState.user.username} · ${roleLabel.value} · 负责区域：${areaText.value}` : '',
+  authState.user
+    ? `${authState.user.username} · ${roleLabel.value} · 负责区域：${areaText.value} · 会话自动续期（refresh token）`
+    : '',
 )
 </script>
 
@@ -98,7 +100,7 @@ const userTitle = computed(() =>
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P10.0 登录安全 / 审计导出</p>
+        <p>园区三维安防 · P11.0 会话续期 / 强制下线</p>
       </div>
     </div>
 

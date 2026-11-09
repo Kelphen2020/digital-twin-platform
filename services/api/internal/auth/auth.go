@@ -182,12 +182,47 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 		return "", time.Time{}, User{}, ErrInvalidCredentials
 	}
 	account.PasswordHash = ""
-	expires := time.Now().Add(s.ttl).UTC()
-	token, err := s.sign(account, expires)
+	token, expires, err := s.IssueAccessToken(account)
 	if err != nil {
 		return "", time.Time{}, User{}, err
 	}
 	return token, expires, account, nil
+}
+
+// SetAccessTTL overrides the access-token lifetime.
+func (s *Service) SetAccessTTL(ttl time.Duration) {
+	if ttl > 0 {
+		s.ttl = ttl
+	}
+}
+
+// IssueAccessToken signs a fresh access token for the account.
+func (s *Service) IssueAccessToken(user User) (string, time.Time, error) {
+	expires := time.Now().Add(s.ttl).UTC()
+	token, err := s.sign(user, expires)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expires, nil
+}
+
+// RevokeUserSessions bumps the account token version, invalidating every
+// already-issued access token.
+func (s *Service) RevokeUserSessions(ctx context.Context, id string) (User, error) {
+	account, ok, err := s.repo.GetUserAccountByID(ctx, id)
+	if err != nil {
+		return User{}, err
+	}
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	account.TokenVersion++
+	account.UpdatedAt = time.Now().UTC()
+	if err := s.repo.UpdateUserAccount(ctx, account); err != nil {
+		return User{}, err
+	}
+	account.PasswordHash = ""
+	return account, nil
 }
 
 // Verify validates a token and returns its principal.
@@ -208,13 +243,14 @@ func (s *Service) Verify(token string) (User, error) {
 		return User{}, ErrInvalidToken
 	}
 	var claims struct {
-		Sub    string   `json:"sub"`
-		Usr    string   `json:"usr"`
-		Name   string   `json:"name"`
-		Role   string   `json:"role"`
-		Areas  []string `json:"areas"`
-		Active bool     `json:"active"`
-		Exp    int64    `json:"exp"`
+		Sub     string   `json:"sub"`
+		Usr     string   `json:"usr"`
+		Name    string   `json:"name"`
+		Role    string   `json:"role"`
+		Areas   []string `json:"areas"`
+		Active  bool     `json:"active"`
+		Version int      `json:"ver"`
+		Exp     int64    `json:"exp"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return User{}, ErrInvalidToken
@@ -224,7 +260,7 @@ func (s *Service) Verify(token string) (User, error) {
 	}
 	return model.UserAccount{
 		ID: claims.Sub, Username: claims.Usr, DisplayName: claims.Name,
-		Role: claims.Role, Areas: claims.Areas, Active: true,
+		Role: claims.Role, Areas: claims.Areas, Active: true, TokenVersion: claims.Version,
 	}, nil
 }
 
@@ -233,6 +269,7 @@ func (s *Service) sign(user User, expires time.Time) (string, error) {
 	claims, err := json.Marshal(map[string]any{
 		"sub": user.ID, "usr": user.Username, "name": user.DisplayName,
 		"role": user.Role, "areas": user.Areas, "active": user.Active,
+		"ver": user.TokenVersion,
 		"iat": time.Now().Unix(), "exp": expires.Unix(),
 	})
 	if err != nil {
@@ -363,6 +400,7 @@ func (s *Service) UpdateUser(ctx context.Context, id string, input UpdateUserInp
 			return User{}, err
 		}
 		account.PasswordHash = string(hash)
+		account.TokenVersion++
 	}
 	account.UpdatedAt = time.Now().UTC()
 	if err := s.repo.UpdateUserAccount(ctx, account); err != nil {

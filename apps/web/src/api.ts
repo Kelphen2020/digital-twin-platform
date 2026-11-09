@@ -1,4 +1,4 @@
-import { getAuthToken } from './auth/token'
+import { clearTokens, getAuthToken, getRefreshToken, setTokens } from './auth/token'
 import type {
   Area,
   AreaListResponse,
@@ -33,6 +33,7 @@ import type {
   Order,
   OrderListResponse,
   OrderStatus,
+  RefreshResponse,
   SiteConfig,
   StatsSummary,
   TrackListResponse,
@@ -41,6 +42,8 @@ import type {
   UpdateOrderPayload,
   UpdateUserPayload,
   UserListResponse,
+  UserSession,
+  UserSessionsResponse,
 } from './types'
 
 /**
@@ -110,8 +113,63 @@ function notifyUnauthorized(path: string): void {
   unauthorizedHandler?.()
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), {
+// ---------------- P11：access token 自动刷新（单飞，避免刷新风暴/死循环） ----------------
+
+/** 登录/刷新/登出接口本身不触发 refresh。 */
+const NO_REFRESH_PATHS = ['/api/auth/login', '/api/auth/refresh', '/api/auth/logout', '/api/auth/logout-all']
+
+let refreshPromise: Promise<boolean> | null = null
+let tokenRefreshHandler:
+  | ((bundle: { accessToken: string; refreshToken: string | null; refreshExpiresAt: string | null }) => void)
+  | null = null
+
+/** 注册 access token 轮换回调（auth store 同步内存中的 token）。 */
+export function setTokenRefreshHandler(handler: typeof tokenRefreshHandler): void {
+  tokenRefreshHandler = handler
+}
+
+/** POST /api/auth/refresh：成功则持久化轮换后的 access+refresh。 */
+async function refreshAccessToken(): Promise<boolean> {
+  const currentRefresh = getRefreshToken()
+  if (!currentRefresh) return false
+  if (refreshPromise) return refreshPromise
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(apiUrl('/api/auth/refresh'), {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: currentRefresh }),
+      })
+      if (!response.ok) {
+        clearTokens()
+        return false
+      }
+      const data = (await response.json()) as RefreshResponse
+      if (!data.token) {
+        clearTokens()
+        return false
+      }
+      const nextBundle = {
+        accessToken: data.token,
+        refreshToken: data.refresh_token || currentRefresh,
+        refreshExpiresAt: data.refresh_expires_at ?? null,
+      }
+      setTokens(nextBundle)
+      tokenRefreshHandler?.(nextBundle)
+      return true
+    } catch {
+      clearTokens()
+      return false
+    } finally {
+      refreshPromise = null
+    }
+  })()
+  return refreshPromise
+}
+
+/** 带鉴权的 fetch：401 时最多刷新一次并重试原请求；刷新失败清理会话并通知登出。 */
+async function fetchWithAuth(path: string, init?: RequestInit): Promise<Response> {
+  const buildInit = (): RequestInit => ({
     ...init,
     headers: {
       Accept: 'application/json',
@@ -119,9 +177,21 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...((init?.headers as Record<string, string> | undefined) ?? {}),
     },
   })
+  let response = await fetch(apiUrl(path), buildInit())
+  if (response.status === 401 && !NO_REFRESH_PATHS.some((prefix) => path.startsWith(prefix))) {
+    const refreshed = await refreshAccessToken()
+    if (refreshed) response = await fetch(apiUrl(path), buildInit())
+    if (response.status === 401) notifyUnauthorized(path)
+  } else if (response.status === 401) {
+    notifyUnauthorized(path)
+  }
+  return response
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetchWithAuth(path, init)
   if (!response.ok) {
     const error = await parseError(response)
-    if (response.status === 401) notifyUnauthorized(path)
     throw error
   }
   return (await response.json()) as T
@@ -213,6 +283,35 @@ export async function fetchMe(): Promise<AuthUser> {
   return requestJson<AuthUser>('/api/auth/me')
 }
 
+/** POST /api/auth/logout：吊销当前 refresh token（幂等 204，失败静默）。 */
+export async function logoutSession(): Promise<void> {
+  const refresh = getRefreshToken()
+  if (!refresh) return
+  try {
+    await fetch(apiUrl('/api/auth/logout'), {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ refresh_token: refresh }),
+    })
+  } catch {
+    // 登出失败也清理本地会话
+  }
+}
+
+/** GET /api/users/{id}/sessions（admin）→ 该用户有效 refresh 会话。 */
+export async function fetchUserSessions(userId: string): Promise<UserSession[]> {
+  const data = await requestJson<UserSessionsResponse>(`/api/users/${encodeURIComponent(userId)}/sessions`)
+  return data.items ?? []
+}
+
+/** POST /api/users/{id}/logout（admin）→ 强制下线（吊销全部 refresh + token 版本递增）。 */
+export async function forceLogoutUser(userId: string): Promise<void> {
+  const response = await fetchWithAuth(`/api/users/${encodeURIComponent(userId)}/logout`, { method: 'POST' })
+  if (!response.ok) {
+    throw await parseError(response)
+  }
+}
+
 // ---------------- P0 REST ----------------
 
 /** GET /api/cameras → 相机台账。 */
@@ -295,7 +394,7 @@ export async function fetchEventsCsv(from?: string, to?: string): Promise<Blob> 
   if (from) params.set('from', from)
   if (to) params.set('to', to)
   const query = params.toString()
-  const response = await fetch(apiUrl(`/api/stats/events.csv${query ? `?${query}` : ''}`), {
+  const response = await fetchWithAuth(`/api/stats/events.csv${query ? `?${query}` : ''}`, {
     headers: { Accept: 'text/csv', ...authHeaders() },
   })
   if (!response.ok) {
@@ -449,7 +548,7 @@ export async function updateDutyGroup(groupId: string, payload: Partial<DutyGrou
 
 /** DELETE /api/duty/groups/{id}（admin）→ 删除值班组。 */
 export async function deleteDutyGroup(groupId: string): Promise<void> {
-  const response = await fetch(apiUrl(`/api/duty/groups/${encodeURIComponent(groupId)}`), {
+  const response = await fetchWithAuth(`/api/duty/groups/${encodeURIComponent(groupId)}`, {
     method: 'DELETE',
     headers: { Accept: 'application/json', ...authHeaders() },
   })
@@ -499,7 +598,7 @@ export async function updateUser(userId: string, payload: UpdateUserPayload): Pr
 
 /** DELETE /api/users/{id}（admin）→ 删除用户（不能删除自己）。 */
 export async function deleteUser(userId: string): Promise<void> {
-  const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(userId)}`), {
+  const response = await fetchWithAuth(`/api/users/${encodeURIComponent(userId)}`, {
     method: 'DELETE',
     headers: { Accept: 'application/json', ...authHeaders() },
   })
@@ -529,7 +628,7 @@ export async function exportAuditCsv(params: AuditExportParams = {}): Promise<Bl
   if (params.actor) query.set('actor', params.actor)
   if (params.limit) query.set('limit', String(params.limit))
   const suffix = query.toString()
-  const response = await fetch(apiUrl(`/api/audit/export${suffix ? `?${suffix}` : ''}`), {
+  const response = await fetchWithAuth(`/api/audit/export${suffix ? `?${suffix}` : ''}`, {
     method: 'GET',
     headers: { Accept: 'text/csv', ...authHeaders() },
   })

@@ -9,7 +9,9 @@ import {
   fetchNotificationSettings,
   fetchNotifications,
   replayBus as requestReplayBus,
+  fetchUserSessions,
   fetchUsers,
+  forceLogoutUser,
   saveEscalationSettings,
   saveNotificationSettings,
   updateUser as requestUpdateUser,
@@ -26,6 +28,7 @@ import type {
   NotificationLogEntry,
   NotificationSettings,
   UpdateUserPayload,
+  UserSession,
 } from '../types'
 
 interface AdminState {
@@ -54,6 +57,11 @@ interface AdminState {
   usersError: string | null
   userSaving: boolean
   userDeletingId: string | null
+  // ---- P11：会话管理 ----
+  userSessions: UserSession[]
+  userSessionsLoading: boolean
+  userSessionsError: string | null
+  forceLogoutId: string | null
 }
 
 const state = reactive<AdminState>({
@@ -80,6 +88,10 @@ const state = reactive<AdminState>({
   usersError: null,
   userSaving: false,
   userDeletingId: null,
+  userSessions: [],
+  userSessionsLoading: false,
+  userSessionsError: null,
+  forceLogoutId: null,
 })
 
 /** 拉取通知 + 升级两组设置（admin）。 */
@@ -227,6 +239,35 @@ async function deleteManagedUser(userId: string): Promise<boolean> {
   }
 }
 
+/** GET /api/users/{id}/sessions（admin）→ 有效在线会话。 */
+async function loadUserSessions(userId: string): Promise<void> {
+  state.userSessionsLoading = true
+  state.userSessionsError = null
+  try {
+    state.userSessions = await fetchUserSessions(userId)
+  } catch (error) {
+    state.userSessionsError = apiErrorMessage(error)
+  } finally {
+    state.userSessionsLoading = false
+  }
+}
+
+/** POST /api/users/{id}/logout（admin）→ 强制下线（吊销全部 refresh + token 版本递增）。 */
+async function forceLogoutManagedUser(userId: string): Promise<boolean> {
+  if (state.forceLogoutId) return false
+  state.forceLogoutId = userId
+  try {
+    await forceLogoutUser(userId)
+    pushToast('已强制该用户下线', 'success')
+    return true
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return false
+  } finally {
+    state.forceLogoutId = null
+  }
+}
+
 /** GET /api/bus/status（admin）。 */
 async function loadBusStatus(): Promise<void> {
   state.busStatusLoading = true
@@ -286,6 +327,10 @@ function reset(): void {
   state.usersError = null
   state.userSaving = false
   state.userDeletingId = null
+  state.userSessions = []
+  state.userSessionsLoading = false
+  state.userSessionsError = null
+  state.forceLogoutId = null
 }
 
 export function useAdminStore() {
@@ -303,6 +348,8 @@ export function useAdminStore() {
     createManagedUser,
     updateManagedUser,
     deleteManagedUser,
+    loadUserSessions,
+    forceLogoutManagedUser,
     reset,
   }
 }

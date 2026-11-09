@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "P10.0 数字孪生安防平台 Web 端（Vue 3 + Three.js + RBAC + 登录安全 / 密码策略 / 审计导出）",
+  "description": "P11.0 数字孪生安防平台 Web 端（Vue 3 + Three.js + RBAC + refresh token 自动续期 / 会话管理）",
   "scripts": {
     "dev": "vite --port 5173 --strictPort",
     "build": "vue-tsc --noEmit && vite build",

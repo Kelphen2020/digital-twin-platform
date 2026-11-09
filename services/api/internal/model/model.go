@@ -429,7 +429,20 @@ type UserAccount struct {
 	Role         string    `json:"role"`
 	Areas        []string  `json:"areas"`
 	Active       bool      `json:"active"`
+	TokenVersion int       `json:"-"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// RefreshToken is one opaque refresh-token record (only its SHA-256 is stored).
+type RefreshToken struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"-"`
+	TokenHash string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+	Revoked   bool      `json:"-"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
 }

@@ -1,14 +1,22 @@
 import { computed, reactive } from 'vue'
-import { ApiError, login as requestLogin, fetchMe, setUnauthorizedHandler, apiErrorMessage } from '../api'
-import { setAuthToken } from '../auth/token'
+import {
+  ApiError,
+  apiErrorMessage,
+  fetchMe,
+  login as requestLogin,
+  logoutSession,
+  setTokenRefreshHandler,
+  setUnauthorizedHandler,
+} from '../api'
+import { clearTokens, loadStoredTokens, setTokens } from '../auth/token'
 import { pushToast } from './ui'
 import type { AuthUser, LoginResponse, Permission, Role } from '../types'
-
-const STORAGE_KEY = 'twin.auth.token'
 
 interface AuthState {
   user: AuthUser | null
   token: string | null
+  /** P11：refresh token 过期时间（用于会话续期提示/排查）。 */
+  refreshExpiresAt: string | null
   /** 启动时校验本地令牌的加载态（用于避免登录页闪烁）。 */
   booting: boolean
   loggingIn: boolean
@@ -20,6 +28,7 @@ interface AuthState {
 const state = reactive<AuthState>({
   user: null,
   token: null,
+  refreshExpiresAt: null,
   booting: true,
   loggingIn: false,
   error: null,
@@ -50,35 +59,11 @@ function isCameraOutOfScope(camera: { area_id: string }): boolean {
   return !!user && user.role === 'operator' && !(user.areas ?? []).includes(camera.area_id)
 }
 
-function persistToken(token: string): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, token)
-  } catch {
-    // localStorage 不可用时退化为仅内存会话
-  }
-}
-
-function readStoredToken(): string | null {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
-function clearPersistedToken(): void {
-  try {
-    window.localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    // ignore
-  }
-}
-
 function clearSession(): void {
-  clearPersistedToken()
-  setAuthToken(null)
+  clearTokens()
   state.user = null
   state.token = null
+  state.refreshExpiresAt = null
   state.error = null
   state.lockoutUntil = null
 }
@@ -86,16 +71,17 @@ function clearSession(): void {
 /** 启动时用本地令牌换取 /api/auth/me；失败则回到登录页。 */
 async function restoreSession(): Promise<void> {
   state.booting = true
-  const stored = readStoredToken()
-  if (!stored) {
+  const stored = loadStoredTokens()
+  if (!stored || (!stored.accessToken && !stored.refreshToken)) {
     state.booting = false
     return
   }
-  setAuthToken(stored)
+  state.token = stored.accessToken || null
+  state.refreshExpiresAt = stored.refreshExpiresAt
   try {
+    // fetchMe 遇 401 时由 api.ts 自动 refresh + 重试；轮换后回调同步 state.token
     const user = await fetchMe()
     state.user = user
-    state.token = stored
     state.error = null
   } catch (error) {
     clearSession()
@@ -112,9 +98,13 @@ async function login(username: string, password: string): Promise<boolean> {
   try {
     const result: LoginResponse = await requestLogin(username.trim(), password)
     state.lockoutUntil = null
-    persistToken(result.token)
-    setAuthToken(result.token)
+    setTokens({
+      accessToken: result.token,
+      refreshToken: result.refresh_token ?? null,
+      refreshExpiresAt: result.refresh_expires_at ?? null,
+    })
     state.token = result.token
+    state.refreshExpiresAt = result.refresh_expires_at ?? null
     state.user = result.user
     return true
   } catch (error) {
@@ -131,7 +121,9 @@ async function login(username: string, password: string): Promise<boolean> {
   }
 }
 
-function logout(): void {
+/** P11：先吊销 refresh token（尽力而为），再清理本地会话。 */
+async function logout(): Promise<void> {
+  await logoutSession()
   clearSession()
 }
 
@@ -144,6 +136,12 @@ function handleUnauthorized(): void {
 
 // 模块级注册一次：api.ts 收到 401 时回调登出
 setUnauthorizedHandler(handleUnauthorized)
+
+// P11：access token 轮换后同步内存状态（localStorage 已由 token 模块更新）
+setTokenRefreshHandler((bundle) => {
+  state.token = bundle.accessToken
+  state.refreshExpiresAt = bundle.refreshExpiresAt
+})
 
 export function useAuthStore() {
   return {

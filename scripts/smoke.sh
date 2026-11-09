@@ -92,6 +92,18 @@
 #   403; cleanup deletes the test user and verifies admin can still log in.
 #   Total: 146 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0).
 #
+# P11.0 additions (docs/API_P11.md):
+#   login returns refresh_token/refresh_expires_at; POST /api/auth/refresh
+#   rotates the pair (old refresh reuse -> 401 invalid_refresh_token, new
+#   access works); POST /api/auth/logout revokes the refresh; a throwaway
+#   viewer's /api/auth/logout-all bumps token_version (old access 401,
+#   re-login OK); admin password PATCH invalidates the target's old access;
+#   admin GET /api/users/{id}/sessions lists >=1 session then 0 after
+#   POST /api/users/{id}/logout (force logout, old access 401); self force
+#   logout -> 400 self_protected; operator force logout -> 403; cleanup deletes
+#   the throwaway user and verifies admin login.
+#   Total: 169 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0).
+#
 # Dependencies: bash, curl, python3 only.
 #
 # Usage:
@@ -119,6 +131,7 @@ WS_RECEIVER_LOG="$TMP/webhook.log"
 DUTY_GROUP_ID=""
 SMOKE_USER_ID=""
 P10_USER_ID=""
+P11_USER_ID=""
 
 cleanup() {
   if [ -n "${WS_RECEIVER_PID:-}" ]; then
@@ -171,6 +184,10 @@ print(" ".join(str(cam.get("id")) for cam in items if isinstance(cam, dict) and 
     if [ -n "${P10_USER_ID:-}" ]; then
       curl -s -o /dev/null -m 3 -X DELETE -H "Authorization: Bearer $admin_token" \
         "$API_BASE/api/users/$P10_USER_ID" 2>/dev/null || true
+    fi
+    if [ -n "${P11_USER_ID:-}" ]; then
+      curl -s -o /dev/null -m 3 -X DELETE -H "Authorization: Bearer $admin_token" \
+        "$API_BASE/api/users/$P11_USER_ID" 2>/dev/null || true
     fi
     if [ -f "$TMP/p8_deactivated_groups.txt" ]; then
       while IFS= read -r p8_gid; do
@@ -632,7 +649,7 @@ fi
 # ===========================================================================
 # 1. health (exempt from auth, retry briefly while the API starts)
 # ===========================================================================
-step "1/42 health"
+step "1/46 health"
 health_code=""
 attempt=0
 while [ "$attempt" -lt 5 ]; do
@@ -666,7 +683,7 @@ fi
 # ===========================================================================
 # 2. P2 auth: unauthenticated 401, admin login, GET /api/auth/me
 # ===========================================================================
-step "2/42 auth (P2: no-token 401, login, /api/auth/me)"
+step "2/46 auth (P2: no-token 401, login, /api/auth/me)"
 noauth_code="$(http_get "/api/cameras")"
 if [ "$noauth_code" = "401" ]; then
   noauth_error="$(python3 -c 'import json,sys
@@ -708,7 +725,7 @@ fi
 # ===========================================================================
 # 3. camera inventory: >= 1 camera and the six seeded codes CAM-001..CAM-006
 # ===========================================================================
-step "3/42 cameras"
+step "3/46 cameras"
 cameras_code="$(http_get "/api/cameras" "$admin_token")"
 if [ "$cameras_code" != "200" ]; then
   fail "GET /api/cameras -> HTTP ${cameras_code:-none}"
@@ -764,7 +781,7 @@ fi
 # ===========================================================================
 # 4. ingest one high-confidence person detection for CAM-001 (token-free)
 # ===========================================================================
-step "4/42 ingest detection (P0, token-free machine entry)"
+step "4/46 ingest detection (P0, token-free machine entry)"
 ingest_code=""
 event_id=""
 ingest_attempt=0
@@ -809,7 +826,7 @@ fi
 # ===========================================================================
 # 5. poll GET /api/events?limit=20 until the event is visible (<= 5 s)
 # ===========================================================================
-step "5/42 event appears in /api/events (<= 5s)"
+step "5/46 event appears in /api/events (<= 5s)"
 found_id=""
 attempt=0
 while [ "$attempt" -lt 10 ]; do
@@ -867,7 +884,7 @@ fi
 # ===========================================================================
 # 6. ack the event (admin token; operator RBAC is covered in step 15)
 # ===========================================================================
-step "6/42 ack event (P0)"
+step "6/46 ack event (P0)"
 if [ -n "$found_id" ]; then
   ack_code="$(http_post_json "/api/events/$found_id/ack" '{}' "$admin_token")"
   if python3 - "$TMP/body.json" "$ack_code" <<'PY'
@@ -895,7 +912,7 @@ fi
 # ===========================================================================
 # 7. /metrics exposes the required counters (auth-exempt)
 # ===========================================================================
-step "7/42 metrics"
+step "7/46 metrics"
 metrics_code="$(curl -s -o "$TMP/metrics.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_code" != "200" ]; then
   fail "GET /metrics -> HTTP ${metrics_code:-none}"
@@ -917,7 +934,7 @@ fi
 # ===========================================================================
 # 8. P1.0 calibration: solve -> PUT -> GET camera shows calibration (admin)
 # ===========================================================================
-step "8/42 calibration (P1: solve -> PUT -> GET camera, admin)"
+step "8/46 calibration (P1: solve -> PUT -> GET camera, admin)"
 solve_payload='{"camera_id":"cam_001","points":[{"px":320,"py":800,"x":-84.0,"y":-30.0},{"px":1600,"py":800,"x":-20.0,"y":-30.0},{"px":320,"py":280,"x":-84.0,"y":-56.0},{"px":1600,"py":280,"x":-20.0,"y":-56.0},{"px":960,"py":540,"x":-52.0,"y":-43.0}]}'
 if [ -n "$cam1_id" ]; then
   solve_payload="$(python3 - "$TMP/cameras.json" <<'PY'
@@ -1044,7 +1061,7 @@ fi
 # ===========================================================================
 # 9. P1.0 tracks: ingest a detection with track_id -> GET /api/tracks returns it
 # ===========================================================================
-step "9/42 tracks (P1: ingest with track_id -> GET /api/tracks)"
+step "9/46 tracks (P1: ingest with track_id -> GET /api/tracks)"
 track_id="trk-smoke-$(python3 -c 'import time; print(int(time.time() * 1000))')"
 track_payload="$(printf '{"camera_code":"CAM-001","detections":[{"class":"person","confidence":0.77,"bbox":[0.40,0.30,0.60,0.80],"track_id":"%s","world":%s}]}' "$track_id" "$world_json")"
 track_ingest_code="$(http_post_json "/api/ingest/detections" "$track_payload")"
@@ -1096,7 +1113,7 @@ fi
 # ===========================================================================
 # 10. P1.0 workflow: create event -> GET detail with empty actions
 # ===========================================================================
-step "10/42 event workflow (P1: create -> detail actions empty)"
+step "10/46 event workflow (P1: create -> detail actions empty)"
 wf_event_id=""
 attempt=0
 while [ "$attempt" -lt 3 ] && [ -z "$wf_event_id" ]; do
@@ -1149,7 +1166,7 @@ fi
 # ===========================================================================
 # 11. P1.0 workflow: dispatch (no status change) then close
 # ===========================================================================
-step "11/42 event workflow (P1: dispatch -> close)"
+step "11/46 event workflow (P1: dispatch -> close)"
 if [ -n "$wf_event_id" ]; then
   dispatch_code="$(http_post_json "/api/events/$wf_event_id/dispatch" '{"target":"安保A组","note":"请5分钟内到场"}' "$admin_token")"
 else
@@ -1203,7 +1220,7 @@ fi
 # ===========================================================================
 # 12. P1.0 workflow: event detail now lists the dispatch + close actions
 # ===========================================================================
-step "12/42 event detail shows actions (P1)"
+step "12/46 event detail shows actions (P1)"
 if [ -n "$wf_event_id" ]; then
   wf_detail2_code="$(http_get "/api/events/$wf_event_id" "$admin_token")"
 else
@@ -1243,7 +1260,7 @@ fi
 # ===========================================================================
 # 13. P1.0 audit log records the write operations
 # ===========================================================================
-step "13/42 audit (P1)"
+step "13/46 audit (P1)"
 audit_code="$(http_get '/api/audit?limit=100' "$admin_token")"
 if python3 - "$TMP/body.json" "$audit_code" <<'PY'
 import json, sys
@@ -1270,7 +1287,7 @@ fi
 # ===========================================================================
 # 14. P1.0 stats summary + events CSV export
 # ===========================================================================
-step "14/42 stats (P1: summary + events.csv)"
+step "14/46 stats (P1: summary + events.csv)"
 summary_code="$(http_get '/api/stats/summary' "$admin_token")"
 if python3 - "$TMP/body.json" "$summary_code" <<'PY'
 import json, sys
@@ -1314,7 +1331,7 @@ fi
 # ===========================================================================
 # 15. P2.0 RBAC: viewer read-only, operator ack; prepare event for orders
 # ===========================================================================
-step "15/42 RBAC (P2: viewer read-only, operator ack)"
+step "15/46 RBAC (P2: viewer read-only, operator ack)"
 read -r viewer_login_code viewer_token < <(login_user viewer 'Viewer@123')
 read -r operator_login_code operator_token < <(login_user operator 'Operator@123')
 printf '      logins: viewer=%s operator=%s\n' "$viewer_login_code" "$operator_login_code"
@@ -1388,7 +1405,7 @@ fi
 # ===========================================================================
 # 16. P2.0 orders: create -> processing -> done (closed_at) -> GET
 # ===========================================================================
-step "16/42 orders (P2: create -> processing -> done -> GET)"
+step "16/46 orders (P2: create -> processing -> done -> GET)"
 order_id=""
 if [ -n "$rbac_event_id" ]; then
   order_payload="$(printf '{"event_id":"%s","title":"人员入侵 · 测试工单","priority":"high","assignee":"安保A组","note":"5分钟内到场"}' "$rbac_event_id")"
@@ -1485,7 +1502,7 @@ fi
 # ===========================================================================
 # 17. P2.0 camera rules (admin): high threshold suppresses events, restore
 # ===========================================================================
-step "17/42 camera rules (P2: confidence_threshold effect, restore defaults)"
+step "17/46 camera rules (P2: confidence_threshold effect, restore defaults)"
 rules_high='{"confidence_threshold":0.99,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]}'
 rules_default='{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}'
 if [ -n "$cam1_id" ]; then
@@ -1575,7 +1592,7 @@ fi
 # ===========================================================================
 # 18. P2.0 operator camera scope + audit of P2 write operations
 # ===========================================================================
-step "18/42 operator camera scope + P2 audit"
+step "18/46 operator camera scope + P2 audit"
 if [ -n "$cam2_id" ]; then
   scope_out_code="$(http_patch_json "/api/cameras/$cam2_id" '{"status":"degraded"}' "$operator_token")"
 else
@@ -1653,7 +1670,7 @@ fi
 # ===========================================================================
 # 19. P3.0 data-level filtering (operator scoped reads, admin-only lists)
 # ===========================================================================
-step "19/42 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
+step "19/46 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
 
 op_cams_code="$(http_get "/api/cameras" "$operator_token")"
 op_cams=""
@@ -1773,7 +1790,7 @@ fi
 # ===========================================================================
 # 20. P3.0 escalation settings (admin): baseline reset, PUT, GET reflects
 # ===========================================================================
-step "20/42 escalation settings (P3: PUT -> GET reflects)"
+step "20/46 escalation settings (P3: PUT -> GET reflects)"
 # Baseline reset so an interrupted previous run cannot affect the checks.
 http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token" >/dev/null
@@ -1824,7 +1841,7 @@ fi
 # ===========================================================================
 # 21. P3.0 escalation effect: stale warn event gets escalated_at (<= 25 s)
 # ===========================================================================
-step "21/42 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
+step "21/46 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
 # The stale event must carry occurred_at = now-10s, but the normal 5 s dedupe
 # window compares that timestamp against the last event for the same
 # camera+class: a concurrently running simulator could make a backdated event
@@ -1979,7 +1996,7 @@ fi
 # ===========================================================================
 # 22. P3.0 notifications + webhook delivery (local receiver)
 # ===========================================================================
-step "22/42 notifications + webhook (P3: invalid URL 400, delivery ok)"
+step "22/46 notifications + webhook (P3: invalid URL 400, delivery ok)"
 if start_receiver; then
   pass "webhook receiver listening on http://127.0.0.1:$WS_RECEIVER_PORT (log=$WS_RECEIVER_LOG)"
 else
@@ -2135,7 +2152,7 @@ fi
 # ===========================================================================
 # 23. P3.0 restore defaults + receiver cleanup
 # ===========================================================================
-step "23/42 restore P3 defaults + receiver cleanup"
+step "23/46 restore P3 defaults + receiver cleanup"
 restore_esc_code="$(http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token")"
 if python3 - "$TMP/body.json" "$restore_esc_code" <<'PY'
@@ -2200,7 +2217,7 @@ fi
 # ===========================================================================
 # 24. P4.0 duty groups: CRUD + /api/duty/current + RBAC
 # ===========================================================================
-step "24/42 duty groups (P4: CRUD + /api/duty/current + RBAC)"
+step "24/46 duty groups (P4: CRUD + /api/duty/current + RBAC)"
 duty_group_name="东门值班组"
 duty_group_payload='{"name":"东门值班组","areas":["area_gate","area_parking"],"operators":["operator"],"active":true}'
 
@@ -2337,7 +2354,7 @@ fi
 # ===========================================================================
 # 25. P4.0 auto-dispatch: escalation -> duty-group order
 # ===========================================================================
-step "25/42 auto-dispatch (P4: escalation creates order for duty group)"
+step "25/46 auto-dispatch (P4: escalation creates order for duty group)"
 auto_esc_payload='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}'
 auto_esc_code="$(http_put_json "/api/settings/escalation" "$auto_esc_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$auto_esc_code" <<'PY'
@@ -2565,7 +2582,7 @@ fi
 # ===========================================================================
 # 26. P4.0 notification retry: receiver --fail-first 2, max_attempts=3
 # ===========================================================================
-step "26/42 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
+step "26/46 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
 # Keep other event traffic out of the retry/silence checks (shared demo env may
 # run the simulator concurrently); restored at the end of step 27.
 isolate_events
@@ -2716,7 +2733,7 @@ fi
 # ===========================================================================
 # 27. P4.0 notification silence: silence_seconds=60 suppresses duplicates
 # ===========================================================================
-step "27/42 notification silence (P4: silence_seconds=60, suppressed metric)"
+step "27/46 notification silence (P4: silence_seconds=60, suppressed metric)"
 silence_notif_payload="$(printf '{"enabled":true,"webhook_url":"http://127.0.0.1:%s/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":1,"silence_seconds":60}' "$WS_RECEIVER_PORT")"
 silence_put_code="$(http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$silence_put_code" <<'PY'
@@ -2927,7 +2944,7 @@ release_events
 # ===========================================================================
 # 28. P4.0 metrics + cleanup
 # ===========================================================================
-step "28/42 P4 metrics + cleanup"
+step "28/46 P4 metrics + cleanup"
 metrics_p4_code="$(curl -s -o "$TMP/metrics_p4.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_p4_code" = "200" ] \
   && grep -q 'dsh_twin_notifications_total{result="ok"}' "$TMP/metrics_p4.txt" \
@@ -3107,7 +3124,7 @@ fi
 # ===========================================================================
 # 29. P5.0 bus status: admin shape + RBAC
 # ===========================================================================
-step "29/42 bus status (P5: admin status shape, RBAC)"
+step "29/46 bus status (P5: admin status shape, RBAC)"
 bus_status_code="$(http_get "/api/bus/status" "$admin_token")"
 bus_status_summary=""
 bus_next_offset=""
@@ -3165,7 +3182,7 @@ fi
 # ===========================================================================
 # 30. P5.0 bus publish: token-free ingest advances published/next_offset
 # ===========================================================================
-step "30/42 bus publish (P5: token-free ingest advances the bus)"
+step "30/46 bus publish (P5: token-free ingest advances the bus)"
 wait_dedup_event CAM-002 vehicle
 bus_ingest_payload='{"camera_code":"CAM-002","detections":[{"class":"vehicle","confidence":0.91,"bbox":[0.40,0.30,0.60,0.80]}]}'
 bus_ingest_code="$(http_post_json "/api/ingest/detections" "$bus_ingest_payload")"
@@ -3229,7 +3246,7 @@ fi
 # ===========================================================================
 # 31. P5.0 replay: replay the freshly published offset
 # ===========================================================================
-step "31/42 bus replay (P5: replay freshly published offset)"
+step "31/46 bus replay (P5: replay freshly published offset)"
 bus_replay_from="${bus_next_offset:-0}"
 bus_replay_to=$((bus_replay_from + 1))
 bus_replay_payload="$(printf '{"from_offset":%s,"to_offset":%s,"notify":false,"limit":10}' "$bus_replay_from" "$bus_replay_to")"
@@ -3302,7 +3319,7 @@ fi
 # ===========================================================================
 # 32. P5.0 replay validation: invalid range 400, non-admin 403
 # ===========================================================================
-step "32/42 bus replay validation (P5: 400 invalid range, 403 non-admin)"
+step "32/46 bus replay validation (P5: 400 invalid range, 403 non-admin)"
 invalid_replay_code="$(http_post_json "/api/bus/replay" \
   '{"from_offset":100,"to_offset":10,"notify":false,"limit":10}' "$admin_token")"
 if [ "$invalid_replay_code" = "400" ]; then
@@ -3328,7 +3345,7 @@ fi
 # ===========================================================================
 # 33. P5.0 bus metrics
 # ===========================================================================
-step "33/42 bus metrics (P5)"
+step "33/46 bus metrics (P5)"
 bus_metrics_code="$(curl -s -o "$TMP/metrics_p5.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 bus_metrics_summary="$(python3 - "$TMP/metrics_p5.txt" <<'PY'
 import sys
@@ -3365,7 +3382,7 @@ fi
 # ===========================================================================
 # 34. P6.0 site config: admin/viewer reads + unauthenticated 401
 # ===========================================================================
-step "34/42 site config (P6: admin/viewer reads, unauthenticated 401)"
+step "34/46 site config (P6: admin/viewer reads, unauthenticated 401)"
 site_admin_code="$(http_get "/api/site" "$admin_token")"
 site_admin_summary=""
 if [ "$site_admin_code" = "200" ]; then
@@ -3456,7 +3473,7 @@ fi
 # ===========================================================================
 # 35. P7.0 user management: admin CRUD, RBAC, self-protection, scope, audit
 # ===========================================================================
-step "35/42 user management (P7: CRUD, RBAC, self-protection, scope, audit)"
+step "35/46 user management (P7: CRUD, RBAC, self-protection, scope, audit)"
 p7_ts="$(python3 -c 'import time; print(int(time.time()))')"
 smoke_username="smoke_user_$p7_ts"
 smoke_password="Smoke@12345"
@@ -3771,7 +3788,7 @@ fi
 # ===========================================================================
 # 36. P8.0 duty shifts: rotation=operator group + current shift resolution
 # ===========================================================================
-step "36/42 duty shifts (P8: rotation/shift group, current duty)"
+step "36/46 duty shifts (P8: rotation/shift group, current duty)"
 # Other actors may have created active duty groups for area_gate; temporarily
 # deactivate them so the rotation/shift checks resolve deterministically to the
 # group created below (restored in the EXIT trap and in step 39).
@@ -3870,10 +3887,13 @@ fi
 # ===========================================================================
 # 37. P8.0 rotation: auto-dispatch assignee rotates over shift operators
 # ===========================================================================
-step "37/42 rotation auto-dispatch (P8: assignee rotates over shift operators)"
-# First sweep the currently pending warn/critical events with auto_dispatch=false
-# so that only the two events injected below are dispatched to the rotation
-# group inside the rotation checks.
+step "37/46 rotation auto-dispatch (P8: assignee rotates over shift operators)"
+# First isolate camera event traffic (a concurrently running simulator would
+# otherwise keep creating/auto-dispatching events and advance the rotation
+# counter unpredictably), then sweep the currently pending warn/critical events
+# with auto_dispatch=false so that only the two events injected below are
+# dispatched to the rotation group inside the rotation checks.
+isolate_events
 http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":false,"second_after_seconds":0}' \
   "$admin_token" >/dev/null
@@ -3937,7 +3957,7 @@ p8_event_a=""
 attempt=0
 while [ "$attempt" -lt 3 ] && [ -z "$p8_event_a" ]; do
   attempt=$((attempt + 1))
-  p8_payload_a="$(printf '{"camera_code":"CAM-001","ts":"%s","detections":[{"class":"intrusion","confidence":0.93,"bbox":[0.40,0.30,0.60,0.80]}]}' "$p8_stale_a")"
+  p8_payload_a="$(printf '{"camera_code":"CAM-001","ts":"%s","detections":[{"class":"intrusion","confidence":0.995,"bbox":[0.40,0.30,0.60,0.80]}]}' "$p8_stale_a")"
   p8_ingest_a="$(http_post_json "/api/ingest/detections" "$p8_payload_a")"
   if [ "$p8_ingest_a" = "200" ] || [ "$p8_ingest_a" = "202" ]; then
     p8_event_a="$(first_event_id)"
@@ -3957,7 +3977,7 @@ p8_event_b=""
 attempt=0
 while [ "$attempt" -lt 3 ] && [ -z "$p8_event_b" ]; do
   attempt=$((attempt + 1))
-  p8_payload_b="$(printf '{"camera_code":"CAM-006","ts":"%s","detections":[{"class":"no_helmet","confidence":0.93,"bbox":[0.40,0.30,0.60,0.80]}]}' "$p8_stale_b")"
+  p8_payload_b="$(printf '{"camera_code":"CAM-006","ts":"%s","detections":[{"class":"no_helmet","confidence":0.995,"bbox":[0.40,0.30,0.60,0.80]}]}' "$p8_stale_b")"
   p8_ingest_b="$(http_post_json "/api/ingest/detections" "$p8_payload_b")"
   if [ "$p8_ingest_b" = "200" ] || [ "$p8_ingest_b" = "202" ]; then
     p8_event_b="$(first_event_id)"
@@ -4062,11 +4082,12 @@ then
 else
   fail "rotation did not switch assignee (first=$p8_assignee_a, second=${p8_order_b:-<none>})"
 fi
+release_events
 
 # ===========================================================================
 # 38. P8.0 open-order dedupe + second escalation (re_escalated_at)
 # ===========================================================================
-step "38/42 open-order dedupe + re-escalation (P8: second_after_seconds=1)"
+step "38/46 open-order dedupe + re-escalation (P8: second_after_seconds=1)"
 p8_second_settings='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true,"second_after_seconds":1}'
 p8_second_code="$(http_put_json "/api/settings/escalation" "$p8_second_settings" "$admin_token")"
 if python3 - "$TMP/body.json" "$p8_second_code" <<'PY'
@@ -4231,7 +4252,7 @@ fi
 # ===========================================================================
 # 39. P8.0 settings validation + cleanup
 # ===========================================================================
-step "39/42 P8 settings validation + cleanup"
+step "39/46 P8 settings validation + cleanup"
 p8_invalid_low='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true,"second_after_seconds":-1}'
 p8_invalid_low_code="$(http_put_json "/api/settings/escalation" "$p8_invalid_low" "$admin_token")"
 if [ "$p8_invalid_low_code" = "400" ]; then
@@ -4376,7 +4397,7 @@ fi
 # ===========================================================================
 # 40. P10.0 security headers
 # ===========================================================================
-step "40/42 security headers (P10: nosniff/DENY/no-referrer)"
+step "40/46 security headers (P10: nosniff/DENY/no-referrer)"
 p10_headers_health="$(http_get_with_headers "/api/health")"
 p10_health_headers_summary="$(python3 - "$TMP/headers.txt" "$p10_headers_health" <<'PY'
 import sys
@@ -4456,7 +4477,7 @@ fi
 # ===========================================================================
 # 41. P10.0 login lockout + password policy
 # ===========================================================================
-step "41/42 login lockout + password policy (P10)"
+step "41/46 login lockout + password policy (P10)"
 p10_ts="$(python3 -c 'import time; print(int(time.time()))')"
 p10_lock_username="lock_$p10_ts"
 p10_lock_codes=""
@@ -4558,7 +4579,7 @@ fi
 # ===========================================================================
 # 42. P10.0 audit CSV export + cleanup
 # ===========================================================================
-step "42/42 audit CSV export + cleanup (P10)"
+step "42/46 audit CSV export + cleanup (P10)"
 p10_export_code="$(http_get_with_headers "/api/audit/export" "$admin_token")"
 p10_export_headers_ok="$(python3 - "$TMP/headers.txt" "$p10_export_code" <<'PY'
 import sys
@@ -4620,6 +4641,329 @@ if [ "$p10_final_admin_code" = "200" ] && [ -n "$p10_final_admin_token" ]; then
   pass "cleanup: admin login still OK after P10 security checks"
 else
   fail "cleanup: admin login failed after P10 checks (HTTP ${p10_final_admin_code:-none})"
+fi
+
+# ===========================================================================
+# 43. P11.0 refresh-token rotation
+# ===========================================================================
+step "43/46 refresh rotation (P11: login refresh_token, rotate, old reuse 401)"
+p11_admin_login_code="$(curl -s -o "$TMP/p11_admin_login.json" -w '%{http_code}' -m 5 \
+  -X POST -H 'Content-Type: application/json' \
+  --data '{"username":"admin","password":"Admin@123456"}' \
+  "$API_BASE/api/auth/login" 2>/dev/null || true)"
+p11_admin_token=""
+p11_admin_refresh=""
+p11_admin_login_summary=""
+p11_admin_login_summary="$(python3 - "$TMP/p11_admin_login.json" "$p11_admin_login_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+token = data.get("token")
+refresh = data.get("refresh_token")
+refresh_exp = data.get("refresh_expires_at")
+ok = isinstance(token, str) and bool(token)
+ok = ok and isinstance(refresh, str) and bool(refresh) and refresh != token
+ok = ok and isinstance(refresh_exp, str) and bool(refresh_exp)
+if not ok:
+    sys.exit(1)
+print(json.dumps({"access_len": len(token), "refresh_len": len(refresh),
+                  "refresh_expires_at": refresh_exp}, ensure_ascii=False))
+PY
+)" || p11_admin_login_summary=""
+if [ -n "$p11_admin_login_summary" ]; then
+  p11_admin_token="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$TMP/p11_admin_login.json")"
+  p11_admin_refresh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["refresh_token"])' "$TMP/p11_admin_login.json")"
+  pass "admin login -> 200 with refresh_token + refresh_expires_at ($p11_admin_login_summary)"
+else
+  fail "admin login response missing refresh_token/refresh_expires_at (HTTP ${p11_admin_login_code:-none})"
+fi
+
+p11_cams_code="$(http_get "/api/cameras" "$p11_admin_token")"
+if [ "$p11_cams_code" = "200" ]; then
+  pass "admin access token works -> GET /api/cameras 200"
+else
+  fail "admin access token -> GET /api/cameras ${p11_cams_code:-none} (expected 200)"
+fi
+
+p11_refresh_payload="$(printf '{"refresh_token":"%s"}' "$p11_admin_refresh")"
+p11_refresh_code="$(http_post_json "/api/auth/refresh" "$p11_refresh_payload")"
+p11_refresh_summary=""
+p11_refresh_summary="$(python3 - "$TMP/body.json" "$p11_refresh_code" "$p11_admin_refresh" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+token = data.get("token")
+refresh = data.get("refresh_token")
+ok = isinstance(token, str) and bool(token)
+ok = ok and isinstance(refresh, str) and bool(refresh) and refresh != sys.argv[3]
+if not ok:
+    sys.exit(1)
+print(json.dumps({"access_len": len(token), "refresh_rotated": True}, ensure_ascii=False))
+PY
+)" || p11_refresh_summary=""
+p11_new_token=""
+if [ -n "$p11_refresh_summary" ]; then
+  p11_new_token="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$TMP/body.json")"
+  p11_new_refresh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["refresh_token"])' "$TMP/body.json")"
+  pass "POST /api/auth/refresh -> 200 with new access + rotated refresh ($p11_refresh_summary)"
+else
+  fail "refresh failed (HTTP ${p11_refresh_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+p11_old_reuse_code="$(http_post_json "/api/auth/refresh" "$p11_refresh_payload")"
+p11_old_reuse_error="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("error",""))
+except Exception: print("")' "$TMP/body.json" 2>/dev/null || echo '')"
+if [ "$p11_old_reuse_code" = "401" ] && [ "$p11_old_reuse_error" = "invalid_refresh_token" ]; then
+  pass "reusing the rotated-out refresh token -> 401 invalid_refresh_token"
+else
+  fail "old refresh reuse -> HTTP ${p11_old_reuse_code:-none} error=${p11_old_reuse_error:-none} (expected 401 invalid_refresh_token)"
+fi
+
+p11_new_cams_code="$(http_get "/api/cameras" "$p11_new_token")"
+if [ "$p11_new_cams_code" = "200" ]; then
+  pass "rotated access token works -> GET /api/cameras 200"
+else
+  fail "rotated access token -> GET /api/cameras ${p11_new_cams_code:-none} (expected 200)"
+fi
+
+# ===========================================================================
+# 44. P11.0 logout + logout-all (token version bump)
+# ===========================================================================
+step "44/46 logout + logout-all (P11: refresh revocation, token_version bump)"
+p11_logout_payload="$(printf '{"refresh_token":"%s"}' "$p11_new_refresh")"
+p11_logout_code="$(http_post_json "/api/auth/logout" "$p11_logout_payload")"
+if [ "$p11_logout_code" = "204" ]; then
+  pass "POST /api/auth/logout -> 204 (refresh revoked)"
+else
+  fail "POST /api/auth/logout -> HTTP ${p11_logout_code:-none} (expected 204)"
+fi
+
+p11_logged_out_refresh_code="$(http_post_json "/api/auth/refresh" "$p11_logout_payload")"
+if [ "$p11_logged_out_refresh_code" = "401" ]; then
+  pass "refresh after logout -> 401 (refresh token revoked)"
+else
+  fail "refresh after logout -> HTTP ${p11_logged_out_refresh_code:-none} (expected 401)"
+fi
+
+# Throwaway viewer for logout-all / password invalidation / force-logout.
+p11_ts="$(python3 -c 'import time; print(int(time.time()))')"
+p11_username="smoke_p11_$p11_ts"
+p11_password="Smoke@12345"
+p11_user_payload="$(printf '{"username":"%s","password":"%s","display_name":"P11会话用户","role":"viewer","areas":[],"active":true}' "$p11_username" "$p11_password")"
+p11_user_create_code="$(http_post_json "/api/users" "$p11_user_payload" "$admin_token")"
+P11_USER_ID=""
+if [ "$p11_user_create_code" = "201" ]; then
+  P11_USER_ID="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("id") or "")
+except Exception: print("")' "$TMP/body.json")"
+fi
+printf '      throwaway viewer for session checks: %s (id=%s)\n' "$p11_username" "${P11_USER_ID:-<none>}"
+
+p11_user_login_code="$(curl -s -o "$TMP/p11_user_login.json" -w '%{http_code}' -m 5 \
+  -X POST -H 'Content-Type: application/json' \
+  --data "{\"username\":\"$p11_username\",\"password\":\"$p11_password\"}" \
+  "$API_BASE/api/auth/login" 2>/dev/null || true)"
+p11_user_token=""
+p11_user_refresh=""
+p11_user_login_summary="$(python3 - "$TMP/p11_user_login.json" "$p11_user_login_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(data.get("refresh_token"), str) or not data.get("refresh_token"):
+    sys.exit(1)
+print(json.dumps({"role": (data.get("user") or {}).get("role")}, ensure_ascii=False))
+PY
+)" || p11_user_login_summary=""
+if [ -n "$p11_user_login_summary" ]; then
+  p11_user_token="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$TMP/p11_user_login.json")"
+  p11_user_refresh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["refresh_token"])' "$TMP/p11_user_login.json")"
+  pass "viewer login -> 200 with refresh_token ($p11_user_login_summary)"
+else
+  fail "viewer login missing refresh_token (HTTP ${p11_user_login_code:-none})"
+fi
+
+p11_user_cams_before="$(http_get "/api/cameras" "$p11_user_token")"
+if [ "$p11_user_cams_before" = "200" ]; then
+  pass "viewer access token works before logout-all -> GET /api/cameras 200"
+else
+  fail "viewer access token before logout-all -> HTTP ${p11_user_cams_before:-none} (expected 200)"
+fi
+
+p11_logout_all_code="$(http_post_json "/api/auth/logout-all" '{}' "$p11_user_token")"
+if [ "$p11_logout_all_code" = "204" ]; then
+  pass "POST /api/auth/logout-all -> 204 (token_version bumped)"
+else
+  fail "POST /api/auth/logout-all -> HTTP ${p11_logout_all_code:-none} (expected 204)"
+fi
+
+p11_user_cams_after="$(http_get "/api/cameras" "$p11_user_token")"
+if [ "$p11_user_cams_after" = "401" ]; then
+  pass "old viewer access token after logout-all -> 401"
+else
+  fail "old viewer access token after logout-all -> HTTP ${p11_user_cams_after:-none} (expected 401)"
+fi
+
+read -r p11_relogin_code p11_relogin_token < <(login_user "$p11_username" "$p11_password")
+if [ "$p11_relogin_code" = "200" ] && [ -n "$p11_relogin_token" ]; then
+  pass "viewer re-login after logout-all -> 200"
+else
+  fail "viewer re-login after logout-all -> HTTP ${p11_relogin_code:-none} (expected 200)"
+fi
+
+# ===========================================================================
+# 45. P11.0 password-change invalidation + force logout + sessions
+# ===========================================================================
+step "45/46 password invalidation + force logout + sessions (P11)"
+p11_new_password="Smoke@123456"
+if [ -n "$P11_USER_ID" ]; then
+  p11_pwd_patch_payload="$(printf '{"password":"%s"}' "$p11_new_password")"
+  p11_pwd_patch_code="$(http_patch_json "/api/users/$P11_USER_ID" "$p11_pwd_patch_payload" "$admin_token")"
+else
+  p11_pwd_patch_code="000"
+fi
+if [ "$p11_pwd_patch_code" = "200" ]; then
+  pass "admin PATCH user password -> 200"
+else
+  fail "admin PATCH user password -> HTTP ${p11_pwd_patch_code:-none} (expected 200)"
+fi
+
+p11_old_token_after_pwd="$(http_get "/api/cameras" "$p11_relogin_token")"
+if [ "$p11_old_token_after_pwd" = "401" ]; then
+  pass "viewer's pre-password-change access token -> 401 (token_version bumped)"
+else
+  fail "old access token after password change -> HTTP ${p11_old_token_after_pwd:-none} (expected 401)"
+fi
+
+read -r p11_pwd_login_code p11_pwd_login_token < <(login_user "$p11_username" "$p11_new_password")
+if [ "$p11_pwd_login_code" = "200" ] && [ -n "$p11_pwd_login_token" ]; then
+  pass "login with the new password -> 200"
+else
+  fail "login with new password -> HTTP ${p11_pwd_login_code:-none} (expected 200)"
+fi
+
+if [ -n "$P11_USER_ID" ]; then
+  p11_sessions_code="$(http_get "/api/users/$P11_USER_ID/sessions" "$admin_token")"
+else
+  p11_sessions_code="000"
+fi
+p11_sessions_before="$(python3 - "$TMP/body.json" "$p11_sessions_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    print(-1)
+    sys.exit(0)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(len(items))
+PY
+)"
+if [ "$p11_sessions_code" = "200" ] && [ "${p11_sessions_before:-0}" -ge 1 ] 2>/dev/null; then
+  pass "admin GET /api/users/{id}/sessions -> 200 with $p11_sessions_before active session(s)"
+else
+  fail "admin sessions list before force logout wrong (HTTP ${p11_sessions_code:-none}, items=${p11_sessions_before:-?})"
+fi
+
+if [ -n "$P11_USER_ID" ]; then
+  p11_force_code="$(http_post_json "/api/users/$P11_USER_ID/logout" '{}' "$admin_token")"
+else
+  p11_force_code="000"
+fi
+if [ "$p11_force_code" = "204" ]; then
+  pass "admin POST /api/users/{id}/logout (force logout) -> 204"
+else
+  fail "admin force logout -> HTTP ${p11_force_code:-none} (expected 204)"
+fi
+
+p11_forced_access_code="$(http_get "/api/cameras" "$p11_pwd_login_token")"
+if [ "$p11_forced_access_code" = "401" ]; then
+  pass "forced-out viewer access token -> 401"
+else
+  fail "forced-out viewer access token -> HTTP ${p11_forced_access_code:-none} (expected 401)"
+fi
+
+if [ -n "$P11_USER_ID" ]; then
+  p11_sessions_after_code="$(http_get "/api/users/$P11_USER_ID/sessions" "$admin_token")"
+else
+  p11_sessions_after_code="000"
+fi
+p11_sessions_after="$(python3 - "$TMP/body.json" "$p11_sessions_after_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    print(-1)
+    sys.exit(0)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(len(items))
+PY
+)"
+if [ "$p11_sessions_after_code" = "200" ] && [ "$p11_sessions_after" = "0" ]; then
+  pass "admin GET sessions after force logout -> 0 active sessions"
+else
+  fail "sessions list after force logout wrong (HTTP ${p11_sessions_after_code:-none}, items=${p11_sessions_after:-?})"
+fi
+
+if [ -n "$admin_user_id" ]; then
+  p11_self_force_code="$(http_post_json "/api/users/$admin_user_id/logout" '{}' "$admin_token")"
+else
+  p11_self_force_code="000"
+fi
+p11_self_force_error="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("error",""))
+except Exception: print("")' "$TMP/body.json" 2>/dev/null || echo '')"
+if [ "$p11_self_force_code" = "400" ] && [ "$p11_self_force_error" = "self_protected" ]; then
+  pass "admin force-logout of self -> 400 self_protected"
+else
+  fail "admin self force logout -> HTTP ${p11_self_force_code:-none} error=${p11_self_force_error:-none} (expected 400 self_protected)"
+fi
+
+if [ -n "$P11_USER_ID" ]; then
+  p11_op_force_code="$(http_post_json "/api/users/$P11_USER_ID/logout" '{}' "$operator_token")"
+else
+  p11_op_force_code="000"
+fi
+if [ "$p11_op_force_code" = "403" ]; then
+  pass "operator force logout -> 403 forbidden (admin only)"
+else
+  fail "operator force logout -> HTTP ${p11_op_force_code:-none} (expected 403)"
+fi
+
+# ===========================================================================
+# 46. P11.0 cleanup
+# ===========================================================================
+step "46/46 P11 cleanup (delete throwaway user, admin login)"
+if [ -n "$P11_USER_ID" ]; then
+  p11_del_code="$(http_delete "/api/users/$P11_USER_ID" "$admin_token")"
+else
+  p11_del_code="000"
+fi
+if [ "$p11_del_code" = "204" ]; then
+  pass "cleanup: DELETE throwaway viewer $P11_USER_ID -> 204"
+  P11_USER_ID=""
+else
+  fail "cleanup: DELETE throwaway viewer -> HTTP ${p11_del_code:-none} (expected 204)"
+fi
+
+read -r p11_final_admin_code p11_final_admin_token < <(login_user admin 'Admin@123456')
+if [ "$p11_final_admin_code" = "200" ] && [ -n "$p11_final_admin_token" ]; then
+  pass "cleanup: admin login still OK after P11 session checks"
+else
+  fail "cleanup: admin login failed after P11 checks (HTTP ${p11_final_admin_code:-none})"
 fi
 
 summary

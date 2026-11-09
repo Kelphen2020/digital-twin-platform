@@ -548,3 +548,44 @@ P10 覆盖：安全头（health + 认证接口）；登录锁定（连续 5 次�
 - 密码策略仅长度/字符类别，未接泄露口令库或历史密码校验；无 MFA、无刷新令牌/吊销（JWT 到期 12h）。
 - 审计导出上限 20000 行（CSV 同步生成）；超大审计量需异步导出。
 - HTTPS 模板未在本机实跑（证书/镜像依赖网络）；`/metrics` 与审计接口需在网关层限制来源。
+
+---
+
+# P11.0 验收记录（2026-11-09 中午）
+
+## 52. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：refresh 轮换与旧 token 重用拒绝、logout/logout-all（token_version 失效 access）、改密吊销、管理员强制下线/会话列表/self 保护、停用账号 access 失效 |
+
+## 53. smoke.sh（P0–P10 146 项 + P11 23 项 = 169 项 / 46 步）
+
+```
+smoke: PASS (169 checks passed)
+```
+
+P11 覆盖：登录返回 refresh + 过期时间；refresh 轮换（旧 token 401 invalid_refresh_token，新 access 可用）；logout 吊销；logout-all 后旧 access 401、重登 200；管理员改密后旧 access 401、新密码登录 200；强制下线（会话 1→0、目标 access 401、self 400、operator 403）；清理临时账号。
+
+## 54. 前端 P11 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 自动续期 | ✅ 拦截首次受保护请求返回 401 → 客户端自动 `POST /api/auth/refresh`（恰好 1 次）→ 原请求重试 200，token 轮换，页面保持登录 |
+| 登录提示 | ✅「会话有效期 1 小时，过期前自动续期（refresh token 7 天）；修改密码或被强制下线后需重新登录」；三个 token 键持久化 |
+| 登出 | ✅ `POST /api/auth/logout` 204 → 清空令牌 → 回登录页 |
+| 会话管理 | ✅ 用户编辑弹窗显示在线会话数/最近 IP/创建时间/UA；「强制下线」两步确认（自己隐藏）；UI 强制下线后会话归 0 |
+| 优雅失效 | ✅ 被强制下线后操作 → refresh 被拒 → 自动登出 +「登录已过期」Toast |
+| 回归 | ✅ 8 页签/4 开关/场景/WS 指示器正常；console errors=[]、exceptions=[] |
+| 截图 | `docs/screenshots/p11-login-hint.png`、`p11-refresh.png`、`p11-user-sessions.png`、`p11-force-logout.png`、`p11-auto-logout.png` |
+
+## 55. 已知限制（P11.0）
+
+- Refresh 会话在内存模式重启后丢失（需重新登录）；PostgreSQL 模式持久化。
+- WS 长连接不主动断开（令牌失效后新请求 401，但已建立的 WS 在断开前仍可接收推送）；可加服务端定期校验。
+- 无设备指纹/异地登录告警；refresh 重用检测仅拒绝旧 token（未做令牌家族级联吊销）。
+- access 默认 1h，时钟偏移敏感场景需 NTP；多实例需共享 refresh 表（已用 PostgreSQL 支持）。

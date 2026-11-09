@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -20,8 +20,10 @@ addition in [`docs/API_P7.md`](../../docs/API_P7.md) (admin user management:
 in [`docs/API_P8.md`](../../docs/API_P8.md) (duty shifts + operator rotation,
 open-order dedupe, second escalation / `re_escalated_at`) and the P10.0
 security hardening in [`docs/API_P10.md`](../../docs/API_P10.md) (security
-headers, login brute-force lockout, password policy, audit CSV export).
-P9.0 performance tooling/numbers live in
+headers, login brute-force lockout, password policy, audit CSV export) and the
+P11.0 session lifecycle in [`docs/API_P11.md`](../../docs/API_P11.md) (refresh
+token rotation, logout/logout-all, admin force-logout, password-change
+invalidation, session listing). P9.0 performance tooling/numbers live in
 [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
@@ -31,7 +33,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 = **146 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 = **169 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation). |
 | `../../scripts/load.py` | Threaded load injector: steady or `--ramp` QPS, optional `--read-ratio` event reads, achieved QPS, accepted/dropped, HTTP p50/p95/p99, `/metrics` counter deltas, `--report` Markdown rows + `--json` run records (see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)). |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -204,7 +206,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**146 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0):
+(**169 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -368,6 +370,24 @@ Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
     filename="audit.csv"` and header `id,at,actor,action,resource,detail`;
     operator → 403 forbidden; cleanup deletes the test user and verifies admin
     can still log in.
+
+**P11.0 (steps 43–46, 23 checks)**
+
+43. refresh rotation: admin login → 200 with non-empty `refresh_token` +
+    `refresh_expires_at` (access works); `POST /api/auth/refresh` → 200 with a
+    new access token and a rotated refresh token; reusing the old refresh token
+    → 401 `invalid_refresh_token`; the rotated access token works;
+44. logout + logout-all: `POST /api/auth/logout` with a refresh token → 204 and
+    that refresh token no longer refreshes (401); a throwaway viewer logs in
+    (200 with refresh), `POST /api/auth/logout-all` → 204, its old access token
+    becomes 401 (token_version bump) and re-login works (200);
+45. password-change invalidation + force logout: admin `PATCH` the viewer's
+    password → 200, the viewer's pre-change access token → 401, login with the
+    new password → 200; `GET /api/users/{id}/sessions` shows ≥1 active session,
+    `POST /api/users/{id}/logout` (force logout) → 204, the target's access
+    token → 401 and sessions drop to 0; self force-logout → 400
+    `self_protected`; operator force-logout → 403;
+46. cleanup: throwaway viewer deleted (204) and admin login still works.
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -794,7 +814,54 @@ Notes:
   `deploy/nginx-tls.conf` and `docs/OPERATIONS.md`.
 - `smoke.sh` verifies all of the above (step 40–42).
 
-## 11. Typical demo sequence
+## 11. P11.0 session lifecycle (refresh / logout / force-logout)
+
+P11 introduces short-lived access JWTs plus rotating refresh tokens, so
+sessions can be revoked without waiting for access-token expiry:
+
+```bash
+# 1) login returns an access token + a refresh token
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"Admin@123456"}' \
+  http://127.0.0.1:8080/api/auth/login > /tmp/login.json
+ACCESS=$(python3 -c 'import json;print(json.load(open("/tmp/login.json"))["token"])')
+REFRESH=$(python3 -c 'import json;print(json.load(open("/tmp/login.json"))["refresh_token"])')
+
+# 2) rotate: new access + new refresh; the old refresh token becomes invalid
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"refresh_token\":\"$REFRESH\"}" http://127.0.0.1:8080/api/auth/refresh
+# -> {"token":"...","refresh_token":"<new>","expires_at":...}
+# reusing $REFRESH again -> 401 {"error":"invalid_refresh_token"}
+
+# 3) logout revokes a refresh token (204); access token stays valid until expiry
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
+  -d "{\"refresh_token\":\"$REFRESH\"}" http://127.0.0.1:8080/api/auth/logout
+
+# 4) logout-all bumps the user's token version -> all access tokens die at once
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $ACCESS" \
+  http://127.0.0.1:8080/api/auth/logout-all
+
+# 5) admin force logout of another user (revokes refresh + bumps token version)
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/users
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8080/api/users/<id>/sessions
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $ADMIN" \
+  http://127.0.0.1:8080/api/users/<id>/logout   # 204
+# self force-logout -> 400 self_protected (use /api/auth/logout-all instead)
+```
+
+Notes:
+
+- Access-token validation also checks the user's `token_version` and `active`
+  flag; a bump (logout-all / admin force-logout / admin password change) makes
+  every already-issued access token return `401 unauthorized` immediately.
+- `GET /api/users/{id}/sessions` (admin) lists active refresh sessions
+  (`id`, `created_at`, `expires_at`, `ip`, `user_agent`); sessions disappear
+  after logout/all/force-logout.
+- Defaults: `ACCESS_TOKEN_TTL_SECONDS=3600`, `REFRESH_TOKEN_TTL_SECONDS=604800`;
+  memory mode loses sessions on restart (PostgreSQL mode persists them).
+- `smoke.sh` verifies the whole lifecycle (steps 43–46).
+
+## 12. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

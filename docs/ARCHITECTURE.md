@@ -156,7 +156,17 @@
 | 安全头 | `securityHeaders` 中间件 | nosniff / DENY / no-referrer / Permissions-Policy |
 | HTTPS | `deploy/nginx-tls.conf` + OPERATIONS | HSTS、TLS1.2/1.3、反代头传递（X-Forwarded-For 用于限流计数） |
 
-## 16. P1 建议优先级
+## 16. P11.0 已落地（会话生命周期）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| Access 短效 | `auth.Service` TTL（`ACCESS_TOKEN_TTL_SECONDS`） | JWT 含 token_version（`ver`） |
+| Refresh 轮换 | `refresh_tokens` 表 + SHA-256 哈希 | 每次刷新吊销旧 token 并签发新 token；重用旧 token → 401 |
+| 会话吊销 | `RevokeUserSessions` + `RevokeUserRefreshTokens` | logout-all / 强制下线 / 改密均递增版本并吊销 refresh |
+| 认证中间件 | 每次请求校验用户版本/active | 版本不匹配或停用 → 401；角色/区域取最新账号数据 |
+| 前端 | 401 → refresh 一次 → 重试/登出 | 用户页强制下线 + 在线会话数 |
+
+## 17. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

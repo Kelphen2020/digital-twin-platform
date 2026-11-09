@@ -178,7 +178,32 @@ export interface AuthUser {
 export interface LoginResponse {
   token: string
   expires_at: string
+  /** P11：refresh token（轮换，服务端只存哈希）。 */
+  refresh_token?: string
+  /** P11：refresh token 过期时间（RFC3339）。 */
+  refresh_expires_at?: string
   user: AuthUser
+}
+
+/** POST /api/auth/refresh（不含 user；refresh_token 为轮换后的新值）。 */
+export interface RefreshResponse {
+  token: string
+  expires_at?: string
+  refresh_token: string
+  refresh_expires_at?: string
+}
+
+/** GET /api/users/{id}/sessions（admin）。 */
+export interface UserSession {
+  id: string
+  created_at: string
+  expires_at: string
+  ip: string
+  user_agent: string
+}
+
+export interface UserSessionsResponse {
+  items: UserSession[]
 }
 
 /** 前端可判定的操作权限键（与后端角色矩阵一致）。 */

@@ -61,6 +61,8 @@ func main() {
 	server.SetTrackSample(cfg.WSTrackSample)
 	server.SetIngestGuard(api.NewRateLimiter(cfg.IngestRateLimit, cfg.IngestBurst), cfg.MaxBodyBytes)
 	server.SetLoginGuard(cfg.LoginMaxFailures, time.Duration(cfg.LoginLockoutSeconds)*time.Second)
+	authService.SetAccessTTL(time.Duration(cfg.AccessTokenTTLSeconds) * time.Second)
+	server.SetSessionTTL(time.Duration(cfg.RefreshTokenTTLSeconds) * time.Second)
 
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)

@@ -1010,3 +1010,67 @@ func (p *Postgres) ReEscalateStale(ctx context.Context, before time.Time, severi
 	}
 	return events, rows.Err()
 }
+
+func (p *Postgres) CreateRefreshToken(ctx context.Context, token model.RefreshToken) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at, revoked, ip, user_agent)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		token.ID, token.UserID, token.TokenHash, token.ExpiresAt, token.CreatedAt,
+		token.Revoked, token.IP, token.UserAgent)
+	return err
+}
+
+func (p *Postgres) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error) {
+	token, err := scanRefreshToken(p.pool.QueryRow(ctx, refreshSelect+` WHERE token_hash=$1`, tokenHash))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return model.RefreshToken{}, false, nil
+		}
+		return model.RefreshToken{}, false, err
+	}
+	return token, true, nil
+}
+
+func (p *Postgres) RevokeRefreshToken(ctx context.Context, id string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked=true WHERE id=$1`, id)
+	return err
+}
+
+func (p *Postgres) RevokeUserRefreshTokens(ctx context.Context, userID string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked=true WHERE user_id=$1`, userID)
+	return err
+}
+
+func (p *Postgres) ListUserRefreshTokens(ctx context.Context, userID string) ([]model.RefreshToken, error) {
+	rows, err := p.pool.Query(ctx, refreshSelect+` WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tokens := make([]model.RefreshToken, 0, 4)
+	for rows.Next() {
+		token, err := scanRefreshToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, rows.Err()
+}
+
+const refreshSelect = `SELECT id, user_id, token_hash, expires_at, created_at, revoked, ip, user_agent FROM refresh_tokens`
+
+func scanRefreshToken(row rowScanner) (model.RefreshToken, error) {
+	var token model.RefreshToken
+	err := row.Scan(&token.ID, &token.UserID, &token.TokenHash, &token.ExpiresAt,
+		&token.CreatedAt, &token.Revoked, &token.IP, &token.UserAgent)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.RefreshToken{}, ErrNotFound
+		}
+		return model.RefreshToken{}, err
+	}
+	token.ExpiresAt = token.ExpiresAt.UTC()
+	token.CreatedAt = token.CreatedAt.UTC()
+	return token, nil
+}

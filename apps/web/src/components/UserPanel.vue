@@ -12,6 +12,8 @@ const {
   createManagedUser,
   updateManagedUser,
   deleteManagedUser,
+  loadUserSessions,
+  forceLogoutManagedUser,
 } = useAdminStore()
 const { state: authState } = useAuthStore()
 const duty = useDutyStore()
@@ -33,6 +35,14 @@ const dialogMode = ref<DialogMode | null>(null)
 const editingUser = ref<ManagedUser | null>(null)
 const formError = ref('')
 const confirmingId = ref<string | null>(null)
+const confirmingLogoutId = ref<string | null>(null)
+
+const latestSession = computed(() => {
+  if (state.userSessions.length === 0) return null
+  return [...state.userSessions].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  )[0]
+})
 
 const form = reactive<{
   username: string
@@ -79,6 +89,7 @@ function openCreate(): void {
 function openEdit(user: ManagedUser): void {
   formError.value = ''
   editingUser.value = user
+  void loadUserSessions(user.id)
   form.username = user.username
   form.display_name = user.display_name
   form.role = user.role
@@ -160,6 +171,18 @@ async function confirmDelete(user: ManagedUser): Promise<void> {
   if (user.username === authState.user?.username) return
   confirmingId.value = null
   await deleteManagedUser(user.id)
+}
+
+function requestForceLogout(user: ManagedUser): void {
+  if (user.username === authState.user?.username) return
+  confirmingLogoutId.value = user.id
+}
+
+async function confirmForceLogout(user: ManagedUser): Promise<void> {
+  if (user.username === authState.user?.username) return
+  confirmingLogoutId.value = null
+  await forceLogoutManagedUser(user.id)
+  if (editingUser.value?.id === user.id) void loadUserSessions(user.id)
 }
 
 function userAreas(user: ManagedUser): string {
@@ -244,6 +267,26 @@ onMounted(() => {
               </button>
               <button class="ghost-btn" @click="confirmingId = null">取消</button>
             </template>
+            <template v-if="!isSelfUser(user)">
+              <button
+                v-if="confirmingLogoutId !== user.id"
+                class="ghost-btn"
+                :title="'强制下线：吊销该用户全部会话（' + user.username + '）'"
+                @click="requestForceLogout(user)"
+              >
+                强制下线
+              </button>
+              <template v-else>
+                <button
+                  class="danger-btn compact-btn"
+                  :disabled="state.forceLogoutId !== null"
+                  @click="confirmForceLogout(user)"
+                >
+                  确认下线
+                </button>
+                <button class="ghost-btn" @click="confirmingLogoutId = null">取消</button>
+              </template>
+            </template>
           </div>
         </article>
       </template>
@@ -312,6 +355,27 @@ onMounted(() => {
                 <span>{{ area.name }}</span>
               </label>
             </div>
+          </div>
+
+          <div v-if="dialogMode === 'edit' && editingUser" class="user-sessions">
+            <span class="user-sessions-title">在线会话</span>
+            <span v-if="state.userSessionsLoading" class="user-sessions-meta">正在加载会话…</span>
+            <span v-else-if="state.userSessionsError" class="form-error">
+              会话加载失败：{{ state.userSessionsError }}
+            </span>
+            <template v-else-if="state.userSessions.length === 0">
+              <span class="user-sessions-meta">无有效会话</span>
+            </template>
+            <template v-else>
+              <span class="user-sessions-meta">{{ state.userSessions.length }} 个会话</span>
+              <span v-if="latestSession" class="user-sessions-meta">
+                最近 IP：<b class="mono">{{ latestSession.ip }}</b> ·
+                最近创建：{{ formatDateTime(latestSession.created_at) }}
+              </span>
+              <span v-if="latestSession?.user_agent" class="user-sessions-ua" :title="latestSession.user_agent">
+                {{ latestSession.user_agent }}
+              </span>
+            </template>
           </div>
 
           <p v-if="formError" class="form-error">{{ formError }}</p>

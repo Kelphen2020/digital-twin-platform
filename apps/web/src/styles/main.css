@@ -3565,3 +3565,47 @@ dd {
     width: 84px;
   }
 }
+
+
+/* ============================================================
+   P11.0 扩展：在线会话 / 强制下线
+   ============================================================ */
+
+.user-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(8, 20, 38, 0.45);
+}
+
+.user-sessions-title {
+  font-size: 10.5px;
+  color: #7dd3fc;
+}
+
+.user-sessions-meta {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.user-sessions-meta b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.user-sessions-ua {
+  overflow: hidden;
+  font-size: 9.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-faint);
+}
+
+.session-renew-hint {
+  font-size: 10px;
+  color: var(--text-faint);
+}

@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P10.0）
+# 数字孪生安防平台 · Web 前端（P11.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,13 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 会话自动续期 / 强制下线（P11）
+
+- **令牌生命周期**：登录响应的 `token` + `refresh_token` + `refresh_expires_at` 分别持久化（`twin.auth.token` / `twin.auth.refresh` / `twin.auth.refresh_expires_at`）。access token 过期返回 **401** 时，api 客户端**单飞**（同一时刻只发一个 refresh）调用 `POST /api/auth/refresh`，持久化轮换后的新 access+refresh 并**重试原请求一次**；刷新失败清理本地会话并提示「登录已过期，请重新登录」。每个请求最多刷新一次，避免刷新风暴/死循环。
+- **登出**：点击「退出」先调用 `POST /api/auth/logout`（携带 refresh token，幂等 204）再清理令牌；登录页与新用户菜单提示「会话有效期 1 小时，过期前自动续期（refresh token 7 天）」。
+- **管理端会话**：admin 用户列表新增「强制下线」（两步确认，`POST /api/users/{id}/logout`），当前登录账号隐藏该操作（self 保护）；编辑用户弹窗通过 `GET /api/users/{id}/sessions` 展示**有效会话数、最近 IP、最近创建时间与 User-Agent**。
+- **失效处理**：强制下线、管理员修改密码、logout-all 会使 token 版本递增；旧 access 请求 → 自动 refresh，若 refresh 已被吊销 → 清会话回登录页并 Toast「登录已过期」，P0–P10 现有 401 自动登出逻辑平滑生效。
+
 ### 登录安全 / 密码策略 / 审计导出（P10）
 
 - **登录防爆破**：同一 `username + IP` 连续失败达到 `LOGIN_MAX_FAILURES`（默认 5）后锁定 `LOGIN_LOCKOUT_SECONDS`（默认 60s）；后端返回 `429 too_many_attempts` + `Retry-After` 秒。登录页读取 `Retry-After`，显示中文倒计时「登录失败次数过多，请在 N 秒后重试」，锁定期间提交按钮禁用/显示「锁定中 · Ns」，到期自动恢复；**演示账号一键填入按钮保留**。
@@ -206,6 +213,10 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/duty/current?area_id=&at=` | 已登录 | 区域当前值班组 + 当前班次（P8） |
 | GET | `/api/site` | 已登录 | 站点范围 / glTF 模型清单 / 底图配置 |
 | GET/POST | `/api/users` | admin | 用户列表 / 新建用户（P10 密码策略） |
+| POST | `/api/auth/refresh` | 已登录（refresh） | 轮换 access + refresh token |
+| POST | `/api/auth/logout` | 已登录 | 吊销当前 refresh token |
+| GET | `/api/users/{id}/sessions` | admin | 用户有效 refresh 会话（IP/UA/时间） |
+| POST | `/api/users/{id}/logout` | admin | 强制下线（吊销全部 refresh + token 版本递增） |
 | GET | `/api/audit/export` | admin | 审计 CSV（from/to/action/actor/limit，text/csv） |
 | PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
@@ -278,6 +289,7 @@ apps/web/
 | 用户与账号 | **实时**：`/api/users` CRUD（密码不返回；角色/区域下次登录生效；停用即禁止登录） |
 | WS 连接质量 / 限流 | **实时**：WS 帧计数（前端统计）、REST 429 `rate_limited` → 中文 Toast；`INGEST_RATE_LIMIT` 默认 0 |
 | 登录锁定 / 密码策略 / 审计导出 | **实时**：`429 too_many_attempts`+`Retry-After`、用户密码 `400` 策略、`GET /api/audit/export` CSV |
+| 令牌续期 / 会话吊销 | **实时**：`POST /api/auth/refresh` 轮换、`/api/auth/logout`、管理员 `/api/users/{id}/sessions` 与 `/logout` |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -325,6 +337,16 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P11：刷新令牌轮换 + 强制下线（admin）
+LOGIN=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"Admin@123456"}' http://localhost:8080/api/auth/login)
+echo "$LOGIN" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("access", bool(d.get("token")), "refresh", bool(d.get("refresh_token")), "exp", d.get("refresh_expires_at"))'
+REFRESH=$(echo "$LOGIN" | python3 -c 'import json,sys;print(json.load(sys.stdin)["refresh_token"])')
+curl -s -X POST -H 'Content-Type: application/json' -d "{\"refresh_token\":\"$REFRESH\"}" \
+  http://localhost:8080/api/auth/refresh | head -c 300
+# 管理端查看会话 / 强制下线
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/users/usr_operator/sessions
 
 # P10：登录防爆破（用 throwaway 用户名触发 429 + Retry-After）
 for i in 1 2 3 4 5; do curl -s -o /dev/null -X POST -H 'Content-Type: application/json' \
@@ -420,3 +442,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - 重连次数自页面加载/上次登录起算；`INGEST_RATE_LIMIT` 默认 0（关闭），未开启时不会出现 429。
 - P10 登录锁定按 `username + 客户端 IP` 计数，锁定 60s；前端倒计时取 `Retry-After`，锁定期间无法提交任何账号登录（可刷新页面重置前端倒计时，但后端锁定仍生效）。
 - P10 密码策略同时作用于创建与修改；内置种子口令均满足；审计导出默认 `limit=5000`（后端上限 20000），CSV 为 UTF-8、detail 为 JSON 字符串。
+- P11 access token 默认 1h、refresh token 7 天；refresh 为一次性轮换（旧 refresh 立即失效），api 客户端已做单飞与“每请求仅重试一次”。
+- 强制下线/修改密码/logout-all 递增 token 版本，旧 access 立即失效；当前页面在下一次 API 401 时自动刷新或回登录页（WS 断线由既有重连逻辑处理）。
+- 自操作保护：admin 无法通过用户列表强制下线自己（`400 self_protected`），请使用「退出」；`POST /api/auth/logout-all` 未提供独立 UI 按钮。
