@@ -139,6 +139,20 @@
 #   done,issue, route/schedule deletion and admin login.
 #   Total: 230 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0).
 #
+# P15.0 additions (docs/API_P15.md):
+#   escalation auto_patrol=true (after_seconds=1, auto_dispatch=false) makes a
+#   stale CAM-001/intrusion escalation create exactly one pending patrol
+#   execution (GET /api/patrol/executions?event_id=..., schedule_id empty,
+#   route_id = the cam_001 route, note contains 告警联动); audit
+#   patrol.execution.created has detail.source=event and the execution is in
+#   the normal list; dedupe: a wait + a forced re-escalation (second_after_
+#   seconds=1) keep exactly one pending execution and audit
+#   patrol.execution.skipped reason=duplicate; cleanup restores escalation
+#   defaults (after 300, auto_dispatch true, second 0, auto_patrol false),
+#   claims+completes the execution to done, admin purges done, route deleted
+#   and admin login verified.
+#   Total: 246 checks (21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0 + 16 P15.0).
+#
 # Dependencies: bash, curl, python3 only.
 #
 # Usage:
@@ -172,6 +186,7 @@ P13_ROUTE_IDS_FILE="$TMP/p13_route_ids.txt"
 P13_SCHEDULE_IDS_FILE="$TMP/p13_schedule_ids.txt"
 P14_ROUTE_IDS_FILE="$TMP/p14_route_ids.txt"
 P14_SCHEDULE_IDS_FILE="$TMP/p14_schedule_ids.txt"
+P15_ROUTE_IDS_FILE="$TMP/p15_route_ids.txt"
 
 cleanup() {
   if [ -n "${WS_RECEIVER_PID:-}" ]; then
@@ -263,6 +278,19 @@ print(" ".join(str(cam.get("id")) for cam in items if isinstance(cam, dict) and 
         curl -s -o /dev/null -m 3 -X DELETE -H "Authorization: Bearer $admin_token" \
           "$API_BASE/api/patrol/routes/$p14_route" 2>/dev/null || true
       done < "$P14_ROUTE_IDS_FILE"
+    fi
+    if [ -f "$P15_ROUTE_IDS_FILE" ]; then
+      while IFS= read -r p15_route; do
+        [ -n "$p15_route" ] || continue
+        curl -s -o /dev/null -m 3 -X DELETE -H "Authorization: Bearer $admin_token" \
+          "$API_BASE/api/patrol/routes/$p15_route" 2>/dev/null || true
+      done < "$P15_ROUTE_IDS_FILE"
+    fi
+    if [ -f "${P15_CAM001_RULES_FILE:-$TMP/p15_cam001_rules.json}" ] && [ -n "${admin_token:-}" ]; then
+      curl -s -o /dev/null -m 3 -X PUT -H "Authorization: Bearer $admin_token" \
+        -H 'Content-Type: application/json' \
+        --data "$(cat "$TMP/p15_cam001_rules.json")" \
+        "$API_BASE/api/cameras/cam_001/rules" 2>/dev/null || true
     fi
     if [ -f "$TMP/p8_deactivated_groups.txt" ]; then
       while IFS= read -r p8_gid; do
@@ -724,7 +752,7 @@ fi
 # ===========================================================================
 # 1. health (exempt from auth, retry briefly while the API starts)
 # ===========================================================================
-step "1/55 health"
+step "1/58 health"
 health_code=""
 attempt=0
 while [ "$attempt" -lt 5 ]; do
@@ -758,7 +786,7 @@ fi
 # ===========================================================================
 # 2. P2 auth: unauthenticated 401, admin login, GET /api/auth/me
 # ===========================================================================
-step "2/55 auth (P2: no-token 401, login, /api/auth/me)"
+step "2/58 auth (P2: no-token 401, login, /api/auth/me)"
 noauth_code="$(http_get "/api/cameras")"
 if [ "$noauth_code" = "401" ]; then
   noauth_error="$(python3 -c 'import json,sys
@@ -800,7 +828,7 @@ fi
 # ===========================================================================
 # 3. camera inventory: >= 1 camera and the six seeded codes CAM-001..CAM-006
 # ===========================================================================
-step "3/55 cameras"
+step "3/58 cameras"
 cameras_code="$(http_get "/api/cameras" "$admin_token")"
 if [ "$cameras_code" != "200" ]; then
   fail "GET /api/cameras -> HTTP ${cameras_code:-none}"
@@ -856,7 +884,7 @@ fi
 # ===========================================================================
 # 4. ingest one high-confidence person detection for CAM-001 (token-free)
 # ===========================================================================
-step "4/55 ingest detection (P0, token-free machine entry)"
+step "4/58 ingest detection (P0, token-free machine entry)"
 ingest_code=""
 event_id=""
 ingest_attempt=0
@@ -901,7 +929,7 @@ fi
 # ===========================================================================
 # 5. poll GET /api/events?limit=20 until the event is visible (<= 5 s)
 # ===========================================================================
-step "5/55 event appears in /api/events (<= 5s)"
+step "5/58 event appears in /api/events (<= 5s)"
 found_id=""
 attempt=0
 while [ "$attempt" -lt 10 ]; do
@@ -959,7 +987,7 @@ fi
 # ===========================================================================
 # 6. ack the event (admin token; operator RBAC is covered in step 15)
 # ===========================================================================
-step "6/55 ack event (P0)"
+step "6/58 ack event (P0)"
 if [ -n "$found_id" ]; then
   ack_code="$(http_post_json "/api/events/$found_id/ack" '{}' "$admin_token")"
   if python3 - "$TMP/body.json" "$ack_code" <<'PY'
@@ -987,7 +1015,7 @@ fi
 # ===========================================================================
 # 7. /metrics exposes the required counters (auth-exempt)
 # ===========================================================================
-step "7/55 metrics"
+step "7/58 metrics"
 metrics_code="$(curl -s -o "$TMP/metrics.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_code" != "200" ]; then
   fail "GET /metrics -> HTTP ${metrics_code:-none}"
@@ -1009,7 +1037,7 @@ fi
 # ===========================================================================
 # 8. P1.0 calibration: solve -> PUT -> GET camera shows calibration (admin)
 # ===========================================================================
-step "8/55 calibration (P1: solve -> PUT -> GET camera, admin)"
+step "8/58 calibration (P1: solve -> PUT -> GET camera, admin)"
 solve_payload='{"camera_id":"cam_001","points":[{"px":320,"py":800,"x":-84.0,"y":-30.0},{"px":1600,"py":800,"x":-20.0,"y":-30.0},{"px":320,"py":280,"x":-84.0,"y":-56.0},{"px":1600,"py":280,"x":-20.0,"y":-56.0},{"px":960,"py":540,"x":-52.0,"y":-43.0}]}'
 if [ -n "$cam1_id" ]; then
   solve_payload="$(python3 - "$TMP/cameras.json" <<'PY'
@@ -1136,7 +1164,7 @@ fi
 # ===========================================================================
 # 9. P1.0 tracks: ingest a detection with track_id -> GET /api/tracks returns it
 # ===========================================================================
-step "9/55 tracks (P1: ingest with track_id -> GET /api/tracks)"
+step "9/58 tracks (P1: ingest with track_id -> GET /api/tracks)"
 track_id="trk-smoke-$(python3 -c 'import time; print(int(time.time() * 1000))')"
 track_payload="$(printf '{"camera_code":"CAM-001","detections":[{"class":"person","confidence":0.77,"bbox":[0.40,0.30,0.60,0.80],"track_id":"%s","world":%s}]}' "$track_id" "$world_json")"
 track_ingest_code="$(http_post_json "/api/ingest/detections" "$track_payload")"
@@ -1188,7 +1216,7 @@ fi
 # ===========================================================================
 # 10. P1.0 workflow: create event -> GET detail with empty actions
 # ===========================================================================
-step "10/55 event workflow (P1: create -> detail actions empty)"
+step "10/58 event workflow (P1: create -> detail actions empty)"
 wf_event_id=""
 attempt=0
 while [ "$attempt" -lt 3 ] && [ -z "$wf_event_id" ]; do
@@ -1241,7 +1269,7 @@ fi
 # ===========================================================================
 # 11. P1.0 workflow: dispatch (no status change) then close
 # ===========================================================================
-step "11/55 event workflow (P1: dispatch -> close)"
+step "11/58 event workflow (P1: dispatch -> close)"
 if [ -n "$wf_event_id" ]; then
   dispatch_code="$(http_post_json "/api/events/$wf_event_id/dispatch" '{"target":"安保A组","note":"请5分钟内到场"}' "$admin_token")"
 else
@@ -1295,7 +1323,7 @@ fi
 # ===========================================================================
 # 12. P1.0 workflow: event detail now lists the dispatch + close actions
 # ===========================================================================
-step "12/55 event detail shows actions (P1)"
+step "12/58 event detail shows actions (P1)"
 if [ -n "$wf_event_id" ]; then
   wf_detail2_code="$(http_get "/api/events/$wf_event_id" "$admin_token")"
 else
@@ -1335,7 +1363,7 @@ fi
 # ===========================================================================
 # 13. P1.0 audit log records the write operations
 # ===========================================================================
-step "13/55 audit (P1)"
+step "13/58 audit (P1)"
 audit_code="$(http_get '/api/audit?limit=100' "$admin_token")"
 if python3 - "$TMP/body.json" "$audit_code" <<'PY'
 import json, sys
@@ -1362,7 +1390,7 @@ fi
 # ===========================================================================
 # 14. P1.0 stats summary + events CSV export
 # ===========================================================================
-step "14/55 stats (P1: summary + events.csv)"
+step "14/58 stats (P1: summary + events.csv)"
 summary_code="$(http_get '/api/stats/summary' "$admin_token")"
 if python3 - "$TMP/body.json" "$summary_code" <<'PY'
 import json, sys
@@ -1406,7 +1434,7 @@ fi
 # ===========================================================================
 # 15. P2.0 RBAC: viewer read-only, operator ack; prepare event for orders
 # ===========================================================================
-step "15/55 RBAC (P2: viewer read-only, operator ack)"
+step "15/58 RBAC (P2: viewer read-only, operator ack)"
 read -r viewer_login_code viewer_token < <(login_user viewer 'Viewer@123')
 read -r operator_login_code operator_token < <(login_user operator 'Operator@123')
 printf '      logins: viewer=%s operator=%s\n' "$viewer_login_code" "$operator_login_code"
@@ -1480,7 +1508,7 @@ fi
 # ===========================================================================
 # 16. P2.0 orders: create -> processing -> done (closed_at) -> GET
 # ===========================================================================
-step "16/55 orders (P2: create -> processing -> done -> GET)"
+step "16/58 orders (P2: create -> processing -> done -> GET)"
 order_id=""
 if [ -n "$rbac_event_id" ]; then
   order_payload="$(printf '{"event_id":"%s","title":"人员入侵 · 测试工单","priority":"high","assignee":"安保A组","note":"5分钟内到场"}' "$rbac_event_id")"
@@ -1577,7 +1605,7 @@ fi
 # ===========================================================================
 # 17. P2.0 camera rules (admin): high threshold suppresses events, restore
 # ===========================================================================
-step "17/55 camera rules (P2: confidence_threshold effect, restore defaults)"
+step "17/58 camera rules (P2: confidence_threshold effect, restore defaults)"
 rules_high='{"confidence_threshold":0.99,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]}'
 rules_default='{"confidence_threshold":0.6,"dedupe_seconds":5,"enabled_classes":["person","vehicle","intrusion","smoke","no_helmet"],"roi":null}'
 if [ -n "$cam1_id" ]; then
@@ -1667,7 +1695,7 @@ fi
 # ===========================================================================
 # 18. P2.0 operator camera scope + audit of P2 write operations
 # ===========================================================================
-step "18/55 operator camera scope + P2 audit"
+step "18/58 operator camera scope + P2 audit"
 if [ -n "$cam2_id" ]; then
   scope_out_code="$(http_patch_json "/api/cameras/$cam2_id" '{"status":"degraded"}' "$operator_token")"
 else
@@ -1745,7 +1773,7 @@ fi
 # ===========================================================================
 # 19. P3.0 data-level filtering (operator scoped reads, admin-only lists)
 # ===========================================================================
-step "19/55 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
+step "19/58 data filtering (P3: operator scoped reads, admin-only audit/notifications)"
 
 op_cams_code="$(http_get "/api/cameras" "$operator_token")"
 op_cams=""
@@ -1865,7 +1893,7 @@ fi
 # ===========================================================================
 # 20. P3.0 escalation settings (admin): baseline reset, PUT, GET reflects
 # ===========================================================================
-step "20/55 escalation settings (P3: PUT -> GET reflects)"
+step "20/58 escalation settings (P3: PUT -> GET reflects)"
 # Baseline reset so an interrupted previous run cannot affect the checks.
 http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token" >/dev/null
@@ -1916,7 +1944,7 @@ fi
 # ===========================================================================
 # 21. P3.0 escalation effect: stale warn event gets escalated_at (<= 25 s)
 # ===========================================================================
-step "21/55 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
+step "21/58 escalation effect (P3: stale warn event -> escalated_at <= 25s)"
 # The stale event must carry occurred_at = now-10s, but the normal 5 s dedupe
 # window compares that timestamp against the last event for the same
 # camera+class: a concurrently running simulator could make a backdated event
@@ -2071,7 +2099,7 @@ fi
 # ===========================================================================
 # 22. P3.0 notifications + webhook delivery (local receiver)
 # ===========================================================================
-step "22/55 notifications + webhook (P3: invalid URL 400, delivery ok)"
+step "22/58 notifications + webhook (P3: invalid URL 400, delivery ok)"
 if start_receiver; then
   pass "webhook receiver listening on http://127.0.0.1:$WS_RECEIVER_PORT (log=$WS_RECEIVER_LOG)"
 else
@@ -2227,7 +2255,7 @@ fi
 # ===========================================================================
 # 23. P3.0 restore defaults + receiver cleanup
 # ===========================================================================
-step "23/55 restore P3 defaults + receiver cleanup"
+step "23/58 restore P3 defaults + receiver cleanup"
 restore_esc_code="$(http_put_json "/api/settings/escalation" \
   '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true}' "$admin_token")"
 if python3 - "$TMP/body.json" "$restore_esc_code" <<'PY'
@@ -2292,7 +2320,7 @@ fi
 # ===========================================================================
 # 24. P4.0 duty groups: CRUD + /api/duty/current + RBAC
 # ===========================================================================
-step "24/55 duty groups (P4: CRUD + /api/duty/current + RBAC)"
+step "24/58 duty groups (P4: CRUD + /api/duty/current + RBAC)"
 duty_group_name="东门值班组"
 duty_group_payload='{"name":"东门值班组","areas":["area_gate","area_parking"],"operators":["operator"],"active":true}'
 
@@ -2429,7 +2457,7 @@ fi
 # ===========================================================================
 # 25. P4.0 auto-dispatch: escalation -> duty-group order
 # ===========================================================================
-step "25/55 auto-dispatch (P4: escalation creates order for duty group)"
+step "25/58 auto-dispatch (P4: escalation creates order for duty group)"
 auto_esc_payload='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true}'
 auto_esc_code="$(http_put_json "/api/settings/escalation" "$auto_esc_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$auto_esc_code" <<'PY'
@@ -2657,7 +2685,7 @@ fi
 # ===========================================================================
 # 26. P4.0 notification retry: receiver --fail-first 2, max_attempts=3
 # ===========================================================================
-step "26/55 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
+step "26/58 notification retry (P4: --fail-first 2, max_attempts=3, backoff 1s)"
 # Keep other event traffic out of the retry/silence checks (shared demo env may
 # run the simulator concurrently); restored at the end of step 27.
 isolate_events
@@ -2808,7 +2836,7 @@ fi
 # ===========================================================================
 # 27. P4.0 notification silence: silence_seconds=60 suppresses duplicates
 # ===========================================================================
-step "27/55 notification silence (P4: silence_seconds=60, suppressed metric)"
+step "27/58 notification silence (P4: silence_seconds=60, suppressed metric)"
 silence_notif_payload="$(printf '{"enabled":true,"webhook_url":"http://127.0.0.1:%s/hook","format":"generic","min_severity":"warn","timeout_seconds":5,"max_attempts":3,"backoff_seconds":1,"silence_seconds":60}' "$WS_RECEIVER_PORT")"
 silence_put_code="$(http_put_json "/api/settings/notifications" "$silence_notif_payload" "$admin_token")"
 if python3 - "$TMP/body.json" "$silence_put_code" <<'PY'
@@ -3019,7 +3047,7 @@ release_events
 # ===========================================================================
 # 28. P4.0 metrics + cleanup
 # ===========================================================================
-step "28/55 P4 metrics + cleanup"
+step "28/58 P4 metrics + cleanup"
 metrics_p4_code="$(curl -s -o "$TMP/metrics_p4.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 if [ "$metrics_p4_code" = "200" ] \
   && grep -q 'dsh_twin_notifications_total{result="ok"}' "$TMP/metrics_p4.txt" \
@@ -3199,7 +3227,7 @@ fi
 # ===========================================================================
 # 29. P5.0 bus status: admin shape + RBAC
 # ===========================================================================
-step "29/55 bus status (P5: admin status shape, RBAC)"
+step "29/58 bus status (P5: admin status shape, RBAC)"
 bus_status_code="$(http_get "/api/bus/status" "$admin_token")"
 bus_status_summary=""
 bus_next_offset=""
@@ -3257,7 +3285,7 @@ fi
 # ===========================================================================
 # 30. P5.0 bus publish: token-free ingest advances published/next_offset
 # ===========================================================================
-step "30/55 bus publish (P5: token-free ingest advances the bus)"
+step "30/58 bus publish (P5: token-free ingest advances the bus)"
 wait_dedup_event CAM-002 vehicle
 bus_ingest_payload='{"camera_code":"CAM-002","detections":[{"class":"vehicle","confidence":0.91,"bbox":[0.40,0.30,0.60,0.80]}]}'
 bus_ingest_code="$(http_post_json "/api/ingest/detections" "$bus_ingest_payload")"
@@ -3321,7 +3349,7 @@ fi
 # ===========================================================================
 # 31. P5.0 replay: replay the freshly published offset
 # ===========================================================================
-step "31/55 bus replay (P5: replay freshly published offset)"
+step "31/58 bus replay (P5: replay freshly published offset)"
 bus_replay_from="${bus_next_offset:-0}"
 bus_replay_to=$((bus_replay_from + 1))
 bus_replay_payload="$(printf '{"from_offset":%s,"to_offset":%s,"notify":false,"limit":10}' "$bus_replay_from" "$bus_replay_to")"
@@ -3394,7 +3422,7 @@ fi
 # ===========================================================================
 # 32. P5.0 replay validation: invalid range 400, non-admin 403
 # ===========================================================================
-step "32/55 bus replay validation (P5: 400 invalid range, 403 non-admin)"
+step "32/58 bus replay validation (P5: 400 invalid range, 403 non-admin)"
 invalid_replay_code="$(http_post_json "/api/bus/replay" \
   '{"from_offset":100,"to_offset":10,"notify":false,"limit":10}' "$admin_token")"
 if [ "$invalid_replay_code" = "400" ]; then
@@ -3420,7 +3448,7 @@ fi
 # ===========================================================================
 # 33. P5.0 bus metrics
 # ===========================================================================
-step "33/55 bus metrics (P5)"
+step "33/58 bus metrics (P5)"
 bus_metrics_code="$(curl -s -o "$TMP/metrics_p5.txt" -w '%{http_code}' -m 5 "$API_BASE/metrics" 2>/dev/null || true)"
 bus_metrics_summary="$(python3 - "$TMP/metrics_p5.txt" <<'PY'
 import sys
@@ -3457,7 +3485,7 @@ fi
 # ===========================================================================
 # 34. P6.0 site config: admin/viewer reads + unauthenticated 401
 # ===========================================================================
-step "34/55 site config (P6: admin/viewer reads, unauthenticated 401)"
+step "34/58 site config (P6: admin/viewer reads, unauthenticated 401)"
 site_admin_code="$(http_get "/api/site" "$admin_token")"
 site_admin_summary=""
 if [ "$site_admin_code" = "200" ]; then
@@ -3548,7 +3576,7 @@ fi
 # ===========================================================================
 # 35. P7.0 user management: admin CRUD, RBAC, self-protection, scope, audit
 # ===========================================================================
-step "35/55 user management (P7: CRUD, RBAC, self-protection, scope, audit)"
+step "35/58 user management (P7: CRUD, RBAC, self-protection, scope, audit)"
 p7_ts="$(python3 -c 'import time; print(int(time.time()))')"
 smoke_username="smoke_user_$p7_ts"
 smoke_password="Smoke@12345"
@@ -3863,7 +3891,7 @@ fi
 # ===========================================================================
 # 36. P8.0 duty shifts: rotation=operator group + current shift resolution
 # ===========================================================================
-step "36/55 duty shifts (P8: rotation/shift group, current duty)"
+step "36/58 duty shifts (P8: rotation/shift group, current duty)"
 # Other actors may have created active duty groups for area_gate; temporarily
 # deactivate them so the rotation/shift checks resolve deterministically to the
 # group created below (restored in the EXIT trap and in step 39).
@@ -3891,7 +3919,7 @@ PY
   done
 fi
 
-duty_shift_payload='{"name":"P8值班组","areas":["area_gate"],"operators":["operator","viewer"],"active":true,"rotation":"operator","shifts":[{"name":"全天","start":"00:00","end":"23:59","weekdays":[1,2,3,4,5,6,7],"operators":["operator","viewer"]}]}'
+duty_shift_payload='{"name":"P8值班组","areas":["area_gate"],"operators":["operator","viewer"],"active":true,"rotation":"operator","shifts":[{"name":"全天","start":"00:00","end":"00:00","weekdays":[1,2,3,4,5,6,7],"operators":["operator","viewer"]}]}'
 shift_create_code="$(http_post_json "/api/duty/groups" "$duty_shift_payload" "$admin_token")"
 DUTY_GROUP_ID=""
 if [ "$shift_create_code" = "201" ]; then
@@ -3962,7 +3990,7 @@ fi
 # ===========================================================================
 # 37. P8.0 rotation: auto-dispatch assignee rotates over shift operators
 # ===========================================================================
-step "37/55 rotation auto-dispatch (P8: assignee rotates over shift operators)"
+step "37/58 rotation auto-dispatch (P8: assignee rotates over shift operators)"
 # First isolate camera event traffic (a concurrently running simulator would
 # otherwise keep creating/auto-dispatching events and advance the rotation
 # counter unpredictably), then sweep the currently pending warn/critical events
@@ -4162,7 +4190,7 @@ release_events
 # ===========================================================================
 # 38. P8.0 open-order dedupe + second escalation (re_escalated_at)
 # ===========================================================================
-step "38/55 open-order dedupe + re-escalation (P8: second_after_seconds=1)"
+step "38/58 open-order dedupe + re-escalation (P8: second_after_seconds=1)"
 p8_second_settings='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true,"second_after_seconds":1}'
 p8_second_code="$(http_put_json "/api/settings/escalation" "$p8_second_settings" "$admin_token")"
 if python3 - "$TMP/body.json" "$p8_second_code" <<'PY'
@@ -4327,7 +4355,7 @@ fi
 # ===========================================================================
 # 39. P8.0 settings validation + cleanup
 # ===========================================================================
-step "39/55 P8 settings validation + cleanup"
+step "39/58 P8 settings validation + cleanup"
 p8_invalid_low='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":true,"second_after_seconds":-1}'
 p8_invalid_low_code="$(http_put_json "/api/settings/escalation" "$p8_invalid_low" "$admin_token")"
 if [ "$p8_invalid_low_code" = "400" ]; then
@@ -4472,7 +4500,7 @@ fi
 # ===========================================================================
 # 40. P10.0 security headers
 # ===========================================================================
-step "40/55 security headers (P10: nosniff/DENY/no-referrer)"
+step "40/58 security headers (P10: nosniff/DENY/no-referrer)"
 p10_headers_health="$(http_get_with_headers "/api/health")"
 p10_health_headers_summary="$(python3 - "$TMP/headers.txt" "$p10_headers_health" <<'PY'
 import sys
@@ -4552,7 +4580,7 @@ fi
 # ===========================================================================
 # 41. P10.0 login lockout + password policy
 # ===========================================================================
-step "41/55 login lockout + password policy (P10)"
+step "41/58 login lockout + password policy (P10)"
 p10_ts="$(python3 -c 'import time; print(int(time.time()))')"
 p10_lock_username="lock_$p10_ts"
 p10_lock_codes=""
@@ -4654,7 +4682,7 @@ fi
 # ===========================================================================
 # 42. P10.0 audit CSV export + cleanup
 # ===========================================================================
-step "42/55 audit CSV export + cleanup (P10)"
+step "42/58 audit CSV export + cleanup (P10)"
 p10_export_code="$(http_get_with_headers "/api/audit/export" "$admin_token")"
 p10_export_headers_ok="$(python3 - "$TMP/headers.txt" "$p10_export_code" <<'PY'
 import sys
@@ -4721,7 +4749,7 @@ fi
 # ===========================================================================
 # 43. P11.0 refresh-token rotation
 # ===========================================================================
-step "43/55 refresh rotation (P11: login refresh_token, rotate, old reuse 401)"
+step "43/58 refresh rotation (P11: login refresh_token, rotate, old reuse 401)"
 p11_admin_login_code="$(curl -s -o "$TMP/p11_admin_login.json" -w '%{http_code}' -m 5 \
   -X POST -H 'Content-Type: application/json' \
   --data '{"username":"admin","password":"Admin@123456"}' \
@@ -4813,7 +4841,7 @@ fi
 # ===========================================================================
 # 44. P11.0 logout + logout-all (token version bump)
 # ===========================================================================
-step "44/55 logout + logout-all (P11: refresh revocation, token_version bump)"
+step "44/58 logout + logout-all (P11: refresh revocation, token_version bump)"
 p11_logout_payload="$(printf '{"refresh_token":"%s"}' "$p11_new_refresh")"
 p11_logout_code="$(http_post_json "/api/auth/logout" "$p11_logout_payload")"
 if [ "$p11_logout_code" = "204" ]; then
@@ -4901,7 +4929,7 @@ fi
 # ===========================================================================
 # 45. P11.0 password-change invalidation + force logout + sessions
 # ===========================================================================
-step "45/55 password invalidation + force logout + sessions (P11)"
+step "45/58 password invalidation + force logout + sessions (P11)"
 p11_new_password="Smoke@123456"
 if [ -n "$P11_USER_ID" ]; then
   p11_pwd_patch_payload="$(printf '{"password":"%s"}' "$p11_new_password")"
@@ -5021,7 +5049,7 @@ fi
 # ===========================================================================
 # 46. P11.0 cleanup
 # ===========================================================================
-step "46/55 P11 cleanup (delete throwaway user, admin login)"
+step "46/58 P11 cleanup (delete throwaway user, admin login)"
 if [ -n "$P11_USER_ID" ]; then
   p11_del_code="$(http_delete "/api/users/$P11_USER_ID" "$admin_token")"
 else
@@ -5044,7 +5072,7 @@ fi
 # ===========================================================================
 # 47. P12.0 patrol route CRUD + RBAC
 # ===========================================================================
-step "47/55 patrol routes CRUD (P12: create/list/patch, RBAC)"
+step "47/58 patrol routes CRUD (P12: create/list/patch, RBAC)"
 : > "$P12_ROUTE_IDS_FILE"
 p12_route_payload='{"name":"smoke 巡检","waypoints":[{"x":-90,"y":-60,"z":12,"heading":90},{"x":0,"y":0,"z":14}],"camera_ids":["cam_001","cam_006"],"interval_seconds":2}'
 
@@ -5171,7 +5199,7 @@ fi
 # ===========================================================================
 # 48. P12.0 patrol route validation
 # ===========================================================================
-step "48/55 patrol routes validation (P12: waypoints/camera/interval 400)"
+step "48/58 patrol routes validation (P12: waypoints/camera/interval 400)"
 p12_bad_oneway_payload='{"name":"smoke 巡检 bad","waypoints":[{"x":0,"y":0,"z":10}],"camera_ids":[],"interval_seconds":2}'
 p12_oneway_code="$(http_post_json "/api/patrol/routes" "$p12_bad_oneway_payload" "$operator_token")"
 if [ "$p12_oneway_code" = "400" ]; then
@@ -5216,7 +5244,7 @@ fi
 # ===========================================================================
 # 49. P12.0 patrol route delete + audit + cleanup
 # ===========================================================================
-step "49/55 patrol routes delete + audit + cleanup (P12)"
+step "49/58 patrol routes delete + audit + cleanup (P12)"
 if [ -n "$P12_ROUTE_ID" ]; then
   p12_delete_own_code="$(http_delete "/api/patrol/routes/$P12_ROUTE_ID" "$operator_token")"
 else
@@ -5363,7 +5391,7 @@ fi
 # ===========================================================================
 # 50. P13.0 patrol schedules: setup + CRUD + RBAC
 # ===========================================================================
-step "50/55 patrol schedules CRUD (P13: create/list/patch, RBAC)"
+step "50/58 patrol schedules CRUD (P13: create/list/patch, RBAC)"
 : > "$P13_ROUTE_IDS_FILE"
 : > "$P13_SCHEDULE_IDS_FILE"
 # P13 setup: an operator-created patrol route for the schedule to reference.
@@ -5469,7 +5497,7 @@ fi
 # ===========================================================================
 # 51. P13.0 patrol schedule validation
 # ===========================================================================
-step "51/55 patrol schedules validation (P13: route/interval 400)"
+step "51/58 patrol schedules validation (P13: route/interval 400)"
 p13_missing_route_code="$(http_post_json "/api/patrol/schedules" \
   '{"name":"smoke 计划 P13 bad","interval_minutes":60,"enabled":true}' "$operator_token")"
 if [ "$p13_missing_route_code" = "400" ]; then
@@ -5505,7 +5533,7 @@ fi
 # ===========================================================================
 # 52. P13.0 execution lifecycle + issue/order link + RBAC + audit + cleanup
 # ===========================================================================
-step "52/55 execution lifecycle + cleanup (P13: run/claim/done/issue/order)"
+step "52/58 execution lifecycle + cleanup (P13: run/claim/done/issue/order)"
 # 1) run now -> pending execution
 if [ -n "$P13_SCHEDULE_ID" ]; then
   p13_run_code="$(http_post_json "/api/patrol/schedules/$P13_SCHEDULE_ID/run" '{}' "$operator_token")"
@@ -5812,7 +5840,7 @@ fi
 # ===========================================================================
 # 53. P14.0 patrol stats (setup route/schedule/executions + stats checks)
 # ===========================================================================
-step "53/55 patrol stats (P14: counts/rates/by_route/by_assignee, invalid from/to)"
+step "53/58 patrol stats (P14: counts/rates/by_route/by_assignee, invalid from/to)"
 : > "$P14_ROUTE_IDS_FILE"
 : > "$P14_SCHEDULE_IDS_FILE"
 # Setup: operator-created route + schedule + one done and one issue execution.
@@ -5952,7 +5980,7 @@ fi
 # ===========================================================================
 # 54. P14.0 execution CSV export
 # ===========================================================================
-step "54/55 execution CSV export (P14: operator 200 + exact header, viewer 403)"
+step "54/58 execution CSV export (P14: operator 200 + exact header, viewer 403)"
 p14_export_code="$(http_get_with_headers "/api/patrol/executions/export" "$operator_token")"
 p14_export_headers_ok="$(python3 - "$TMP/headers.txt" "$p14_export_code" <<'PY'
 import sys
@@ -6001,7 +6029,7 @@ fi
 # ===========================================================================
 # 55. P14.0 history purge + audit + cleanup
 # ===========================================================================
-step "55/55 history purge + audit + cleanup (P14)"
+step "55/58 history purge + audit + cleanup (P14)"
 p14_future="$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc)+timedelta(days=1)).isoformat(timespec="seconds").replace("+00:00","Z"))')"
 
 p14_viewer_purge_code="$(http_delete "/api/patrol/executions?before=$p14_future&status=done" "$viewer_token")"
@@ -6150,6 +6178,430 @@ if [ "$p14_final_admin_code" = "200" ] && [ -n "$p14_final_admin_token" ]; then
   pass "cleanup: admin login still OK after P14 patrol stats checks"
 else
   fail "cleanup: admin login failed after P14 checks (HTTP ${p14_final_admin_code:-none})"
+fi
+
+# ===========================================================================
+# 56. P15.0 alert-triggered patrol execution (auto_patrol)
+# ===========================================================================
+step "56/58 alert-triggered patrol execution (P15: event -> pending execution)"
+: > "$P15_ROUTE_IDS_FILE"
+# Setup: an operator route whose camera_ids include cam_001 (the injected event's
+# camera), then enable auto_patrol with a 1 s escalation delay.
+p15_route_payload='{"name":"smoke 巡检 P15 路线","waypoints":[{"x":-90,"y":-60,"z":12,"heading":90},{"x":-20,"y":-40,"z":12}],"camera_ids":["cam_001"],"interval_seconds":2}'
+p15_route_code="$(http_post_json "/api/patrol/routes" "$p15_route_payload" "$operator_token")"
+P15_ROUTE_ID=""
+if [ "$p15_route_code" = "201" ]; then
+  P15_ROUTE_ID="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("id") or "")
+except Exception: print("")' "$TMP/body.json")"
+  [ -n "$P15_ROUTE_ID" ] && printf '%s\n' "$P15_ROUTE_ID" >> "$P15_ROUTE_IDS_FILE"
+fi
+printf '      P15 setup route (cam_001): %s\n' "${P15_ROUTE_ID:-<none>}"
+
+p15_settings_on='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":false,"second_after_seconds":0,"auto_patrol":true}'
+p15_set_code="$(http_put_json "/api/settings/escalation" "$p15_settings_on" "$admin_token")"
+p15_get_code="$(http_get "/api/settings/escalation" "$admin_token")"
+p15_settings_summary="$(python3 - "$TMP/body.json" "$p15_get_code" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = settings.get("auto_patrol") is True
+ok = ok and settings.get("after_seconds") == 1
+ok = ok and settings.get("auto_dispatch") is False
+if ok:
+    print(json.dumps({"auto_patrol": True, "after_seconds": settings.get("after_seconds"),
+                      "auto_dispatch": settings.get("auto_dispatch"),
+                      "second_after_seconds": settings.get("second_after_seconds")},
+                     ensure_ascii=False))
+sys.exit(0 if ok else 1)
+PY
+)" || p15_settings_summary=""
+if [ -n "$p15_settings_summary" ]; then
+  pass "escalation settings accept auto_patrol ($p15_settings_summary)"
+else
+  fail "escalation settings auto_patrol not accepted (HTTP ${p15_get_code:-none}, body=$(head -c 300 "$TMP/body.json" 2>/dev/null))"
+fi
+
+# Temporarily relax CAM-001's dedupe window (other tests/simulators may keep
+# injecting intrusion events on CAM-001) so the stale test event is accepted
+# deterministically; the original rules are restored right after ingestion (and
+# by the EXIT trap if this step aborts).
+P15_CAM001_RULES_FILE="$TMP/p15_cam001_rules.json"
+rm -f "$P15_CAM001_RULES_FILE"
+p15_rules_code="$(http_get "/api/cameras/cam_001/rules" "$admin_token")"
+if [ "$p15_rules_code" = "200" ]; then
+  python3 - "$TMP/body.json" > "$P15_CAM001_RULES_FILE" <<'PY'
+import json, sys
+rules = json.load(open(sys.argv[1]))
+print(json.dumps({"confidence_threshold": rules.get("confidence_threshold", 0.6),
+                  "dedupe_seconds": rules.get("dedupe_seconds", 5),
+                  "enabled_classes": rules.get("enabled_classes") or [],
+                  "roi": rules.get("roi")}, ensure_ascii=False))
+PY
+  p15_relaxed_rules="$(python3 - "$P15_CAM001_RULES_FILE" <<'PY'
+import json, sys
+rules = json.load(open(sys.argv[1]))
+rules["dedupe_seconds"] = 0
+print(json.dumps(rules, ensure_ascii=False))
+PY
+)"
+  http_put_json "/api/cameras/cam_001/rules" "$p15_relaxed_rules" "$admin_token" >/dev/null
+fi
+
+# Inject a stale CAM-001/intrusion event (retry briefly if the 5 s dedupe window
+# swallows it) and wait for the escalation scan to create the patrol execution.
+P15_EVENT_ID=""
+p15_attempt=0
+while [ "$p15_attempt" -lt 5 ] && [ -z "$P15_EVENT_ID" ]; do
+  p15_attempt=$((p15_attempt + 1))
+  p15_ts="$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc)-timedelta(seconds=60)).isoformat(timespec="milliseconds").replace("+00:00","Z"))')"
+  p15_payload="$(printf '{"camera_code":"CAM-001","ts":"%s","detections":[{"class":"intrusion","confidence":0.995,"bbox":[0.40,0.30,0.60,0.80]}]}' "$p15_ts")"
+  p15_ingest_code="$(http_post_json "/api/ingest/detections" "$p15_payload" "")"
+  if [ "$p15_ingest_code" = "202" ]; then
+    P15_EVENT_ID="$(python3 -c 'import json,sys
+try:
+    data = json.load(open(sys.argv[1]))
+    events = data.get("events") or []
+    print(events[0].get("id", "") if events else "")
+except Exception: print("")' "$TMP/body.json")"
+  fi
+  [ -z "$P15_EVENT_ID" ] && sleep 2
+done
+if [ -f "$P15_CAM001_RULES_FILE" ]; then
+  p15_restore_rules="$(cat "$P15_CAM001_RULES_FILE")"
+  http_put_json "/api/cameras/cam_001/rules" "$p15_restore_rules" "$admin_token" >/dev/null
+  rm -f "$P15_CAM001_RULES_FILE"
+fi
+if [ -n "$P15_EVENT_ID" ]; then
+  pass "stale CAM-001/intrusion ingested -> 202 event $P15_EVENT_ID"
+else
+  fail "could not inject a CAM-001/intrusion event for the P15 check"
+fi
+
+p15_executions_code=""
+P15_EXEC_ID=""
+p15_exec_poll=0
+while [ "$p15_exec_poll" -lt 30 ] && [ -z "$P15_EXEC_ID" ]; do
+  p15_exec_poll=$((p15_exec_poll + 1))
+  p15_executions_code="$(http_get "/api/patrol/executions?event_id=$P15_EVENT_ID" "$operator_token")"
+  if [ "$p15_executions_code" = "200" ]; then
+    P15_EXEC_ID="$(python3 - "$TMP/body.json" "$P15_EVENT_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 3:
+    sys.exit(1)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    sys.exit(1)
+matches = [e for e in items if isinstance(e, dict) and e.get("event_id") == sys.argv[2]]
+if len(matches) == 1 and matches[0].get("status") == "pending":
+    print(matches[0].get("id") or "")
+sys.exit(0)
+PY
+)"
+  fi
+  [ -z "$P15_EXEC_ID" ] && sleep 2
+done
+printf '      P15 event execution poll: attempts=%s executions_code=%s exec=%s\n' "$p15_exec_poll" "${p15_executions_code:-<none>}" "${P15_EXEC_ID:-<none>}"
+
+p15_pending_summary="$(python3 - "$TMP/body.json" "$p15_executions_code" "$P15_EVENT_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    sys.exit(1)
+matches = [e for e in items if isinstance(e, dict) and e.get("event_id") == sys.argv[3]]
+if len(matches) != 1 or matches[0].get("status") != "pending":
+    sys.exit(1)
+print(json.dumps({"count": len(matches), "status": matches[0].get("status")}, ensure_ascii=False))
+PY
+)" || p15_pending_summary=""
+if [ -n "$p15_pending_summary" ] && [ -n "$P15_EXEC_ID" ]; then
+  pass "GET /api/patrol/executions?event_id=... -> 200 exactly 1 pending execution ($p15_pending_summary)"
+else
+  fail "no single pending execution for event $P15_EVENT_ID (poll $p15_exec_poll, HTTP ${p15_executions_code:-none})"
+fi
+
+p15_fields_summary="$(python3 - "$TMP/body.json" "$p15_executions_code" "$P15_EVENT_ID" "$P15_ROUTE_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 5 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    sys.exit(1)
+matches = [e for e in items if isinstance(e, dict) and e.get("event_id") == sys.argv[3]]
+if len(matches) != 1:
+    sys.exit(1)
+execution = matches[0]
+ok = execution.get("schedule_id") in ("", None)
+ok = ok and execution.get("route_id") == sys.argv[4]
+ok = ok and "告警联动" in str(execution.get("note") or "")
+if ok:
+    print(json.dumps({"exec_id": execution.get("id"),
+                      "schedule_id": execution.get("schedule_id"),
+                      "route_id": execution.get("route_id"),
+                      "note": execution.get("note")}, ensure_ascii=False))
+sys.exit(0 if ok else 1)
+PY
+)" || p15_fields_summary=""
+if [ -n "$p15_fields_summary" ]; then
+  pass "event-linked execution fields ok: schedule_id empty, route matches, note has 告警联动 ($p15_fields_summary)"
+else
+  fail "event-linked execution fields wrong (schedule_id/route_id/note) for event $P15_EVENT_ID"
+fi
+
+p15_audit_created=""
+p15_created_poll=0
+while [ "$p15_created_poll" -lt 20 ] && [ -z "$p15_audit_created" ]; do
+  p15_created_poll=$((p15_created_poll + 1))
+  p15_audit_code="$(http_get '/api/audit?limit=500' "$admin_token")"
+  if [ "$p15_audit_code" = "200" ]; then
+    p15_audit_created="$(python3 - "$TMP/body.json" "$P15_EVENT_ID" <<'PY'
+import json, sys
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+event_id = sys.argv[2] if len(sys.argv) > 2 else ""
+for item in items:
+    if not isinstance(item, dict) or item.get("action") != "patrol.execution.created":
+        continue
+    detail = item.get("detail") or {}
+    if not isinstance(detail, dict) or detail.get("source") != "event":
+        continue
+    if detail.get("event_id") in ("", None, event_id):
+        print(json.dumps({"actor": item.get("actor"), "source": detail.get("source"),
+                          "event_id": detail.get("event_id")}, ensure_ascii=False))
+        sys.exit(0)
+sys.exit(1)
+PY
+)" || p15_audit_created=""
+  fi
+  [ -z "$p15_audit_created" ] && sleep 2
+done
+if [ -n "$p15_audit_created" ]; then
+  pass "audit patrol.execution.created has detail.source=event ($p15_audit_created)"
+else
+  fail "audit missing patrol.execution.created source=event for $P15_EVENT_ID"
+fi
+
+p15_list_code="$(http_get "/api/patrol/executions?limit=500" "$operator_token")"
+if python3 - "$TMP/body.json" "$p15_list_code" "$P15_EXEC_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+sys.exit(0 if any(isinstance(e, dict) and e.get("id") == sys.argv[3] for e in items) else 1)
+PY
+then
+  pass "event-linked execution appears in GET /api/patrol/executions"
+else
+  fail "event-linked execution missing from GET /api/patrol/executions (HTTP ${p15_list_code:-none})"
+fi
+
+# ===========================================================================
+# 57. P15.0 dedupe (no second execution for the same event)
+# ===========================================================================
+step "57/58 dedupe: one execution per event (P15: wait + re-escalation)"
+sleep 5
+p15_dedupe_code="$(http_get "/api/patrol/executions?event_id=$P15_EVENT_ID" "$operator_token")"
+p15_dedupe_count="$(python3 - "$TMP/body.json" "$p15_dedupe_code" "$P15_EVENT_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    print(-1)
+    sys.exit(0)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(sum(1 for e in items if isinstance(e, dict) and e.get("event_id") == sys.argv[3]))
+PY
+)"
+if [ "$p15_dedupe_count" = "1" ]; then
+  pass "dedupe after a further scan cycle: still exactly 1 execution for the event"
+else
+  fail "dedupe failed after wait (event executions=${p15_dedupe_count:-?})"
+fi
+
+# Force a re-escalation attempt (second_after_seconds=1) and expect a skip.
+p15_settings_second='{"enabled":true,"after_seconds":1,"severities":["warn","critical"],"auto_dispatch":false,"second_after_seconds":1,"auto_patrol":true}'
+http_put_json "/api/settings/escalation" "$p15_settings_second" "$admin_token" >/dev/null
+p15_skipped_duplicate=""
+p15_skip_poll=0
+while [ "$p15_skip_poll" -lt 30 ] && [ -z "$p15_skipped_duplicate" ]; do
+  p15_skip_poll=$((p15_skip_poll + 1))
+  p15_audit_code="$(http_get '/api/audit?limit=500' "$admin_token")"
+  if [ "$p15_audit_code" = "200" ]; then
+    p15_skipped_duplicate="$(python3 - "$TMP/body.json" "$P15_EVENT_ID" <<'PY'
+import json, sys
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+event_id = sys.argv[2] if len(sys.argv) > 2 else ""
+for item in items:
+    if not isinstance(item, dict) or item.get("action") != "patrol.execution.skipped":
+        continue
+    detail = item.get("detail") or {}
+    if not isinstance(detail, dict) or detail.get("reason") != "duplicate":
+        continue
+    resource = str(item.get("resource") or "")
+    if resource == event_id or detail.get("event_id") == event_id:
+        print(json.dumps({"actor": item.get("actor"), "reason": detail.get("reason"),
+                          "resource": resource, "execution_id": detail.get("execution_id")},
+                         ensure_ascii=False))
+        sys.exit(0)
+sys.exit(1)
+PY
+)" || p15_skipped_duplicate=""
+  fi
+  [ -z "$p15_skipped_duplicate" ] && sleep 2
+done
+if [ -n "$p15_skipped_duplicate" ]; then
+  pass "re-escalation duplicate skip audited ($p15_skipped_duplicate)"
+else
+  fail "audit missing patrol.execution.skipped reason=duplicate after forced re-escalation"
+fi
+
+p15_dedupe2_code="$(http_get "/api/patrol/executions?event_id=$P15_EVENT_ID" "$operator_token")"
+p15_dedupe2_count="$(python3 - "$TMP/body.json" "$p15_dedupe2_code" "$P15_EVENT_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    print(-1)
+    sys.exit(0)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(sum(1 for e in items if isinstance(e, dict) and e.get("event_id") == sys.argv[3]))
+PY
+)"
+if [ "$p15_dedupe2_count" = "1" ]; then
+  pass "still exactly 1 execution for the event after the re-escalation attempt"
+else
+  fail "duplicate execution created after re-escalation (count=${p15_dedupe2_count:-?})"
+fi
+
+# ===========================================================================
+# 58. P15.0 cleanup (restore defaults, finish + purge execution, delete route)
+# ===========================================================================
+step "58/58 cleanup (P15: restore escalation defaults, done + purge, delete route)"
+p15_defaults='{"enabled":true,"after_seconds":300,"severities":["warn","critical"],"auto_dispatch":true,"second_after_seconds":0,"auto_patrol":false}'
+p15_restore_code="$(http_put_json "/api/settings/escalation" "$p15_defaults" "$admin_token")"
+p15_restore_get="$(http_get "/api/settings/escalation" "$admin_token")"
+p15_restore_summary="$(python3 - "$TMP/body.json" "$p15_restore_get" <<'PY'
+import json, sys
+if len(sys.argv) < 3 or sys.argv[2] != "200":
+    sys.exit(1)
+try:
+    settings = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = (settings.get("enabled") is True and settings.get("after_seconds") == 300
+      and settings.get("auto_dispatch") is True and settings.get("second_after_seconds") == 0
+      and settings.get("auto_patrol") is False)
+if ok:
+    print(json.dumps({k: settings.get(k) for k in
+                      ("after_seconds", "auto_dispatch", "second_after_seconds", "auto_patrol")},
+                     ensure_ascii=False))
+sys.exit(0 if ok else 1)
+PY
+)" || p15_restore_summary=""
+if [ -n "$p15_restore_summary" ]; then
+  pass "cleanup: escalation defaults restored ($p15_restore_summary)"
+else
+  fail "could not restore escalation defaults (HTTP ${p15_restore_get:-none})"
+fi
+
+if [ -n "$P15_EXEC_ID" ]; then
+  p15_claim_code="$(http_post_json "/api/patrol/executions/$P15_EXEC_ID/claim" '{}' "$operator_token")"
+else
+  p15_claim_code="000"
+fi
+p15_claim_status="$(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1])); print(d.get("status",""))
+except Exception: print("")' "$TMP/body.json" 2>/dev/null || echo '')"
+if [ "$p15_claim_code" = "200" ] && [ "$p15_claim_status" = "running" ]; then
+  pass "cleanup: operator claims event execution -> 200 running"
+else
+  fail "cleanup: claim event execution -> HTTP ${p15_claim_code:-none} status=${p15_claim_status:-none}"
+fi
+
+if [ -n "$P15_EXEC_ID" ]; then
+  p15_done_code="$(http_post_json "/api/patrol/executions/$P15_EXEC_ID/complete" \
+    '{"result":"done","note":"p15 smoke cleanup"}' "$operator_token")"
+else
+  p15_done_code="000"
+fi
+p15_done_status="$(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1])); print(d.get("status",""))
+except Exception: print("")' "$TMP/body.json" 2>/dev/null || echo '')"
+if [ "$p15_done_code" = "200" ] && [ "$p15_done_status" = "done" ]; then
+  pass "cleanup: complete event execution -> 200 done"
+else
+  fail "cleanup: complete event execution -> HTTP ${p15_done_code:-none} status=${p15_done_status:-none}"
+fi
+
+p15_purge_future="$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc)+timedelta(days=1)).isoformat(timespec="seconds").replace("+00:00","Z"))')"
+p15_purge_code="$(http_delete "/api/patrol/executions?before=$p15_purge_future&status=done" "$admin_token")"
+p15_purge_deleted="$(python3 -c 'import json,sys
+try: print(int(json.load(open(sys.argv[1])).get("deleted")))
+except Exception: print("")' "$TMP/body.json" 2>/dev/null || echo '')"
+if [ "$p15_purge_code" = "200" ] && [ "${p15_purge_deleted:-0}" -ge 1 ] 2>/dev/null; then
+  pass "cleanup: admin purge done executions -> 200 deleted=$p15_purge_deleted"
+else
+  fail "cleanup: purge done executions -> HTTP ${p15_purge_code:-none} deleted=${p15_purge_deleted:-none}"
+fi
+
+p15_after_code="$(http_get "/api/patrol/executions?event_id=$P15_EVENT_ID" "$operator_token")"
+p15_after_count="$(python3 - "$TMP/body.json" "$p15_after_code" "$P15_EVENT_ID" <<'PY'
+import json, sys
+if len(sys.argv) < 4 or sys.argv[2] != "200":
+    print(-1)
+    sys.exit(0)
+try:
+    items = json.load(open(sys.argv[1])).get("items") or []
+except Exception:
+    items = []
+print(sum(1 for e in items if isinstance(e, dict) and e.get("event_id") == sys.argv[3]))
+PY
+)"
+if [ "$p15_after_count" = "0" ]; then
+  pass "cleanup: no execution left for the test event after purge"
+else
+  fail "execution for test event still present after purge (count=${p15_after_count:-?})"
+fi
+
+if [ -n "$P15_ROUTE_ID" ]; then
+  p15_route_del_code="$(http_delete "/api/patrol/routes/$P15_ROUTE_ID" "$operator_token")"
+else
+  p15_route_del_code="000"
+fi
+if [ "$p15_route_del_code" = "204" ]; then
+  pass "cleanup: DELETE P15 test route -> 204"
+  P15_ROUTE_ID=""
+else
+  fail "cleanup: DELETE P15 test route -> HTTP ${p15_route_del_code:-none} (expected 204)"
+fi
+rm -f "$P15_ROUTE_IDS_FILE"
+
+read -r p15_final_admin_code p15_final_admin_token < <(login_user admin 'Admin@123456')
+if [ "$p15_final_admin_code" = "200" ] && [ -n "$p15_final_admin_token" ]; then
+  pass "cleanup: admin login still OK after P15 checks"
+else
+  fail "cleanup: admin login failed after P15 checks (HTTP ${p15_final_admin_code:-none})"
 fi
 
 summary

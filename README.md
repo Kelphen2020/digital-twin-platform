@@ -228,6 +228,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P14.md`](docs/API_P14.md)。
 
+![P15.0 告警联动巡检执行](docs/screenshots/p15-execution.png)
+
+## P15.0 能力（告警联动巡检）
+
+- 升级设置新增 `auto_patrol`：告警首次升级/再升级时自动生成待执行巡检任务。
+- 路由匹配：优先取 `camera_ids` 含该相机的路线，否则取航点与相机 XZ 距离最近的路线；无路线则跳过（审计 `patrol.execution.skipped`）。
+- 执行记录新增 `event_id`，任务备注「告警联动：<类型> · <相机>」；同一事件已有 pending/running 任务时去重。
+- 前端：设置页「告警联动巡检」开关；执行卡片显示关联告警，支持按事件筛选。
+
+契约见 [`docs/API_P15.md`](docs/API_P15.md)。
+
 ## 目录
 
 ```

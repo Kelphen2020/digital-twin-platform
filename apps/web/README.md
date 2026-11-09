@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P14.0）
+# 数字孪生安防平台 · Web 前端（P15.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,13 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 告警联动巡检（P15）
+
+- **升级设置**：「告警联动巡检（auto_patrol）」开关（`GET/PUT /api/settings/escalation`，保留其他字段）；开启后告警首次升级/再升级时服务端按事件相机匹配巡检路线，自动生成待执行巡检任务（无匹配路线或同事件已有 pending/running 任务时跳过）。
+- **执行事件关联**：巡检执行卡片在 `event_id` 非空时展示「关联告警」——事件 id、事件类型与相机（从当前事件 store 查找；列表未包含该告警时只显示 id 并禁用定位），「定位」按钮复用现有事件聚焦机制（选中相机、加载轨迹、运镜并打开事件详情）。
+- **按事件筛选**：执行 tab 新增「事件 ID」输入框 +「查询/清除」，调用 `GET /api/patrol/executions?event_id=...`，可与状态筛选组合。
+- viewer 仍为只读（无认领/完成等写操作），事件关联信息与筛选对已登录用户可用。
+
 ### 巡检统计 / CSV 导出 / 历史归档（P14）
 
 - **统计卡片**：执行 tab 顶部展示总数 / 待执行 / 进行中 / 已完成 / 异常 / 完成率 / 异常率 / 平均时长（`GET /api/patrol/stats`）；起止日期（date input）可选，点击「刷新统计」按 `from/to`（RFC3339，created_at 过滤）重新拉取。
@@ -250,7 +257,7 @@ pnpm dev          # http://127.0.0.1:5173
 | GET/POST | `/api/patrol/schedules` | 登录 / operator+admin | 计划列表 / 新建计划 |
 | PATCH/DELETE | `/api/patrol/schedules/{id}` | 创建者/admin | 修改 / 删除计划 |
 | POST | `/api/patrol/schedules/{id}/run` | operator/admin | 立即生成执行任务 |
-| GET | `/api/patrol/executions` | 登录 | 执行列表（status/limit 过滤） |
+| GET | `/api/patrol/executions` | 登录 | 执行列表（status/event_id/limit 过滤） |
 | POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
 | POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
 | GET | `/api/patrol/stats` | 登录 | 巡检统计（from/to 可选） |
@@ -332,6 +339,7 @@ apps/web/
 | 巡检路线 | **实时**：`/api/patrol/routes` CRUD；航点/相机高亮/相机飞行均为前端实现 |
 | 巡检计划 / 执行 | **实时**：schedules CRUD/run、executions claim/complete（issue 自动建工单）、WS `patrol_execution` 刷新 |
 | 巡检统计 / 导出 / 归档 | **实时**：`/api/patrol/stats`、`/api/patrol/executions/export` CSV、admin `DELETE /api/patrol/executions` |
+| 告警联动巡检 | **实时**：升级设置 `auto_patrol`；执行 `event_id` 关联/筛选；服务端按路线匹配生成任务 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -379,6 +387,12 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P15：告警联动巡检
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":0,"severities":["critical"],"auto_dispatch":true,"second_after_seconds":0,"auto_patrol":true}' \
+  http://localhost:8080/api/settings/escalation
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/patrol/executions?event_id=evt_xxx"
 
 # P14：巡检统计 / 导出 / 清理（operator/admin）
 curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/patrol/stats?from=&to="
@@ -521,3 +535,5 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P14 统计/导出时间过滤均为 RFC3339；前端 date input 按本地日界转为 UTC ISO（起 00:00:00，止 23:59:59）。
 - 清理历史仅移除 `done`/`issue` 已结束记录（before 缺省现在），前端要求二次确认；operator/viewer 看不到清理按钮，导出仅 operator/admin 可见。
 - 导出文件上限 10000 行（后端），前端不做额外截断；空结果仍下载表头 CSV。
+- P15 事件关联仅从当前前端事件 store（最近 200 条）查找类型/相机；更早的告警仍展示 `event_id` 但「定位」禁用。筛选输入按 `event_id` 精确查询（后端过滤）。
+- `auto_patrol` 默认关闭；开启后由后端升级 worker 在首次升级/再升级时生成任务，前端通过 WS `patrol_execution` 刷新执行列表与角标。

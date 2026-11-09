@@ -364,6 +364,8 @@ export interface EscalationSettings {
   auto_dispatch: boolean
   /** 升级后再超过该时长仍未关闭则触发二次升级；0 表示关闭（0–604800 秒）。 */
   second_after_seconds: number
+  /** P15：告警首次升级/再升级时自动生成待执行巡检任务。 */
+  auto_patrol: boolean
 }
 
 /** GET /api/audit 审计条目。 */
@@ -494,6 +496,8 @@ export interface PatrolExecution {
   schedule_id: string
   route_id: string
   route_name: string
+  /** P15：告警联动生成的任务对应事件 id；空表示计划/手动任务。 */
+  event_id?: string
   status: PatrolExecutionStatus
   assignee: string
   result: string

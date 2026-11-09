@@ -636,6 +636,9 @@ func (s *Server) escalateOnce(ctx context.Context) {
 		if cfg.AutoDispatch {
 			s.autoDispatch(ctx, event)
 		}
+		if cfg.AutoPatrol {
+			s.createEventPatrol(ctx, event)
+		}
 	}
 }
 
@@ -668,6 +671,9 @@ func (s *Server) reEscalateOnce(ctx context.Context) {
 		}
 		if cfg.AutoDispatch {
 			s.autoDispatch(ctx, event)
+		}
+		if cfg.AutoPatrol {
+			s.createEventPatrol(ctx, event)
 		}
 	}
 }
@@ -935,6 +941,9 @@ func activeShift(shifts []model.DutyShift, at time.Time) *model.DutyShift {
 		end, endOK := parseHHMM(shift.End)
 		if !startOK || !endOK {
 			continue
+		}
+		if end == 0 {
+			end = 24 * 60
 		}
 		if start <= end {
 			if minutes >= start && minutes < end {
@@ -2048,7 +2057,7 @@ func (s *Server) handlePutEscalationSettings(w http.ResponseWriter, r *http.Requ
 	s.escalation = cfg
 	s.settingsMu.Unlock()
 	s.audit(r, "settings.escalation.put", settingEscalation, map[string]any{
-		"enabled": cfg.Enabled, "after_seconds": cfg.AfterSeconds,
+		"enabled": cfg.Enabled, "after_seconds": cfg.AfterSeconds, "auto_patrol": cfg.AutoPatrol,
 	})
 	writeJSON(w, http.StatusOK, cfg)
 }
@@ -2621,6 +2630,7 @@ func (s *Server) handleListPatrolExecutions(w http.ResponseWriter, r *http.Reque
 	filter := model.PatrolExecutionFilter{
 		Status:     r.URL.Query().Get("status"),
 		ScheduleID: r.URL.Query().Get("schedule_id"),
+		EventID:    r.URL.Query().Get("event_id"),
 		Limit:      parseIntDefault(r.URL.Query().Get("limit"), 100),
 	}
 	if filter.Limit > 500 {
@@ -3036,6 +3046,88 @@ func (s *Server) handlePurgePatrolExecutions(w http.ResponseWriter, r *http.Requ
 		"before": before.Format(time.RFC3339), "statuses": statuses, "deleted": deleted,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
+// createEventPatrol materializes a patrol task for an escalated event.
+func (s *Server) createEventPatrol(ctx context.Context, event model.Event) {
+	executions, err := s.store.ListPatrolExecutions(ctx, model.PatrolExecutionFilter{EventID: event.ID, Limit: 100})
+	if err == nil {
+		for _, execution := range executions {
+			if execution.Status == "pending" || execution.Status == "running" {
+				_ = s.store.AddAudit(ctx, model.AuditEntry{
+					ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
+					Action: "patrol.execution.skipped", Resource: event.ID,
+					Detail: map[string]any{"reason": "duplicate", "execution_id": execution.ID},
+				})
+				return
+			}
+		}
+	}
+	routes, err := s.store.ListPatrolRoutes(ctx)
+	if err != nil || len(routes) == 0 {
+		_ = s.store.AddAudit(ctx, model.AuditEntry{
+			ID: newID("aud"), At: time.Now().UTC(), Actor: "system",
+			Action: "patrol.execution.skipped", Resource: event.ID,
+			Detail: map[string]any{"reason": "no_route"},
+		})
+		return
+	}
+	camera, _ := s.store.GetCamera(ctx, event.CameraID)
+	route := matchPatrolRoute(routes, camera, event.CameraID)
+	if route == nil {
+		return
+	}
+	now := time.Now().UTC()
+	execution := model.PatrolExecution{
+		ID: newID("pex"), RouteID: route.ID, RouteName: route.Name,
+		EventID: event.ID, Status: "pending",
+		Note:        fmt.Sprintf("告警联动：%s · %s %s", event.Type, event.CameraCode, event.CameraName),
+		ScheduledAt: now, CreatedAt: now,
+	}
+	if err := s.store.CreatePatrolExecution(ctx, execution); err != nil {
+		log.Printf("api: create event patrol: %v", err)
+		return
+	}
+	_ = s.store.AddAudit(ctx, model.AuditEntry{
+		ID: newID("aud"), At: now, Actor: "system",
+		Action: "patrol.execution.created", Resource: execution.ID,
+		Detail: map[string]any{"source": "event", "event_id": event.ID, "route_id": route.ID},
+	})
+	s.hub.Broadcast(realtime.Frame{Type: "patrol_execution", Data: execution})
+}
+
+// matchPatrolRoute prefers routes covering the camera, then the nearest waypoint.
+func matchPatrolRoute(routes []model.PatrolRoute, camera model.Camera, cameraID string) *model.PatrolRoute {
+	var containing *model.PatrolRoute
+	latest := time.Time{}
+	for index := range routes {
+		for _, id := range routes[index].CameraIDs {
+			if id != cameraID {
+				continue
+			}
+			if containing == nil || routes[index].UpdatedAt.After(latest) {
+				latest = routes[index].UpdatedAt
+				containing = &routes[index]
+			}
+		}
+	}
+	if containing != nil {
+		return containing
+	}
+	var best *model.PatrolRoute
+	bestDistance := math.Inf(1)
+	for index := range routes {
+		for _, waypoint := range routes[index].Waypoints {
+			dx := waypoint.X - camera.X
+			dz := waypoint.Z - camera.Z
+			distance := dx*dx + dz*dz
+			if distance < bestDistance {
+				bestDistance = distance
+				best = &routes[index]
+			}
+		}
+	}
+	return best
 }
 
 func (s *Server) writePatrolError(w http.ResponseWriter, err error) {

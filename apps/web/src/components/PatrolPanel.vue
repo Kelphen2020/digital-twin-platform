@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { formatDateTime } from '../labels'
+import { EVENT_TYPE_LABELS, formatDateTime } from '../labels'
 import { useAuthStore } from '../store/auth'
 import { usePatrolStore } from '../store/patrol'
 import { useTwinStore } from '../store/twin'
@@ -39,13 +39,14 @@ const {
   runScheduleNow,
   loadExecutions,
   setExecutionFilter,
+  setExecutionEventFilter,
   claimExecution,
   completeExecution,
   loadStats,
   exportExecutions,
   purgeHistory,
 } = usePatrolStore()
-const { state: twinState, selectCamera } = useTwinStore()
+const { state: twinState, selectCamera, focusEvent } = useTwinStore()
 const { state: authState, role } = useAuthStore()
 
 type PatrolTab = 'routes' | 'schedules' | 'executions'
@@ -95,6 +96,23 @@ const completeDialog = ref<PatrolExecution | null>(null)
 const completeNote = ref('')
 const completeResult = ref<CompleteResult>('done')
 const completeError = ref('')
+
+// ---- P15：事件关联筛选 ----
+const eventFilterInput = ref(state.executionEventFilter)
+
+function applyEventFilter(): void {
+  setExecutionEventFilter(eventFilterInput.value.trim())
+}
+
+function clearEventFilter(): void {
+  eventFilterInput.value = ''
+  setExecutionEventFilter('')
+}
+
+function executionEvent(execution: PatrolExecution) {
+  if (!execution.event_id) return null
+  return twinState.events.find((event) => event.id === execution.event_id) ?? null
+}
 
 // ---- P14：统计 / 导出 / 清理 ----
 const statsFromDate = ref('')
@@ -604,6 +622,19 @@ onMounted(() => {
           </select>
           <span class="patrol-meta">共 {{ state.executions.length }} 条 · 待执行 {{ pendingCount }}</span>
         </div>
+        <div class="patrol-filter">
+          <span>事件 ID</span>
+          <input
+            v-model="eventFilterInput"
+            type="text"
+            class="patrol-event-input"
+            placeholder="evt_..."
+            @keydown.enter="applyEventFilter"
+          />
+          <button class="ghost-btn" @click="applyEventFilter">查询</button>
+          <button class="ghost-btn" @click="clearEventFilter">清除</button>
+          <span v-if="state.executionEventFilter" class="patrol-meta">筛选：{{ state.executionEventFilter }}</span>
+        </div>
         <p v-if="state.executionsLoading && state.executions.length === 0" class="detail-loading">正在加载执行任务…</p>
         <p v-else-if="state.executionsError" class="form-error">
           执行任务加载失败：{{ state.executionsError }}
@@ -628,6 +659,20 @@ onMounted(() => {
               <template v-if="execution.finished_at"> · 完成 {{ formatDateTime(execution.finished_at) }}</template>
             </p>
             <p v-if="execution.note" class="patrol-meta">备注：{{ execution.note }}</p>
+            <div v-if="execution.event_id" class="exec-event-link">
+              <span>关联告警：<b class="mono">{{ execution.event_id }}</b></span>
+              <span v-if="executionEvent(execution)" class="patrol-meta">
+                {{ EVENT_TYPE_LABELS[executionEvent(execution)!.type] }} · {{ executionEvent(execution)!.camera_code }} {{ executionEvent(execution)!.camera_name }}
+              </span>
+              <button
+                class="tiny-btn"
+                :disabled="!executionEvent(execution)"
+                :title="executionEvent(execution) ? '定位关联告警相机' : '当前事件列表未包含该告警（可能已过期）'"
+                @click="executionEvent(execution) && focusEvent(execution.event_id!)"
+              >
+                定位
+              </button>
+            </div>
             <p v-if="execution.order_id" class="patrol-meta">关联工单：<span class="mono">{{ execution.order_id }}</span></p>
             <div v-if="canWrite" class="patrol-actions">
               <button

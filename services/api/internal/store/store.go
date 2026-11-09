@@ -701,6 +701,9 @@ func (m *Memory) ListPatrolExecutions(_ context.Context, filter model.PatrolExec
 		if filter.ScheduleID != "" && execution.ScheduleID != filter.ScheduleID {
 			continue
 		}
+		if filter.EventID != "" && execution.EventID != filter.EventID {
+			continue
+		}
 		if filter.From != nil && execution.CreatedAt.Before(*filter.From) {
 			continue
 		}

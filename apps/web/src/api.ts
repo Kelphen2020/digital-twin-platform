@@ -705,11 +705,12 @@ export async function runPatrolSchedule(scheduleId: string): Promise<PatrolExecu
 
 /** GET /api/patrol/executions?status=&schedule_id=&limit=（登录用户）。 */
 export async function fetchPatrolExecutions(
-  params: { status?: PatrolExecutionStatus | ''; scheduleId?: string; limit?: number } = {},
+  params: { status?: PatrolExecutionStatus | ''; scheduleId?: string; eventId?: string; limit?: number } = {},
 ): Promise<PatrolExecution[]> {
   const query = new URLSearchParams()
   if (params.status) query.set('status', params.status)
   if (params.scheduleId) query.set('schedule_id', params.scheduleId)
+  if (params.eventId) query.set('event_id', params.eventId)
   query.set('limit', String(params.limit ?? 100))
   const data = await requestJson<PatrolExecutionListResponse>(`/api/patrol/executions?${query.toString()}`)
   return data.items ?? []

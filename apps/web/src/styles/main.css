@@ -4092,3 +4092,42 @@ dd {
   font-size: 10px;
   color: #fca5a5;
 }
+
+
+/* ============================================================
+   P15.0 扩展：告警联动巡检
+   ============================================================ */
+
+.patrol-event-input {
+  width: 132px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #061120;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  outline: none;
+}
+
+.exec-event-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.07);
+  font-size: 10px;
+  color: #fcd34d;
+}
+
+.exec-event-link b {
+  color: #fde68a;
+  font-weight: 600;
+}
+
+.exec-event-link .patrol-meta {
+  color: var(--text-muted);
+}

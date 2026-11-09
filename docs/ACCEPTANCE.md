@@ -710,3 +710,42 @@ P14 覆盖：统计（总数/状态分布/完成率/异常率一致、by_route/b
 - 统计上限 1 万条执行记录（内存过滤），超大数据量需 SQL 聚合/分页。
 - 平均时长依赖 started/finished 秒级差，短任务可能显示 0。
 - 导出行数上限 1 万，超大导出需异步任务。
+
+---
+
+# P15.0 验收记录（2026-11-10 凌晨）
+
+## 68. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：auto_patrol 设置持久化、升级/再升级自动生成任务（camera 覆盖优先匹配）、同事件 pending/running 去重（审计 skipped duplicate）、事件过滤 event_id、无路线跳过 |
+
+## 69. smoke.sh（P0–P14 230 项 + P15 16 项 = 246 项 / 58 步）
+
+```
+smoke: PASS (246 checks passed)
+```
+
+P15 覆盖：auto_patrol 设置读写；stale CAM-001/intrusion → 1 条 pending 执行（schedule_id 空、route_id 匹配、note 含「告警联动」、event_id 正确）；审计 patrol.execution.created source=event；再升级扫描后仍 1 条，审计 skipped reason=duplicate；清理（默认设置恢复、认领+完成+purge、删除路线）。
+
+## 70. 前端 P15 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 设置 | ✅「告警联动巡检」开关 + 匹配/去重说明；关闭/开启保存后 API 同步，其他字段保留 |
+| 执行卡片 | ✅「关联告警：evt_… 入侵 · CAM-001 东门入口」+「定位」→ 相机详情切到 CAM-001；更早事件仅显示 event_id（定位禁用） |
+| 事件筛选 | ✅「事件 ID」查询后仅剩 1 条（与 API 一致），清除恢复；可与状态筛选组合 |
+| 权限/回归 | ✅ viewer 只读（无认领/完成/编辑）；admin 8 tabs、P0–P14 正常；console errors=[] |
+| 截图 | `docs/screenshots/p15-settings.png`、`p15-execution.png`、`p15-filter.png`、`p15-viewer.png` |
+
+## 71. 已知限制（P15.0）
+
+- 联动路由只按「相机覆盖 → XZ 最近航点」选择，未考虑班次/值班组负载，也未做距离阈值（无路线时才跳过）。
+- 去重仅针对同事件 pending/running；已完成任务不阻止后续再次升级生成新任务（按设计）。
+- pending 任务无法清理（契约限制），演示环境可能累积；生产应加超时自动关闭/过期归档。
+- 任务生成依赖升级 worker 周期（15s），最坏延迟约 15s。

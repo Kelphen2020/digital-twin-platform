@@ -193,7 +193,17 @@
 | 导出 | `/api/patrol/executions/export` | CSV（11 列），operator/admin，上限 1 万行 |
 | 归档 | `DeletePatrolExecutions` + admin API | 仅清理 done/issue 且 created_at <= before；审计记录删除条数 |
 
-## 20. P1 建议优先级
+## 20. P15.0 已落地（告警联动巡检）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 联动开关 | `EscalationSettings.AutoPatrol` | 升级/再升级时触发，默认关闭 |
+| 路由匹配 | `matchPatrolRoute` | 相机覆盖优先，否则 XZ 距离最近航点 |
+| 任务生成 | `createEventPatrol` | 生成 pending 执行（event_id + 告警联动备注），WS 推送，去重同事件 pending/running |
+| 审计 | `patrol.execution.created/skipped` | source=event；reason=duplicate/no_route |
+| 前端 | 设置开关、执行卡片关联告警、事件筛选 | 与 P13/P14 执行流程共用认领/完成/异常建单 |
+
+## 21. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

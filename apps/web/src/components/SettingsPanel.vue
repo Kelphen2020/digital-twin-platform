@@ -23,6 +23,7 @@ const escalationForm = reactive<EscalationSettings>({
   severities: ['warn', 'critical'],
   auto_dispatch: false,
   second_after_seconds: 0,
+  auto_patrol: false,
 })
 
 const notificationError = ref('')
@@ -60,6 +61,7 @@ watch(
     escalationForm.severities = [...settings.severities]
     escalationForm.auto_dispatch = settings.auto_dispatch ?? false
     escalationForm.second_after_seconds = settings.second_after_seconds ?? 0
+    escalationForm.auto_patrol = settings.auto_patrol ?? false
   },
   { immediate: true },
 )
@@ -138,6 +140,7 @@ async function submitEscalation(): Promise<void> {
     severities: [...escalationForm.severities],
     auto_dispatch: escalationForm.auto_dispatch,
     second_after_seconds: escalationForm.second_after_seconds,
+    auto_patrol: escalationForm.auto_patrol,
   })
   escalationSaved.value = ok
 }
@@ -264,6 +267,14 @@ onMounted(() => {
             <input v-model="escalationForm.auto_dispatch" type="checkbox" />
             <span>自动派单（升级时按相机区域解析值班组并创建紧急工单）</span>
           </label>
+
+          <label class="switch settings-switch">
+            <input v-model="escalationForm.auto_patrol" type="checkbox" />
+            <span>告警联动巡检（auto_patrol：升级/再升级时自动生成待执行巡检任务）</span>
+          </label>
+          <p class="form-hint">
+            服务端优先匹配 camera_ids 包含该事件相机的路线（多条取最近更新），否则取航点与相机 XZ 距离最近的路线；无路线或同事件已有 pending/running 任务时跳过。
+          </p>
 
           <p class="form-hint">
             服务端每 15 秒扫描一次：满足条件的事件写入 escalated_at、WS 广播 event_updated 并触发一次升级通知，前端显示「已升级」标记。

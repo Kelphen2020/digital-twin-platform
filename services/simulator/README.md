@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0 + P12.0 + P13.0 + P14.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0 + P12.0 + P13.0 + P14.0 + P15.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -28,8 +28,10 @@ invalidation, session listing), the P12.0 patrol routes in
 schedules/executions in [`docs/API_P13.md`](../../docs/API_P13.md) (scheduled
 executions, claim/complete lifecycle, issue → order link) and the P14.0 patrol
 reporting/archive in [`docs/API_P14.md`](../../docs/API_P14.md) (stats,
-execution CSV export, admin history purge). P9.0 performance tooling/numbers
-live in [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
+execution CSV export, admin history purge) and the P15.0 alert-linked patrol
+in [`docs/API_P15.md`](../../docs/API_P15.md) (`auto_patrol` escalation
+setting → event-driven patrol execution with dedupe). P9.0 performance
+tooling/numbers live in [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -38,7 +40,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0 = **230 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation, patrol routes, patrol schedules/executions, patrol stats/export/purge). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0 + 16 P15.0 = **246 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation, patrol routes, patrol schedules/executions, patrol stats/export/purge, alert-linked patrol execution). |
 | `../../scripts/load.py` | Threaded load injector: steady or `--ramp` QPS, optional `--read-ratio` event reads, achieved QPS, accepted/dropped, HTTP p50/p95/p99, `/metrics` counter deltas, `--report` Markdown rows + `--json` run records (see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)). |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -211,7 +213,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**230 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0):
+(**246 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0 + 16 P15.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -439,6 +441,25 @@ without a delete endpoint).
     audit has `patrol.executions.purge` with `deleted` count; final purge of
     `done,issue` removes the smoke executions; route/schedule deleted;
     admin login still works.
+
+**P15.0 (steps 56–58, 16 checks)**
+
+56. alert-linked execution: operator route with `camera_ids:["cam_001"]`,
+    escalation `auto_patrol=true` (`after_seconds=1`, `auto_dispatch=false`);
+    a stale `CAM-001/intrusion` event → exactly 1 pending execution from
+    `GET /api/patrol/executions?event_id=…` with empty `schedule_id`,
+    matching `route_id` and note containing `告警联动` (dedupe window on
+    CAM-001 is temporarily relaxed for deterministic ingestion and restored
+    right after); audit `patrol.execution.created` with `detail.source=event`;
+    the execution also appears in the normal execution list;
+57. dedupe: after a further scan cycle still exactly 1 execution for that
+    event; a forced re-escalation (`second_after_seconds=1`) is skipped and
+    audited as `patrol.execution.skipped` `reason=duplicate` (audit resource =
+    event id), still exactly 1 execution;
+58. cleanup: escalation defaults restored (`after 300`, `auto_dispatch=true`,
+    `second_after_seconds=0`, `auto_patrol=false`); the event execution is
+    claimed (running) → completed (`done`) → admin purges done; no execution
+    remains for the event; route deleted (204); admin login OK.
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -1017,7 +1038,71 @@ Notes:
   history — `smoke.sh` purges its own done/issue records in cleanup.
 - `smoke.sh` verifies stats/export/purge (steps 53–55).
 
-## 14. Typical demo sequence
+## 14. P15.0 alert-linked patrol execution (auto_patrol)
+
+With `auto_patrol=true` in the escalation settings, every first/second
+escalation also creates a pending patrol execution for a matching route:
+
+```bash
+ADMIN="$TOKEN"
+OP=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"operator","password":"Operator@123"}' \
+  http://127.0.0.1:8080/api/auth/login \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+
+# 1) a route whose camera_ids include the alert camera
+curl -s -X POST -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
+  -d '{"name":"东门夜巡","waypoints":[{"x":-90,"y":-60,"z":12},{"x":-20,"y":-40,"z":12}],
+       "camera_ids":["cam_001"],"interval_seconds":2}' http://127.0.0.1:8080/api/patrol/routes
+
+# 2) enable auto_patrol (1 s escalation delay keeps the demo quick)
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":1,"severities":["warn","critical"],
+       "auto_dispatch":false,"second_after_seconds":0,"auto_patrol":true}' \
+  http://127.0.0.1:8080/api/settings/escalation
+
+# 3) inject a stale CAM-001/intrusion alert; the escalation scan creates a
+#    pending execution linked to the event (route by camera_ids, else nearest
+#    waypoint in the XZ plane; skipped with reason=no_route when none match)
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"camera_code":"CAM-001","ts":"2026-11-09T10:00:00.000Z",
+       "detections":[{"class":"intrusion","confidence":0.995,
+                      "bbox":[0.4,0.3,0.6,0.8]}]}' \
+  http://127.0.0.1:8080/api/ingest/detections
+
+# 4) the event-linked execution (filter by event_id)
+curl -s -H "Authorization: Bearer $OP" \
+  'http://127.0.0.1:8080/api/patrol/executions?event_id=evt_...'
+# -> {id, schedule_id:"", route_id, event_id, status:"pending",
+#     note:"告警联动：intrusion · CAM-001 东门", ...}
+# audit: patrol.execution.created (detail.source=event);
+# a duplicate for the same pending/running event is audited as
+# patrol.execution.skipped (reason=duplicate).
+
+# 5) restore defaults when done
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"after_seconds":300,"severities":["warn","critical"],
+       "auto_dispatch":true,"second_after_seconds":0,"auto_patrol":false}' \
+  http://127.0.0.1:8080/api/settings/escalation
+```
+
+Notes:
+
+- Route matching: routes whose `camera_ids` contain the event camera (most
+  recently updated wins), otherwise the route whose waypoints are nearest the
+  camera in the XZ plane; no route → skip (`patrol.execution.skipped`,
+  `reason=no_route`).
+- Dedupe: same `event_id` already has a `pending`/`running` execution → skip
+  (`reason=duplicate`). Completed (`done`/`issue`) executions do not block a
+  new one for a later escalation of the same event.
+- Executions expose `event_id` (empty for schedule/manual runs) and the list
+  supports `?event_id=` filtering; WS broadcasts `patrol_execution`.
+- Execution history is archived via P14 purge (done/issue only); pending
+  event-linked executions stay until claimed/finished.
+- `smoke.sh` verifies the lifecycle (steps 56–58), temporarily relaxing
+  CAM-001 dedupe for deterministic event ingestion.
+
+## 15. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

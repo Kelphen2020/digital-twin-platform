@@ -67,7 +67,7 @@ func TestRotationDedupeAndReEscalation(t *testing.T) {
 	status, body := authorized(t, http.MethodPost, ts.URL+"/api/duty/groups", admin, map[string]any{
 		"name": "轮转组", "areas": []string{"area_gate"}, "rotation": "operator", "active": true,
 		"shifts": []map[string]any{{
-			"name": "全天", "start": "00:00", "end": "23:59",
+			"name": "全天", "start": "00:00", "end": "00:00",
 			"weekdays": []int{1, 2, 3, 4, 5, 6, 7}, "operators": []string{"operator", "viewer"},
 		}},
 	})

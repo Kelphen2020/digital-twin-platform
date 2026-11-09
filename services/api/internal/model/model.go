@@ -107,6 +107,7 @@ type EscalationSettings struct {
 	Severities         []string `json:"severities"`
 	AutoDispatch       bool     `json:"auto_dispatch"`
 	SecondAfterSeconds int      `json:"second_after_seconds"`
+	AutoPatrol         bool     `json:"auto_patrol"`
 }
 
 // DefaultEscalationSettings escalates warn/critical alerts after five minutes.
@@ -486,6 +487,7 @@ type PatrolExecution struct {
 	ScheduleID  string     `json:"schedule_id"`
 	RouteID     string     `json:"route_id"`
 	RouteName   string     `json:"route_name"`
+	EventID     string     `json:"event_id"`
 	Status      string     `json:"status"`
 	Assignee    string     `json:"assignee"`
 	Result      string     `json:"result"`
@@ -501,6 +503,7 @@ type PatrolExecution struct {
 type PatrolExecutionFilter struct {
 	Status     string
 	ScheduleID string
+	EventID    string
 	From       *time.Time
 	To         *time.Time
 	Limit      int

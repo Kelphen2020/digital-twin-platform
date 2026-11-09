@@ -1227,9 +1227,9 @@ func (p *Postgres) DeletePatrolSchedule(ctx context.Context, id string) error {
 
 func (p *Postgres) CreatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO patrol_executions (id, schedule_id, route_id, route_name, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		execution.ID, execution.ScheduleID, execution.RouteID, execution.RouteName, execution.Status,
+        INSERT INTO patrol_executions (id, schedule_id, route_id, route_name, event_id, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		execution.ID, execution.ScheduleID, execution.RouteID, execution.RouteName, execution.EventID, execution.Status,
 		execution.Assignee, execution.Result, execution.Note, execution.OrderID,
 		execution.ScheduledAt, execution.CreatedAt, execution.StartedAt, execution.FinishedAt)
 	return err
@@ -1256,6 +1256,10 @@ func (p *Postgres) ListPatrolExecutions(ctx context.Context, filter model.Patrol
 	if filter.ScheduleID != "" {
 		args = append(args, filter.ScheduleID)
 		where += fmt.Sprintf(" AND schedule_id=$%d", len(args))
+	}
+	if filter.EventID != "" {
+		args = append(args, filter.EventID)
+		where += fmt.Sprintf(" AND event_id=$%d", len(args))
 	}
 	if filter.From != nil {
 		args = append(args, *filter.From)
@@ -1318,12 +1322,12 @@ func scanPatrolSchedule(row rowScanner) (model.PatrolSchedule, error) {
 	return schedule, nil
 }
 
-const patrolExecutionSelect = `SELECT id, schedule_id, route_id, route_name, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at FROM patrol_executions`
+const patrolExecutionSelect = `SELECT id, schedule_id, route_id, route_name, event_id, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at FROM patrol_executions`
 
 func scanPatrolExecution(row rowScanner) (model.PatrolExecution, error) {
 	var execution model.PatrolExecution
 	err := row.Scan(&execution.ID, &execution.ScheduleID, &execution.RouteID, &execution.RouteName,
-		&execution.Status, &execution.Assignee, &execution.Result, &execution.Note, &execution.OrderID,
+		&execution.EventID, &execution.Status, &execution.Assignee, &execution.Result, &execution.Note, &execution.OrderID,
 		&execution.ScheduledAt, &execution.CreatedAt, &execution.StartedAt, &execution.FinishedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {

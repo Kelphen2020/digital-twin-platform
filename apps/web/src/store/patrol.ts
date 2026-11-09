@@ -49,6 +49,7 @@ interface PatrolState {
   executionsLoading: boolean
   executionsError: string | null
   executionFilter: PatrolExecutionStatus | ''
+  executionEventFilter: string
   executionActionId: string | null
   // ---- P14：统计 / 导出 / 归档 ----
   stats: PatrolStats | null
@@ -78,6 +79,7 @@ const state = reactive<PatrolState>({
   executionsLoading: false,
   executionsError: null,
   executionFilter: '',
+  executionEventFilter: '',
   executionActionId: null,
   stats: null,
   statsLoading: false,
@@ -292,7 +294,11 @@ async function loadExecutions(): Promise<void> {
   state.executionsLoading = true
   state.executionsError = null
   try {
-    state.executions = await fetchPatrolExecutions({ status: state.executionFilter, limit: 100 })
+    state.executions = await fetchPatrolExecutions({
+      status: state.executionFilter,
+      eventId: state.executionEventFilter || undefined,
+      limit: 100,
+    })
   } catch (error) {
     state.executionsError = apiErrorMessage(error)
   } finally {
@@ -302,6 +308,12 @@ async function loadExecutions(): Promise<void> {
 
 function setExecutionFilter(status: PatrolExecutionStatus | ''): void {
   state.executionFilter = status
+  void loadExecutions()
+}
+
+/** P15：按关联事件 id 过滤执行任务。 */
+function setExecutionEventFilter(eventId: string): void {
+  state.executionEventFilter = eventId.trim()
   void loadExecutions()
 }
 
@@ -416,6 +428,7 @@ function reset(): void {
   state.executionsLoading = false
   state.executionsError = null
   state.executionFilter = ''
+  state.executionEventFilter = ''
   state.executionActionId = null
   state.stats = null
   state.statsLoading = false
@@ -447,6 +460,7 @@ export function usePatrolStore() {
     runScheduleNow,
     loadExecutions,
     setExecutionFilter,
+    setExecutionEventFilter,
     claimExecution,
     completeExecution,
     loadStats,
