@@ -8,8 +8,11 @@ import {
   deletePatrolRoute,
   deletePatrolSchedule,
   fetchPatrolExecutions,
+  exportPatrolExecutionsCsv,
   fetchPatrolRoutes,
   fetchPatrolSchedules,
+  fetchPatrolStats,
+  purgePatrolExecutions,
   runPatrolSchedule,
   updatePatrolRoute,
   updatePatrolSchedule,
@@ -22,6 +25,7 @@ import type {
   PatrolRoutePayload,
   PatrolSchedule,
   PatrolSchedulePayload,
+  PatrolStats,
 } from '../types'
 import { pushToast } from './ui'
 
@@ -46,6 +50,14 @@ interface PatrolState {
   executionsError: string | null
   executionFilter: PatrolExecutionStatus | ''
   executionActionId: string | null
+  // ---- P14：统计 / 导出 / 归档 ----
+  stats: PatrolStats | null
+  statsLoading: boolean
+  statsError: string | null
+  statsFrom: string
+  statsTo: string
+  exporting: boolean
+  purging: boolean
 }
 
 const state = reactive<PatrolState>({
@@ -67,6 +79,13 @@ const state = reactive<PatrolState>({
   executionsError: null,
   executionFilter: '',
   executionActionId: null,
+  stats: null,
+  statsLoading: false,
+  statsError: null,
+  statsFrom: '',
+  statsTo: '',
+  exporting: false,
+  purging: false,
 })
 
 const selectedRoute = computed(
@@ -327,6 +346,57 @@ async function completeExecution(
   }
 }
 
+// ---------------- P14：统计 / 导出 / 归档 ----------------
+
+async function loadStats(from = state.statsFrom, to = state.statsTo): Promise<void> {
+  state.statsLoading = true
+  state.statsError = null
+  state.statsFrom = from
+  state.statsTo = to
+  try {
+    state.stats = await fetchPatrolStats({ from: from || undefined, to: to || undefined })
+  } catch (error) {
+    state.statsError = apiErrorMessage(error)
+  } finally {
+    state.statsLoading = false
+  }
+}
+
+/** 按当前统计时间范围 + 执行状态筛选导出 CSV（operator/admin）。 */
+async function exportExecutions(): Promise<Blob | null> {
+  if (state.exporting) return null
+  state.exporting = true
+  try {
+    return await exportPatrolExecutionsCsv({
+      from: state.statsFrom || undefined,
+      to: state.statsTo || undefined,
+      status: state.executionFilter || undefined,
+    })
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.exporting = false
+  }
+}
+
+/** 清理 before 之前的已结束执行记录（admin），并刷新统计/列表。 */
+async function purgeHistory(before: string): Promise<number | null> {
+  if (state.purging) return null
+  state.purging = true
+  try {
+    const result = await purgePatrolExecutions({ before, status: 'done,issue' })
+    pushToast(`已清理 ${result.deleted} 条`, result.deleted > 0 ? 'success' : 'info')
+    await Promise.all([loadStats(state.statsFrom, state.statsTo), loadExecutions()])
+    return result.deleted
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.purging = false
+  }
+}
+
 function reset(): void {
   clearPlaybackTimer()
   state.routes = []
@@ -347,6 +417,13 @@ function reset(): void {
   state.executionsError = null
   state.executionFilter = ''
   state.executionActionId = null
+  state.stats = null
+  state.statsLoading = false
+  state.statsError = null
+  state.statsFrom = ''
+  state.statsTo = ''
+  state.exporting = false
+  state.purging = false
 }
 
 export function usePatrolStore() {
@@ -372,6 +449,9 @@ export function usePatrolStore() {
     setExecutionFilter,
     claimExecution,
     completeExecution,
+    loadStats,
+    exportExecutions,
+    purgeHistory,
     reset,
   }
 }

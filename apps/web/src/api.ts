@@ -42,6 +42,7 @@ import type {
   PatrolRoutePayload,
   PatrolSchedule,
   PatrolSchedulePayload,
+  PatrolStats,
   RefreshResponse,
   SiteConfig,
   StatsSummary,
@@ -725,6 +726,42 @@ export async function completePatrolExecution(
   payload: PatrolExecutionCompletePayload,
 ): Promise<PatrolExecution> {
   return postJson<PatrolExecution>(`/api/patrol/executions/${encodeURIComponent(executionId)}/complete`, payload)
+}
+
+// ---------------- P14 巡检统计 / 导出 / 归档 ----------------
+
+function patrolTimeQuery(params: { from?: string; to?: string; status?: string }): string {
+  const query = new URLSearchParams()
+  if (params.from) query.set('from', params.from)
+  if (params.to) query.set('to', params.to)
+  if (params.status) query.set('status', params.status)
+  return query.toString()
+}
+
+/** GET /api/patrol/stats?from=&to=（登录用户）。 */
+export async function fetchPatrolStats(params: { from?: string; to?: string } = {}): Promise<PatrolStats> {
+  const query = patrolTimeQuery(params)
+  return requestJson<PatrolStats>(`/api/patrol/stats${query ? `?${query}` : ''}`)
+}
+
+/** GET /api/patrol/executions/export（operator/admin）→ text/csv Blob。 */
+export async function exportPatrolExecutionsCsv(params: { from?: string; to?: string; status?: string } = {}): Promise<Blob> {
+  const query = patrolTimeQuery(params)
+  const response = await fetchWithAuth(`/api/patrol/executions/export${query ? `?${query}` : ''}`, {
+    method: 'GET',
+    headers: { Accept: 'text/csv' },
+  })
+  if (!response.ok) throw await parseError(response)
+  return response.blob()
+}
+
+/** DELETE /api/patrol/executions?before=&status=（admin）→ 删除已结束历史记录。 */
+export async function purgePatrolExecutions(params: { before?: string; status?: string } = {}): Promise<{ deleted: number }> {
+  const query = patrolTimeQuery({ from: undefined, to: undefined, status: params.status })
+  const suffix = [params.before ? `before=${encodeURIComponent(params.before)}` : '', query].filter(Boolean).join('&')
+  const response = await fetchWithAuth(`/api/patrol/executions${suffix ? `?${suffix}` : ''}`, { method: 'DELETE' })
+  if (!response.ok) throw await parseError(response)
+  return (await response.json()) as { deleted: number }
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

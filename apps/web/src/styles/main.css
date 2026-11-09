@@ -3958,3 +3958,137 @@ dd {
 .patrol-form textarea:focus {
   border-color: var(--border-strong);
 }
+
+
+/* ============================================================
+   P14.0 扩展：巡检统计 / 导出 / 清理
+   ============================================================ */
+
+.patrol-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.patrol-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(13, 33, 57, 0.55);
+}
+
+.patrol-stat-label {
+  font-size: 9.5px;
+  color: var(--text-faint);
+}
+
+.patrol-stat-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6f4ff;
+  line-height: 1.25;
+}
+
+.patrol-stat-card.stat-pending .patrol-stat-value {
+  color: #fcd34d;
+}
+
+.patrol-stat-card.stat-running .patrol-stat-value {
+  color: #7dd3fc;
+}
+
+.patrol-stat-card.stat-done .patrol-stat-value {
+  color: #86efac;
+}
+
+.patrol-stat-card.stat-issue .patrol-stat-value {
+  color: #fca5a5;
+}
+
+.patrol-stats-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.patrol-date-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.5px;
+  color: var(--text-faint);
+}
+
+.patrol-date-field input {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #061120;
+  color: var(--text);
+  font-size: 10px;
+  color-scheme: dark;
+  outline: none;
+}
+
+.patrol-summaries {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.patrol-summary {
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(8, 20, 38, 0.4);
+}
+
+.patrol-summary h4 {
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  color: #7dd3fc;
+}
+
+.patrol-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px 34px 34px;
+  gap: 4px;
+  padding: 1px 0;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.patrol-summary-head {
+  border-bottom: 1px solid var(--border);
+  font-size: 9px;
+  color: var(--text-faint);
+}
+
+.patrol-summary-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.patrol-purge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 7px;
+  border: 1px dashed rgba(239, 68, 68, 0.45);
+  border-radius: 7px;
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.patrol-purge-title {
+  font-size: 10px;
+  color: #fca5a5;
+}

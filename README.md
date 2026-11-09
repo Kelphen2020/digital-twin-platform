@@ -217,6 +217,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P13.md`](docs/API_P13.md)。
 
+![P14.0 巡检统计与历史清理](docs/screenshots/p14-stats.png)
+
+## P14.0 能力（巡检报表与归档）
+
+- **统计**：`GET /api/patrol/stats?from=&to=` 返回总数/待执行/进行中/已完成/异常、完成率、异常率、平均时长，以及按路线/按人汇总。
+- **导出**：`GET /api/patrol/executions/export` 导出 CSV（operator/admin，最多 1 万行，支持 time/status 过滤）。
+- **归档**：`DELETE /api/patrol/executions?before=&status=` 仅 admin 可清理已结束记录（done/issue），返回删除条数并写审计 `patrol.executions.purge`。
+- 前端：执行 tab 增加统计卡片、按路线/按人汇总、导出 CSV、admin 清理历史（before 日期 + 二次确认）。
+
+契约见 [`docs/API_P14.md`](docs/API_P14.md)。
+
 ## 目录
 
 ```

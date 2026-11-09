@@ -1,4 +1,4 @@
-# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0 + P12.0 + P13.0)
+# Simulator & verification tools (P0 + P1.0 + P2.0 + P3.0 + P4.0 + P5.0 + P6.0 + P7.0 + P8.0 + P10.0 + P11.0 + P12.0 + P13.0 + P14.0)
 
 Tools that play the **AI inference service** for the digital-twin demo and
 verify the detection → rule engine → event → WebSocket chain described in
@@ -26,8 +26,10 @@ token rotation, logout/logout-all, admin force-logout, password-change
 invalidation, session listing), the P12.0 patrol routes in
 [`docs/API_P12.md`](../../docs/API_P12.md) and the P13.0 patrol
 schedules/executions in [`docs/API_P13.md`](../../docs/API_P13.md) (scheduled
-executions, claim/complete lifecycle, issue → order link). P9.0 performance
-tooling/numbers live in [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
+executions, claim/complete lifecycle, issue → order link) and the P14.0 patrol
+reporting/archive in [`docs/API_P14.md`](../../docs/API_P14.md) (stats,
+execution CSV export, admin history purge). P9.0 performance tooling/numbers
+live in [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
 
 All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 (verified on 3.14). `scripts/smoke.sh` needs only `bash`, `curl` and `python3`.
@@ -36,7 +38,7 @@ All Python tools are **stdlib only** (no pip install) and target Python 3.9+
 |---|---|
 | `simulator.py` | Continuous synthetic detection feed: loads cameras via REST, POSTs detections (weighted classes, P1 virtual targets with stable `track_id`) to `/api/ingest/detections` at a configurable rate, prints live stats. P2.0 auth tokens optional. |
 | `run_camera_status.py` | Demo helper: sweeps cameras `offline` → `online` one at a time via `PATCH /api/cameras/{id}` so the WebSocket `camera_status` broadcast can be observed. |
-| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 = **209 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation, patrol routes, patrol schedules/executions). |
+| `../../scripts/smoke.sh` | End-to-end smoke test: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0 = **230 checks** (auth/RBAC, orders, camera rules, calibration, tracks, event workflow, audit, stats/CSV, data filtering, escalation, webhook delivery, settings, duty groups, auto-dispatch, notification retry/silence, P4 metrics, bus status/replay, site config, user management, duty shifts/rotation, re-escalation, security headers, login lockout, password policy, audit CSV export, refresh rotation, session revocation, patrol routes, patrol schedules/executions, patrol stats/export/purge). |
 | `../../scripts/load.py` | Threaded load injector: steady or `--ramp` QPS, optional `--read-ratio` event reads, achieved QPS, accepted/dropped, HTTP p50/p95/p99, `/metrics` counter deltas, `--report` Markdown rows + `--json` run records (see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md)). |
 | `../../scripts/webhook_receiver.py` | Tiny stdlib webhook receiver used by smoke (and manual demos) to verify P3.0/P4.0 notification delivery: records POSTs as JSONL, answers 200, `GET /health` readiness, `--fail-first N` returns 500 for the first N POSTs (retry testing). |
 
@@ -209,7 +211,7 @@ INGEST_TOKEN=secret ./scripts/smoke.sh
 The backend is expected in **`AUTH_MODE=on`** with the seeded users; the script
 logs in itself as admin, operator and viewer (tokens are never printed).
 Checks, printing `PASS`/`FAIL` per step and exiting non-zero if anything fails
-(**209 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0):
+(**230 checks**: 21 P0/P1.0 + 18 P2.0 + 21 P3.0 + 25 P4.0 + 9 P5.0 + 3 P6.0 + 16 P7.0 + 20 P8.0 + 13 P10.0 + 23 P11.0 + 18 P12.0 + 22 P13.0 + 21 P14.0):
 
 **P0 chain + P1.0 (steps 1, 3–14, 21 checks)**
 
@@ -417,6 +419,26 @@ viewer GET → 200; validation (missing/unknown `route_id`, interval 0 or 10081)
 `patrol.execution.claim`/`patrol.execution.complete`; cleanup deletes the test
 route and leaves no `smoke 计划 P13` schedules (executions are demo records
 without a delete endpoint).
+
+**P14.0 (steps 53–55, 21 checks)**
+
+53. stats: operator-created route + schedule + one `done` and one `issue`
+    execution, then admin `GET /api/patrol/stats?from=&to=` → 200 with
+    `executions_total`/`done`/`issue`/`pending`/`running` counts,
+    `completion_rate`/`issue_rate` consistent with the counts within 0.002,
+    `avg_duration_seconds >= 0`, `by_route` containing the test route and
+    `by_assignee` containing `operator`; malformed `from`/`to` → 400;
+54. export: operator `GET /api/patrol/executions/export` → 200
+    `text/csv; charset=utf-8` with `Content-Disposition: attachment;
+    filename="patrol-executions.csv"` and the exact header
+    `id,schedule_id,route_name,status,assignee,result,note,scheduled_at,started_at,finished_at,order_id`;
+    viewer → 403;
+55. purge: viewer/operator `DELETE /api/patrol/executions` → 403; admin
+    `DELETE …?before=<future>&status=done` → 200 `{deleted:N>=1}`, stats `done`
+    decreases while the `issue` execution remains, `status=pending` → 400,
+    audit has `patrol.executions.purge` with `deleted` count; final purge of
+    `done,issue` removes the smoke executions; route/schedule deleted;
+    admin login still works.
 
 The script waits for the API's 5 s `(camera, class)` dedup window to clear
 before posting (re-checked after each wait, ingest retried up to 3×), so it is
@@ -953,7 +975,49 @@ Notes:
   scheduler, `order.created` for issue orders).
 - `smoke.sh` verifies the full lifecycle (steps 50–52).
 
-## 13. Typical demo sequence
+## 13. P14.0 patrol stats, CSV export & history purge
+
+```bash
+ADMIN="$TOKEN"
+OP=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"operator","password":"Operator@123"}' \
+  http://127.0.0.1:8080/api/auth/login \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+
+# 1) stats (any logged-in user; optional RFC3339 from/to filter by created_at)
+curl -s -H "Authorization: Bearer $ADMIN" \
+  'http://127.0.0.1:8080/api/patrol/stats?from=2026-11-01T00:00:00Z&to=2026-11-30T23:59:59Z'
+# -> {executions_total, pending, running, done, issue, completion_rate,
+#     issue_rate, avg_duration_seconds, by_route:[{route_id,route_name,total,done,issue}],
+#     by_assignee:[{assignee,total,done,issue}]}
+
+# 2) execution CSV export (operator/admin)
+curl -s -D /tmp/exec.headers -H "Authorization: Bearer $OP" \
+  'http://127.0.0.1:8080/api/patrol/executions/export?status=done' -o /tmp/exec.csv
+head -1 /tmp/exec.csv
+# -> id,schedule_id,route_name,status,assignee,result,note,scheduled_at,started_at,finished_at,order_id
+grep -i content-disposition /tmp/exec.headers   # attachment; filename="patrol-executions.csv"
+
+# 3) history purge (admin only): delete finished executions created <= before
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN" \
+  'http://127.0.0.1:8080/api/patrol/executions?before=2026-11-30T00:00:00Z&status=done,issue'
+# -> {"deleted": N}; audit patrol.executions.purge (detail: before/statuses/deleted)
+```
+
+Notes:
+
+- `completion_rate = done / executions_total`, `issue_rate = issue /
+  executions_total` (3 decimals); `avg_duration_seconds` only counts executions
+  with both `started_at` and `finished_at`.
+- Export is capped at 10000 rows; `status` filter is optional
+  (pending/running/done/issue); viewer gets `403`.
+- Purge only allows finished states (`done`/`issue`; `pending`/`running` or
+  anything else → 400) and defaults `before` to now, `status` to `done,issue`.
+  It is a global archive operation (no per-id delete), so it can remove demo
+  history — `smoke.sh` purges its own done/issue records in cleanup.
+- `smoke.sh` verifies stats/export/purge (steps 53–55).
+
+## 14. Typical demo sequence
 
 ```bash
 # terminal 1: API (P2: AUTH_MODE=on by default)

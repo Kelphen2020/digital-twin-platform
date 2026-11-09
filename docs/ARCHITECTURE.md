@@ -185,7 +185,15 @@
 | 工单联动 | `complete(issue)` → `CreateOrder` | 标题「巡检异常 · 路线」，assignee=提交人，带 order_id |
 | 前端 | 巡检面板「计划/执行」tab | 立即执行、认领、完成（done/issue）、异常工单提示 |
 
-## 19. P1 建议优先级
+## 19. P14.0 已落地（巡检报表与归档）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 统计 | `handlePatrolStats` | 总数/状态分布/完成率/异常率/平均时长 + 按路线/按人汇总（created_at 范围过滤） |
+| 导出 | `/api/patrol/executions/export` | CSV（11 列），operator/admin，上限 1 万行 |
+| 归档 | `DeletePatrolExecutions` + admin API | 仅清理 done/issue 且 created_at <= before；审计记录删除条数 |
+
+## 20. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

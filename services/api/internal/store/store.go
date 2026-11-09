@@ -62,6 +62,7 @@ type Store interface {
 	GetPatrolExecution(ctx context.Context, id string) (model.PatrolExecution, bool, error)
 	ListPatrolExecutions(ctx context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error)
 	UpdatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error
+	DeletePatrolExecutions(ctx context.Context, before time.Time, statuses []string) (int, error)
 	CreateRefreshToken(ctx context.Context, token model.RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
@@ -700,12 +701,39 @@ func (m *Memory) ListPatrolExecutions(_ context.Context, filter model.PatrolExec
 		if filter.ScheduleID != "" && execution.ScheduleID != filter.ScheduleID {
 			continue
 		}
+		if filter.From != nil && execution.CreatedAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && execution.CreatedAt.After(*filter.To) {
+			continue
+		}
 		out = append(out, execution)
 	}
 	if filter.Limit > 0 && len(out) > filter.Limit {
 		out = out[:filter.Limit]
 	}
 	return out, nil
+}
+
+func (m *Memory) DeletePatrolExecutions(_ context.Context, before time.Time, statuses []string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	allowed := make(map[string]struct{}, len(statuses))
+	for _, status := range statuses {
+		allowed[status] = struct{}{}
+	}
+	deleted := 0
+	for id, execution := range m.executions {
+		if _, ok := allowed[execution.Status]; !ok {
+			continue
+		}
+		if execution.CreatedAt.After(before) {
+			continue
+		}
+		delete(m.executions, id)
+		deleted++
+	}
+	return deleted, nil
 }
 
 func (m *Memory) UpdatePatrolExecution(_ context.Context, execution model.PatrolExecution) error {

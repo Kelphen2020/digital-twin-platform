@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P13.0）
+# 数字孪生安防平台 · Web 前端（P14.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,14 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 巡检统计 / CSV 导出 / 历史归档（P14）
+
+- **统计卡片**：执行 tab 顶部展示总数 / 待执行 / 进行中 / 已完成 / 异常 / 完成率 / 异常率 / 平均时长（`GET /api/patrol/stats`）；起止日期（date input）可选，点击「刷新统计」按 `from/to`（RFC3339，created_at 过滤）重新拉取。
+- **汇总**：按路线（route_name/total/done/issue）与按人（assignee/total/done/issue）紧凑表格；无数据时显示「暂无数据」。
+- **导出 CSV**（operator/admin）：按当前统计时间范围 + 执行状态筛选调用 `GET /api/patrol/executions/export?from=&to=&status=`，带 Authorization 以 Blob 下载 `patrol-executions.csv`（表头 `id,schedule_id,route_name,status,assignee,result,note,scheduled_at,started_at,finished_at,order_id`），失败 Toast。
+- **清理历史**（仅 admin）：选择「早于」日期，两步「清理历史 → 确认清理」调用 `DELETE /api/patrol/executions?before=&status=done,issue`，成功 Toast「已清理 N 条」并刷新统计/执行列表（只删除已结束记录）。
+- 执行 tab 原有认领/完成/状态筛选保持不变；viewer 仅可查看统计与列表，无导出/清理按钮。
+
 ### 巡检计划 / 执行工作流（P13）
 
 - **巡检浮层三 tab**：路线 / 计划 / 执行，保留 P12 的全部路线创建、播放、暂停、停止能力。
@@ -245,6 +253,9 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/patrol/executions` | 登录 | 执行列表（status/limit 过滤） |
 | POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
 | POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
+| GET | `/api/patrol/stats` | 登录 | 巡检统计（from/to 可选） |
+| GET | `/api/patrol/executions/export` | operator/admin | 巡检执行 CSV（from/to/status） |
+| DELETE | `/api/patrol/executions` | admin | 清理已结束历史（before/status） |
 | GET | `/api/audit/export` | admin | 审计 CSV（from/to/action/actor/limit，text/csv） |
 | PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
@@ -320,6 +331,7 @@ apps/web/
 | 令牌续期 / 会话吊销 | **实时**：`POST /api/auth/refresh` 轮换、`/api/auth/logout`、管理员 `/api/users/{id}/sessions` 与 `/logout` |
 | 巡检路线 | **实时**：`/api/patrol/routes` CRUD；航点/相机高亮/相机飞行均为前端实现 |
 | 巡检计划 / 执行 | **实时**：schedules CRUD/run、executions claim/complete（issue 自动建工单）、WS `patrol_execution` 刷新 |
+| 巡检统计 / 导出 / 归档 | **实时**：`/api/patrol/stats`、`/api/patrol/executions/export` CSV、admin `DELETE /api/patrol/executions` |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -367,6 +379,15 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P14：巡检统计 / 导出 / 清理（operator/admin）
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/patrol/stats?from=&to="
+curl -s -D - -o /tmp/patrol-executions.csv -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/patrol/executions/export?from=&to=&status="
+head -2 /tmp/patrol-executions.csv
+# 清理历史（admin，二步确认由前端完成）
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/patrol/executions?status=done,issue&before=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # P13：巡检计划/执行（operator/admin）
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/patrol/schedules
@@ -497,3 +518,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P13 计划调度由后端每 `PATROL_TICK_SECONDS`（默认 15s）扫描；前端「立即执行」即时生成任务；计划 `next_run_at` 由后端推进。
 - 执行完成 `issue` 时后端自动创建工单（title=巡检异常 · route_name），前端依靠响应 `order_id` Toast 并刷新；工单也会通过既有 WS `order_updated` 出现在工单 tab。
 - 待执行角标依赖执行列表（登录后加载 + WS 刷新 + 进入执行 tab 刷新），非独立轮询。
+- P14 统计/导出时间过滤均为 RFC3339；前端 date input 按本地日界转为 UTC ISO（起 00:00:00，止 23:59:59）。
+- 清理历史仅移除 `done`/`issue` 已结束记录（before 缺省现在），前端要求二次确认；operator/viewer 看不到清理按钮，导出仅 operator/admin 可见。
+- 导出文件上限 10000 行（后端），前端不做额外截断；空结果仍下载表头 CSV。

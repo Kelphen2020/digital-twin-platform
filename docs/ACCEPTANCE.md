@@ -669,3 +669,44 @@ P13 覆盖：计划创建 201（next_run_at/created_by）、列表、PATCH、vie
 - 调度器为单实例进程内 ticker；多实例需分布式锁或数据库抢占（`FOR UPDATE SKIP LOCKED`）。
 - issue 工单固定 priority=normal、assignee=提交人，未接值班轮转/升级链路。
 - 计划与执行在内存模式重启后丢失（PostgreSQL 持久化）。
+
+---
+
+# P14.0 验收记录（2026-11-10 凌晨）
+
+## 64. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：统计计数/完成率/异常率/平均时长/按路线与按人汇总、from/to 非 RFC3339 400、CSV 导出表头与角色、admin 清理（仅 done/issue、before 过滤、非法 status 400）、审计 patrol.executions.purge |
+
+## 65. smoke.sh（P0–P13 209 项 + P14 21 项 = 230 项 / 55 步）
+
+```
+smoke: PASS (230 checks passed)
+```
+
+P14 覆盖：统计（总数/状态分布/完成率/异常率一致、by_route/by_assignee、非法时间 400）；导出（operator 200 精确表头 + attachment、viewer 403）；清理（viewer/operator 403、admin 删除 done 2 条、issue 保留、pending 400、审计）；清理后无残留计划/路线。
+
+## 66. 前端 P14 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 统计卡片 | ✅ 总数/待执行/进行中/已完成/异常/完成率/异常率/平均时长与 API 一致；起止日期 + 刷新生效 |
+| 汇总 | ✅ 按路线（P14演示路线 3/1/1）与按人（operator 2/1/1）|
+| 导出 CSV | ✅ Toast「巡检执行 CSV 已导出」，下载表头与契约一致、3 行（done/issue/pending） |
+| 清理历史 | ✅ admin 专属 before 日期 + 二次确认 →「已清理 2 条」，仅删已结束，pending 保留，统计/列表即时刷新 |
+| 权限 | ✅ operator 可导出无清理；viewer 无导出/清理/写操作 |
+| 回归 | ✅ 8 页签/4 开关/P0–P13（路线/计划/执行/播放/场景）正常；console errors=[] |
+| 截图 | `docs/screenshots/p14-stats.png`、`p14-export.png`、`p14-purge.png`、`p14-operator.png`、`p14-viewer.png` |
+
+## 67. 已知限制（P14.0）
+
+- 清理为全局归档（按 before + 状态），不支持按 id/路线清理；pending/running 不可清理（按契约）。
+- 统计上限 1 万条执行记录（内存过滤），超大数据量需 SQL 聚合/分页。
+- 平均时长依赖 started/finished 秒级差，短任务可能显示 0。
+- 导出行数上限 1 万，超大导出需异步任务。

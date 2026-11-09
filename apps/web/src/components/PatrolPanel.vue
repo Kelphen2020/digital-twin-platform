@@ -4,6 +4,7 @@ import { formatDateTime } from '../labels'
 import { useAuthStore } from '../store/auth'
 import { usePatrolStore } from '../store/patrol'
 import { useTwinStore } from '../store/twin'
+import { pushToast } from '../store/ui'
 import type {
   Camera,
   PatrolExecution,
@@ -40,6 +41,9 @@ const {
   setExecutionFilter,
   claimExecution,
   completeExecution,
+  loadStats,
+  exportExecutions,
+  purgeHistory,
 } = usePatrolStore()
 const { state: twinState, selectCamera } = useTwinStore()
 const { state: authState, role } = useAuthStore()
@@ -91,6 +95,72 @@ const completeDialog = ref<PatrolExecution | null>(null)
 const completeNote = ref('')
 const completeResult = ref<CompleteResult>('done')
 const completeError = ref('')
+
+// ---- P14：统计 / 导出 / 清理 ----
+const statsFromDate = ref('')
+const statsToDate = ref('')
+const purgeBeforeDate = ref(new Date().toISOString().slice(0, 10))
+const purgeConfirming = ref(false)
+
+const statsCards = computed(() => {
+  const stats = state.stats
+  return [
+    { key: 'total', label: '总数', value: stats?.executions_total ?? '—' },
+    { key: 'pending', label: '待执行', value: stats?.pending ?? '—', tone: 'pending' },
+    { key: 'running', label: '进行中', value: stats?.running ?? '—', tone: 'running' },
+    { key: 'done', label: '已完成', value: stats?.done ?? '—', tone: 'done' },
+    { key: 'issue', label: '异常', value: stats?.issue ?? '—', tone: 'issue' },
+    { key: 'completion', label: '完成率', value: stats ? `${(stats.completion_rate * 100).toFixed(1)}%` : '—' },
+    { key: 'issueRate', label: '异常率', value: stats ? `${(stats.issue_rate * 100).toFixed(1)}%` : '—' },
+    { key: 'duration', label: '平均时长', value: stats ? formatDuration(stats.avg_duration_seconds) : '—' },
+  ]
+})
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—'
+  if (seconds < 60) return `${Math.round(seconds)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const remainder = Math.round(seconds % 60)
+  return remainder > 0 ? `${minutes} 分 ${remainder} 秒` : `${minutes} 分钟`
+}
+
+function dateInputToIso(dateValue: string, endOfDay = false): string {
+  if (!dateValue) return ''
+  const time = endOfDay ? 'T23:59:59' : 'T00:00:00'
+  const parsed = new Date(`${dateValue}${time}`)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
+}
+
+function refreshStats(): void {
+  void loadStats(dateInputToIso(statsFromDate.value), dateInputToIso(statsToDate.value, true))
+}
+
+async function downloadExecutionsCsv(): Promise<void> {
+  const blob = await exportExecutions()
+  if (!blob) return
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'patrol-executions.csv'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+  pushToast('巡检执行 CSV 已导出', 'success')
+}
+
+function requestPurge(): void {
+  if (!isAdmin.value) return
+  purgeConfirming.value = true
+}
+
+async function confirmPurge(): Promise<void> {
+  const before = dateInputToIso(purgeBeforeDate.value, true)
+  purgeConfirming.value = false
+  if (!before) return
+  await purgeHistory(before)
+}
+
 
 function canManageRoute(route: PatrolRoute): boolean {
   return isAdmin.value || route.created_by === authState.user?.username
@@ -323,13 +393,17 @@ async function refreshAll(): Promise<void> {
 
 watch(tab, (next) => {
   if (next === 'schedules') void loadSchedules()
-  if (next === 'executions') void loadExecutions()
+  if (next === 'executions') {
+    void loadExecutions()
+    void loadStats()
+  }
 })
 
 onMounted(() => {
   void loadRoutes()
   void loadSchedules()
   void loadExecutions()
+  void loadStats()
 })
 </script>
 
@@ -456,6 +530,70 @@ onMounted(() => {
 
       <!-- 执行 -->
       <template v-else>
+        <div class="patrol-stats-grid" :data-stats-total="state.stats?.executions_total ?? ''">
+          <div v-for="card in statsCards" :key="card.key" class="patrol-stat-card" :class="card.tone ? `stat-${card.tone}` : ''">
+            <span class="patrol-stat-label">{{ card.label }}</span>
+            <strong class="patrol-stat-value">{{ card.value }}</strong>
+          </div>
+        </div>
+        <p v-if="state.statsError" class="form-error">统计加载失败：{{ state.statsError }}</p>
+
+        <div class="patrol-stats-controls">
+          <label class="patrol-date-field">
+            <span>起</span>
+            <input v-model="statsFromDate" type="date" />
+          </label>
+          <label class="patrol-date-field">
+            <span>止</span>
+            <input v-model="statsToDate" type="date" />
+          </label>
+          <button class="ghost-btn" :disabled="state.statsLoading" @click="refreshStats">刷新统计</button>
+          <button v-if="canWrite" class="secondary-btn" :disabled="state.exporting" @click="downloadExecutionsCsv">
+            {{ state.exporting ? '导出中…' : '导出 CSV' }}
+          </button>
+        </div>
+
+        <div class="patrol-summaries">
+          <div class="patrol-summary">
+            <h4>按路线</h4>
+            <div class="patrol-summary-row patrol-summary-head">
+              <span>路线</span><span>总数</span><span>完成</span><span>异常</span>
+            </div>
+            <div v-for="row in state.stats?.by_route ?? []" :key="row.route_id" class="patrol-summary-row">
+              <span class="patrol-summary-name" :title="row.route_name">{{ row.route_name }}</span>
+              <span>{{ row.total }}</span><span>{{ row.done }}</span><span>{{ row.issue }}</span>
+            </div>
+            <p v-if="(state.stats?.by_route ?? []).length === 0" class="patrol-meta">暂无数据</p>
+          </div>
+          <div class="patrol-summary">
+            <h4>按人</h4>
+            <div class="patrol-summary-row patrol-summary-head">
+              <span>人员</span><span>总数</span><span>完成</span><span>异常</span>
+            </div>
+            <div v-for="row in state.stats?.by_assignee ?? []" :key="row.assignee || 'unassigned'" class="patrol-summary-row">
+              <span class="patrol-summary-name" :title="row.assignee">{{ row.assignee || '未认领' }}</span>
+              <span>{{ row.total }}</span><span>{{ row.done }}</span><span>{{ row.issue }}</span>
+            </div>
+            <p v-if="(state.stats?.by_assignee ?? []).length === 0" class="patrol-meta">暂无数据</p>
+          </div>
+        </div>
+
+        <div v-if="isAdmin" class="patrol-purge">
+          <span class="patrol-purge-title">清理历史</span>
+          <label class="patrol-date-field">
+            <span>早于</span>
+            <input v-model="purgeBeforeDate" type="date" />
+          </label>
+          <button v-if="!purgeConfirming" class="ghost-btn" :disabled="state.purging" @click="requestPurge">清理历史</button>
+          <template v-else>
+            <button class="danger-btn compact-btn" :disabled="state.purging" @click="confirmPurge">
+              {{ state.purging ? '清理中…' : '确认清理' }}
+            </button>
+            <button class="ghost-btn" @click="purgeConfirming = false">取消</button>
+          </template>
+          <span class="patrol-meta">仅删除已结束（done/issue）且创建时间早于所选日期的记录</span>
+        </div>
+
         <div class="patrol-filter">
           <span>状态筛选</span>
           <select

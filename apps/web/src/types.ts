@@ -514,6 +514,37 @@ export interface PatrolExecutionCompletePayload {
   note: string
 }
 
+export interface PatrolStatsRoute {
+  route_id: string
+  route_name: string
+  total: number
+  done: number
+  issue: number
+}
+
+export interface PatrolStatsAssignee {
+  assignee: string
+  total: number
+  done: number
+  issue: number
+}
+
+/** GET /api/patrol/stats?from=&to=（P14）。 */
+export interface PatrolStats {
+  from?: string | null
+  to?: string | null
+  executions_total: number
+  pending: number
+  running: number
+  done: number
+  issue: number
+  completion_rate: number
+  issue_rate: number
+  avg_duration_seconds: number
+  by_route: PatrolStatsRoute[]
+  by_assignee: PatrolStatsAssignee[]
+}
+
 /** WS：巡检执行状态变化（P13；后端广播则刷新列表）。 */
 export interface WsPatrolExecutionMessage {
   type: 'patrol_execution'

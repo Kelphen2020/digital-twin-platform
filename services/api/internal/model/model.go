@@ -501,5 +501,7 @@ type PatrolExecution struct {
 type PatrolExecutionFilter struct {
 	Status     string
 	ScheduleID string
+	From       *time.Time
+	To         *time.Time
 	Limit      int
 }

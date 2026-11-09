@@ -1257,6 +1257,14 @@ func (p *Postgres) ListPatrolExecutions(ctx context.Context, filter model.Patrol
 		args = append(args, filter.ScheduleID)
 		where += fmt.Sprintf(" AND schedule_id=$%d", len(args))
 	}
+	if filter.From != nil {
+		args = append(args, *filter.From)
+		where += fmt.Sprintf(" AND created_at >= $%d", len(args))
+	}
+	if filter.To != nil {
+		args = append(args, *filter.To)
+		where += fmt.Sprintf(" AND created_at <= $%d", len(args))
+	}
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
@@ -1334,4 +1342,13 @@ func scanPatrolExecution(row rowScanner) (model.PatrolExecution, error) {
 		execution.FinishedAt = &stamp
 	}
 	return execution, nil
+}
+
+func (p *Postgres) DeletePatrolExecutions(ctx context.Context, before time.Time, statuses []string) (int, error) {
+	tag, err := p.pool.Exec(ctx,
+		`DELETE FROM patrol_executions WHERE created_at <= $1 AND status = ANY($2)`, before, statuses)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }

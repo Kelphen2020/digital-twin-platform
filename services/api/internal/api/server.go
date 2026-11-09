@@ -14,8 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,6 +146,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/patrol/executions", s.handleListPatrolExecutions)
 	mux.HandleFunc("POST /api/patrol/executions/{id}/claim", s.handleClaimPatrolExecution)
 	mux.HandleFunc("POST /api/patrol/executions/{id}/complete", s.handleCompletePatrolExecution)
+	mux.HandleFunc("GET /api/patrol/stats", s.handlePatrolStats)
+	mux.HandleFunc("GET /api/patrol/executions/export", s.handlePatrolExecutionsExport)
+	mux.HandleFunc("DELETE /api/patrol/executions", s.handlePurgePatrolExecutions)
 	mux.HandleFunc("GET /api/site", s.handleSite)
 	mux.HandleFunc("GET /api/bus/status", s.handleBusStatus)
 	mux.HandleFunc("POST /api/bus/replay", s.handleBusReplay)
@@ -2822,6 +2827,215 @@ func (s *Server) RunPatrolOnce(ctx context.Context) {
 			log.Printf("api: patrol schedule advance: %v", err)
 		}
 	}
+}
+
+func parsePatrolRange(r *http.Request) (*time.Time, *time.Time, error) {
+	var from, to *time.Time
+	if raw := r.URL.Query().Get("from"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, nil, errors.New("from must be RFC3339")
+		}
+		from = &parsed
+	}
+	if raw := r.URL.Query().Get("to"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, nil, errors.New("to must be RFC3339")
+		}
+		to = &parsed
+	}
+	return from, to, nil
+}
+
+func (s *Server) handlePatrolStats(w http.ResponseWriter, r *http.Request) {
+	from, to, err := parsePatrolRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	executions, err := s.store.ListPatrolExecutions(r.Context(), model.PatrolExecutionFilter{
+		From: from, To: to, Limit: 10000,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	type routeStat struct {
+		RouteID   string `json:"route_id"`
+		RouteName string `json:"route_name"`
+		Total     int    `json:"total"`
+		Done      int    `json:"done"`
+		Issue     int    `json:"issue"`
+	}
+	type assigneeStat struct {
+		Assignee string `json:"assignee"`
+		Total    int    `json:"total"`
+		Done     int    `json:"done"`
+		Issue    int    `json:"issue"`
+	}
+	counts := map[string]int{}
+	routes := map[string]*routeStat{}
+	assignees := map[string]*assigneeStat{}
+	durationSum := 0.0
+	durationCount := 0
+	for _, execution := range executions {
+		counts[execution.Status]++
+		routeKey := execution.RouteID
+		route, ok := routes[routeKey]
+		if !ok {
+			route = &routeStat{RouteID: execution.RouteID, RouteName: execution.RouteName}
+			routes[routeKey] = route
+		}
+		route.Total++
+		switch execution.Status {
+		case "done":
+			route.Done++
+		case "issue":
+			route.Issue++
+		}
+		if execution.Assignee != "" {
+			stat, ok := assignees[execution.Assignee]
+			if !ok {
+				stat = &assigneeStat{Assignee: execution.Assignee}
+				assignees[execution.Assignee] = stat
+			}
+			stat.Total++
+			switch execution.Status {
+			case "done":
+				stat.Done++
+			case "issue":
+				stat.Issue++
+			}
+		}
+		if execution.StartedAt != nil && execution.FinishedAt != nil {
+			durationSum += execution.FinishedAt.Sub(*execution.StartedAt).Seconds()
+			durationCount++
+		}
+	}
+	total := len(executions)
+	rate := func(part int) float64 {
+		if total == 0 {
+			return 0
+		}
+		return math.Round(float64(part)/float64(total)*1000) / 1000
+	}
+	average := 0.0
+	if durationCount > 0 {
+		average = math.Round(durationSum/float64(durationCount)*10) / 10
+	}
+	routeList := make([]routeStat, 0, len(routes))
+	for _, route := range routes {
+		routeList = append(routeList, *route)
+	}
+	sort.Slice(routeList, func(i, j int) bool {
+		if routeList[i].Total != routeList[j].Total {
+			return routeList[i].Total > routeList[j].Total
+		}
+		return routeList[i].RouteID < routeList[j].RouteID
+	})
+	assigneeList := make([]assigneeStat, 0, len(assignees))
+	for _, stat := range assignees {
+		assigneeList = append(assigneeList, *stat)
+	}
+	sort.Slice(assigneeList, func(i, j int) bool {
+		if assigneeList[i].Total != assigneeList[j].Total {
+			return assigneeList[i].Total > assigneeList[j].Total
+		}
+		return assigneeList[i].Assignee < assigneeList[j].Assignee
+	})
+	response := map[string]any{
+		"executions_total":     total,
+		"pending":              counts["pending"],
+		"running":              counts["running"],
+		"done":                 counts["done"],
+		"issue":                counts["issue"],
+		"completion_rate":      rate(counts["done"]),
+		"issue_rate":           rate(counts["issue"]),
+		"avg_duration_seconds": average,
+		"by_route":             routeList,
+		"by_assignee":          assigneeList,
+	}
+	if from != nil {
+		response["from"] = from.Format(time.RFC3339)
+	}
+	if to != nil {
+		response["to"] = to.Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handlePatrolExecutionsExport(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermPatrolWrite); !ok {
+		return
+	}
+	from, to, err := parsePatrolRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	executions, err := s.store.ListPatrolExecutions(r.Context(), model.PatrolExecutionFilter{
+		Status: r.URL.Query().Get("status"), From: from, To: to, Limit: 10000,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="patrol-executions.csv"`)
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"id", "schedule_id", "route_name", "status", "assignee", "result", "note", "scheduled_at", "started_at", "finished_at", "order_id"})
+	for _, execution := range executions {
+		started, finished := "", ""
+		if execution.StartedAt != nil {
+			started = execution.StartedAt.Format(time.RFC3339)
+		}
+		if execution.FinishedAt != nil {
+			finished = execution.FinishedAt.Format(time.RFC3339)
+		}
+		_ = writer.Write([]string{
+			execution.ID, execution.ScheduleID, execution.RouteName, execution.Status,
+			execution.Assignee, execution.Result, execution.Note,
+			execution.ScheduledAt.Format(time.RFC3339), started, finished, execution.OrderID,
+		})
+	}
+	writer.Flush()
+}
+
+func (s *Server) handlePurgePatrolExecutions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+		return
+	}
+	before := time.Now().UTC()
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "before must be RFC3339")
+			return
+		}
+		before = parsed
+	}
+	statuses := []string{"done", "issue"}
+	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" {
+		statuses = []string{}
+		for _, part := range strings.Split(raw, ",") {
+			status := strings.TrimSpace(part)
+			if status != "done" && status != "issue" {
+				writeError(w, http.StatusBadRequest, "bad_request", "status may only contain done and issue")
+				return
+			}
+			statuses = append(statuses, status)
+		}
+	}
+	deleted, err := s.store.DeletePatrolExecutions(r.Context(), before, statuses)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.executions.purge", "patrol_executions", map[string]any{
+		"before": before.Format(time.RFC3339), "statuses": statuses, "deleted": deleted,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
 func (s *Server) writePatrolError(w http.ResponseWriter, err error) {
