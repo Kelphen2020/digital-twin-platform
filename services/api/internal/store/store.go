@@ -48,6 +48,11 @@ type Store interface {
 	ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error)
 	EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
 	ReEscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error)
+	CreatePatrolRoute(ctx context.Context, route model.PatrolRoute) error
+	GetPatrolRoute(ctx context.Context, id string) (model.PatrolRoute, bool, error)
+	ListPatrolRoutes(ctx context.Context) ([]model.PatrolRoute, error)
+	UpdatePatrolRoute(ctx context.Context, route model.PatrolRoute) error
+	DeletePatrolRoute(ctx context.Context, id string) error
 	CreateRefreshToken(ctx context.Context, token model.RefreshToken) error
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
@@ -84,6 +89,7 @@ type Memory struct {
 	usernames     map[string]string
 	refresh       map[string]model.RefreshToken
 	refreshByHash map[string]string
+	patrols       map[string]model.PatrolRoute
 	tracks        []model.TrackPoint
 	actions       map[string][]model.EventAction
 	audit         []model.AuditEntry
@@ -109,6 +115,7 @@ func NewMemory(maxEvents int) *Memory {
 		usernames:     make(map[string]string),
 		refresh:       make(map[string]model.RefreshToken),
 		refreshByHash: make(map[string]string),
+		patrols:       make(map[string]model.PatrolRoute),
 	}
 }
 
@@ -565,6 +572,50 @@ func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (m *Memory) CreatePatrolRoute(_ context.Context, route model.PatrolRoute) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.patrols[route.ID] = route
+	return nil
+}
+
+func (m *Memory) GetPatrolRoute(_ context.Context, id string) (model.PatrolRoute, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	route, ok := m.patrols[id]
+	return route, ok, nil
+}
+
+func (m *Memory) ListPatrolRoutes(_ context.Context) ([]model.PatrolRoute, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.PatrolRoute, 0, len(m.patrols))
+	for _, route := range m.patrols {
+		out = append(out, route)
+	}
+	return out, nil
+}
+
+func (m *Memory) UpdatePatrolRoute(_ context.Context, route model.PatrolRoute) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.patrols[route.ID]; !ok {
+		return model.ErrNotFound
+	}
+	m.patrols[route.ID] = route
+	return nil
+}
+
+func (m *Memory) DeletePatrolRoute(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.patrols[id]; !ok {
+		return model.ErrNotFound
+	}
+	delete(m.patrols, id)
+	return nil
 }
 
 func (m *Memory) CreateRefreshToken(_ context.Context, token model.RefreshToken) error {

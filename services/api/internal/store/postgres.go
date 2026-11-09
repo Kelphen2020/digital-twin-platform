@@ -1074,3 +1074,92 @@ func scanRefreshToken(row rowScanner) (model.RefreshToken, error) {
 	token.CreatedAt = token.CreatedAt.UTC()
 	return token, nil
 }
+
+func (p *Postgres) CreatePatrolRoute(ctx context.Context, route model.PatrolRoute) error {
+	waypoints, _ := json.Marshal(route.Waypoints)
+	cameras, _ := json.Marshal(route.CameraIDs)
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO patrol_routes (id, name, waypoints, camera_ids, interval_seconds, created_by, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		route.ID, route.Name, waypoints, cameras, route.IntervalSeconds, route.CreatedBy,
+		route.CreatedAt, route.UpdatedAt)
+	return err
+}
+
+func (p *Postgres) GetPatrolRoute(ctx context.Context, id string) (model.PatrolRoute, bool, error) {
+	route, err := scanPatrolRoute(p.pool.QueryRow(ctx, patrolSelect+` WHERE id=$1`, id))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return model.PatrolRoute{}, false, nil
+		}
+		return model.PatrolRoute{}, false, err
+	}
+	return route, true, nil
+}
+
+func (p *Postgres) ListPatrolRoutes(ctx context.Context) ([]model.PatrolRoute, error) {
+	rows, err := p.pool.Query(ctx, patrolSelect+` ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	routes := make([]model.PatrolRoute, 0, 4)
+	for rows.Next() {
+		route, err := scanPatrolRoute(rows)
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, route)
+	}
+	return routes, rows.Err()
+}
+
+func (p *Postgres) UpdatePatrolRoute(ctx context.Context, route model.PatrolRoute) error {
+	waypoints, _ := json.Marshal(route.Waypoints)
+	cameras, _ := json.Marshal(route.CameraIDs)
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE patrol_routes SET name=$2, waypoints=$3, camera_ids=$4, interval_seconds=$5, updated_at=now()
+        WHERE id=$1`, route.ID, route.Name, waypoints, cameras, route.IntervalSeconds)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) DeletePatrolRoute(ctx context.Context, id string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM patrol_routes WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const patrolSelect = `SELECT id, name, waypoints, camera_ids, interval_seconds, created_by, created_at, updated_at FROM patrol_routes`
+
+func scanPatrolRoute(row rowScanner) (model.PatrolRoute, error) {
+	var route model.PatrolRoute
+	var waypoints, cameras []byte
+	err := row.Scan(&route.ID, &route.Name, &waypoints, &cameras, &route.IntervalSeconds,
+		&route.CreatedBy, &route.CreatedAt, &route.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.PatrolRoute{}, ErrNotFound
+		}
+		return model.PatrolRoute{}, err
+	}
+	if len(waypoints) > 0 {
+		_ = json.Unmarshal(waypoints, &route.Waypoints)
+	}
+	if len(cameras) > 0 {
+		_ = json.Unmarshal(cameras, &route.CameraIDs)
+	}
+	route.CreatedAt = route.CreatedAt.UTC()
+	route.UpdatedAt = route.UpdatedAt.UTC()
+	return route, nil
+}

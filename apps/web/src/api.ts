@@ -33,6 +33,9 @@ import type {
   Order,
   OrderListResponse,
   OrderStatus,
+  PatrolRoute,
+  PatrolRouteListResponse,
+  PatrolRoutePayload,
   RefreshResponse,
   SiteConfig,
   StatsSummary,
@@ -638,6 +641,30 @@ export async function exportAuditCsv(params: AuditExportParams = {}): Promise<Bl
     throw error
   }
   return response.blob()
+}
+
+// ---------------- P12 巡检路线 ----------------
+
+/** GET /api/patrol/routes（登录用户）→ 巡检路线列表。 */
+export async function fetchPatrolRoutes(): Promise<PatrolRoute[]> {
+  const data = await requestJson<PatrolRouteListResponse>('/api/patrol/routes')
+  return data.items ?? []
+}
+
+/** POST /api/patrol/routes（operator/admin）→ 创建巡检路线。 */
+export async function createPatrolRoute(payload: PatrolRoutePayload): Promise<PatrolRoute> {
+  return postJson<PatrolRoute>('/api/patrol/routes', payload)
+}
+
+/** PATCH /api/patrol/routes/{id}（创建者或 admin）→ 修改。 */
+export async function updatePatrolRoute(routeId: string, payload: Partial<PatrolRoutePayload>): Promise<PatrolRoute> {
+  return patchJson<PatrolRoute>(`/api/patrol/routes/${encodeURIComponent(routeId)}`, payload)
+}
+
+/** DELETE /api/patrol/routes/{id}（创建者或 admin）→ 204。 */
+export async function deletePatrolRoute(routeId: string): Promise<void> {
+  const response = await fetchWithAuth(`/api/patrol/routes/${encodeURIComponent(routeId)}`, { method: 'DELETE' })
+  if (!response.ok) throw await parseError(response)
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

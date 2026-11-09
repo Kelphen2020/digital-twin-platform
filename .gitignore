@@ -11,3 +11,5 @@ coverage/
 playwright-report/
 apps/web/public/hls/
 data/
+__pycache__/
+*.pyc

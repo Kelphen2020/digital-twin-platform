@@ -12,15 +12,17 @@ import {
   SEVERITY_ORDER,
   formatDateTime,
 } from '../labels'
-import type { Area, Camera, FocusRequest, SiteConfig, SiteModelStatus, TrackPoint, TwinEvent } from '../types'
+import type { Area, Camera, FocusRequest, PatrolRoute, PatrolWaypoint, SiteConfig, SiteModelStatus, TrackPoint, TwinEvent } from '../types'
 import { createBaseMapLayer, type BaseMapLayer } from './baseMap'
 import { createBuildingLayer, type BuildingLayer } from './buildings'
 import { createCameraMarker, type CameraMarker } from './cameraMarkers'
+import { enuToThree } from './coordinates'
 import { disposeObject3D } from './dispose'
 import { createEnvironment, type SceneEnvironment } from './environment'
 import { EVENT_MARKER_TTL_MS, createEventMarker, type EventMarker } from './eventMarkers'
 import { loadSiteModels } from './gltf'
 import { DEFAULT_SITE } from './siteDefaults'
+import { createTextSprite } from './textSprite'
 import { createTrackLineLayer, type TrackLineLayer } from './trackLines'
 import { createVideoFusion, type VideoFusion } from './videoFusion'
 
@@ -38,12 +40,19 @@ const props = defineProps<{
   showBaseMap: boolean
   showModelDetails: boolean
   showVideoFusion: boolean
+  measureMode: boolean
+  patrolRoute: PatrolRoute | null
+  patrolPlaying: boolean
+  patrolIndex: number
 }>()
 
 const emit = defineEmits<{
   (event: 'select-camera', cameraId: string | null): void
   (event: 'open-event', eventId: string): void
   (event: 'fps', fps: number): void
+  (event: 'toggle-measure'): void
+  (event: 'open-patrol'): void
+  (event: 'box-select', cameraIds: string[]): void
 }>()
 
 interface SceneTooltip {
@@ -101,6 +110,31 @@ let lastTrackSyncAt = 0
 const cameraMarkers = new Map<string, CameraMarker>()
 const eventMarkers = new Map<string, EventMarker>()
 const pointer = new THREE.Vector2()
+
+// ---- P12：测距 / 框选 / 巡检 ----
+let measureGroup: THREE.Group | null = null
+let measurePendingStart: THREE.Vector3 | null = null
+const measurePointCount = ref(0)
+const measureDistance = ref<number | null>(null)
+let boxHighlightLayer: THREE.Group | null = null
+let boxStartClient: { x: number; y: number } | null = null
+const boxSelecting = ref(false)
+const boxRect = ref<{ left: number; top: number; width: number; height: number } | null>(null)
+const boxSelectedIds = ref<string[]>([])
+let patrolLayer: THREE.Group | null = null
+let patrolCameraLayer: THREE.Group | null = null
+let patrolAnimation: FocusAnimation | null = null
+
+const boxSelectedCameras = computed(() =>
+  boxSelectedIds.value
+    .map((id) => props.cameras.find((camera) => camera.id === id))
+    .filter((camera): camera is Camera => !!camera),
+)
+const measureLabel = computed(() => {
+  if (measureDistance.value !== null) return `${measureDistance.value.toFixed(1)} m`
+  if (measurePointCount.value > 0) return '已选起点，请点击终点'
+  return '点击地面选择起点'
+})
 
 // ---- P6：站点/模型/视频融合状态（暴露为 data-* 便于验收） ----
 const modelStatus = ref<SiteModelStatus>('idle')
@@ -228,6 +262,276 @@ async function syncVideoFusion(): Promise<void> {
   scene?.add(created.group)
 }
 
+
+// ---- P12：测距 ----
+
+function disposeMeasureGroup(): void {
+  if (measureGroup) {
+    measureGroup.parent?.remove(measureGroup)
+    disposeObject3D(measureGroup)
+    measureGroup = null
+  }
+}
+
+function clearMeasurement(): void {
+  disposeMeasureGroup()
+  measurePendingStart = null
+  measurePointCount.value = 0
+  measureDistance.value = null
+}
+
+function groundPointAt(event: PointerEvent): THREE.Vector3 | null {
+  if (!renderer || !camera || !raycaster) return null
+  const rect = renderer.domElement.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return null
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+  raycaster.setFromCamera(pointer, camera)
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+  const point = new THREE.Vector3()
+  return raycaster.ray.intersectPlane(groundPlane, point) ? point : null
+}
+
+function addMeasureMarker(position: THREE.Vector3, color: number): void {
+  if (!measureGroup) return
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.9, 12, 10),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
+  )
+  marker.position.copy(position)
+  marker.position.y = 0.8
+  measureGroup.add(marker)
+}
+
+function handleMeasureClick(event: PointerEvent): void {
+  const point = groundPointAt(event)
+  if (!point || !scene) return
+
+  // 第三次点击：清除旧测量并重新选择起点
+  if (measureDistance.value !== null) clearMeasurement()
+  if (!measureGroup) {
+    measureGroup = new THREE.Group()
+    measureGroup.name = 'measure-layer'
+    scene.add(measureGroup)
+  }
+
+  if (!measurePendingStart) {
+    measurePendingStart = point.clone()
+    measurePointCount.value = 1
+    addMeasureMarker(point, 0xfbbf24)
+    return
+  }
+
+  const start = measurePendingStart
+  measurePendingStart = null
+  const distance = start.distanceTo(point)
+  measureDistance.value = distance
+  measurePointCount.value = 2
+  addMeasureMarker(point, 0xfbbf24)
+
+  const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(start.x, 0.35, start.z),
+    new THREE.Vector3(point.x, 0.35, point.z),
+  ])
+  measureGroup.add(new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: 0xfbbf24 })))
+
+  const label = createTextSprite(`${distance.toFixed(1)} m`, { worldHeight: 4.5, color: '#fde68a' })
+  label.position.set((start.x + point.x) / 2, 2.2, (start.z + point.z) / 2)
+  measureGroup.add(label)
+}
+
+// ---- P12：Shift+拖拽框选相机 ----
+
+function clearBoxSelection(): void {
+  if (boxSelectedIds.value.length === 0) return
+  boxSelectedIds.value = []
+  syncBoxHighlights()
+  emit('box-select', [])
+}
+
+function syncBoxHighlights(): void {
+  if (!scene) return
+  if (boxHighlightLayer) {
+    scene.remove(boxHighlightLayer)
+    disposeObject3D(boxHighlightLayer)
+    boxHighlightLayer = null
+  }
+  if (boxSelectedIds.value.length === 0) return
+  boxHighlightLayer = new THREE.Group()
+  boxHighlightLayer.name = 'box-selected-cameras'
+  for (const id of boxSelectedIds.value) {
+    const item = props.cameras.find((camera) => camera.id === id)
+    if (!item) continue
+    const position = enuToThree(item.x, item.y, 0)
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(3.2, 4.4, 40),
+      new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.copy(position)
+    ring.position.y = 0.18
+    boxHighlightLayer.add(ring)
+    const beamGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(position.x, 0.2, position.z),
+      new THREE.Vector3(position.x, item.z, position.z),
+    ])
+    boxHighlightLayer.add(new THREE.Line(beamGeometry, new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.65 })))
+  }
+  scene.add(boxHighlightLayer)
+}
+
+function updateBoxRect(clientX: number, clientY: number): void {
+  if (!boxStartClient || !containerRef.value) return
+  const rect = containerRef.value.getBoundingClientRect()
+  const left = Math.min(boxStartClient.x, clientX) - rect.left
+  const top = Math.min(boxStartClient.y, clientY) - rect.top
+  boxRect.value = {
+    left,
+    top,
+    width: Math.abs(clientX - boxStartClient.x),
+    height: Math.abs(clientY - boxStartClient.y),
+  }
+}
+
+function handlePointerDownCapture(event: PointerEvent): void {
+  if (event.button !== 0 || !event.shiftKey || props.measureMode) return
+  if (!renderer) return
+  event.preventDefault()
+  if (controls) controls.enabled = false
+  boxStartClient = { x: event.clientX, y: event.clientY }
+  boxSelecting.value = true
+  tooltip.value = null
+  updateBoxRect(event.clientX, event.clientY)
+}
+
+function finishBoxSelection(event: PointerEvent): void {
+  const start = boxStartClient
+  boxStartClient = null
+  boxSelecting.value = false
+  boxRect.value = null
+  if (controls) controls.enabled = true
+  if (!start || !renderer || !camera) return
+  if (Math.abs(event.clientX - start.x) < 5 && Math.abs(event.clientY - start.y) < 5) {
+    clearBoxSelection()
+    return
+  }
+  const rect = renderer.domElement.getBoundingClientRect()
+  const left = Math.min(start.x, event.clientX)
+  const right = Math.max(start.x, event.clientX)
+  const top = Math.min(start.y, event.clientY)
+  const bottom = Math.max(start.y, event.clientY)
+  const selected: string[] = []
+  for (const [id, marker] of cameraMarkers) {
+    const projected = marker.group.position.clone().project(camera)
+    if (projected.z < -1 || projected.z > 1) continue
+    const sx = rect.left + ((projected.x + 1) / 2) * rect.width
+    const sy = rect.top + ((1 - projected.y) / 2) * rect.height
+    if (sx >= left && sx <= right && sy >= top && sy <= bottom) selected.push(id)
+  }
+  boxSelectedIds.value = selected
+  syncBoxHighlights()
+  emit('box-select', selected)
+}
+
+// ---- P12：巡检路线播放（折线 + 航点高亮 + 相机飞行） ----
+
+function disposePatrolLayers(): void {
+  if (patrolLayer) {
+    patrolLayer.parent?.remove(patrolLayer)
+    disposeObject3D(patrolLayer)
+    patrolLayer = null
+  }
+  if (patrolCameraLayer) {
+    patrolCameraLayer.parent?.remove(patrolCameraLayer)
+    disposeObject3D(patrolCameraLayer)
+    patrolCameraLayer = null
+  }
+  patrolAnimation = null
+}
+
+function syncPatrolLayer(): void {
+  if (!scene) return
+  disposePatrolLayers()
+  const route = props.patrolRoute
+  if (!route || route.waypoints.length === 0) return
+
+  patrolLayer = new THREE.Group()
+  patrolLayer.name = 'patrol-route'
+  const points = route.waypoints.map((waypoint) => enuToThree(waypoint.x, waypoint.y, waypoint.z))
+  const lineGeometry = new THREE.BufferGeometry().setFromPoints(points)
+  patrolLayer.add(new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.9 })))
+
+  route.waypoints.forEach((waypoint, index) => {
+    const point = enuToThree(waypoint.x, waypoint.y, waypoint.z)
+    const isCurrent = index === props.patrolIndex
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(isCurrent ? 2.1 : 1.2, 16, 12),
+      new THREE.MeshStandardMaterial({
+        color: isCurrent ? 0x38bdf8 : 0xf59e0b,
+        emissive: isCurrent ? 0x38bdf8 : 0x7c4a03,
+        emissiveIntensity: isCurrent ? 1.4 : 0.6,
+      }),
+    )
+    marker.position.copy(point)
+    patrolLayer?.add(marker)
+
+    const label = createTextSprite(`${index + 1}`, { worldHeight: 2.6, color: isCurrent ? '#bae6fd' : '#fde68a' })
+    label.position.copy(point).add(new THREE.Vector3(0, 3.4, 0))
+    patrolLayer?.add(label)
+
+    if (isCurrent && camera) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(4.5, 6.2, 40),
+        new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }),
+      )
+      ring.rotation.x = -Math.PI / 2
+      ring.position.set(point.x, 0.2, point.z)
+      patrolLayer?.add(ring)
+    }
+  })
+  scene.add(patrolLayer)
+
+  // 路线关联相机地面高亮环
+  patrolCameraLayer = new THREE.Group()
+  patrolCameraLayer.name = 'patrol-cameras'
+  for (const cameraId of route.camera_ids) {
+    const item = props.cameras.find((camera) => camera.id === cameraId)
+    if (!item) continue
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(2.8, 3.8, 36),
+      new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.copy(enuToThree(item.x, item.y, 0.16))
+    patrolCameraLayer.add(ring)
+  }
+  scene.add(patrolCameraLayer)
+}
+
+function flyToPatrolWaypoint(waypoint: PatrolWaypoint): void {
+  if (!camera || !controls) return
+  const target = enuToThree(waypoint.x, waypoint.y, waypoint.z)
+  const offset = new THREE.Vector3(46, 42, 46)
+  patrolAnimation = {
+    fromTarget: controls.target.clone(),
+    toTarget: target,
+    fromPosition: camera.position.clone(),
+    toPosition: target.clone().add(offset),
+    startedAt: performance.now(),
+    duration: 900,
+  }
+}
+
+function syncPatrolPlayback(): void {
+  syncPatrolLayer()
+  if (!props.patrolPlaying || !props.patrolRoute) {
+    patrolAnimation = null
+    return
+  }
+  const waypoint = props.patrolRoute.waypoints[props.patrolIndex]
+  if (waypoint) flyToPatrolWaypoint(waypoint)
+}
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
 }
@@ -322,6 +626,15 @@ function pickInteractive(event: PointerEvent): { kind: 'camera' | 'event'; id: s
 
 function handlePointerMove(event: PointerEvent): void {
   if (!renderer) return
+  if (boxSelecting.value) {
+    updateBoxRect(event.clientX, event.clientY)
+    return
+  }
+  if (props.measureMode) {
+    tooltip.value = null
+    renderer.domElement.style.cursor = 'crosshair'
+    return
+  }
   const hit = pickInteractive(event)
   const rect = renderer.domElement.getBoundingClientRect()
 
@@ -375,11 +688,15 @@ function handlePointerLeave(): void {
 }
 
 function handlePointerDown(event: PointerEvent): void {
-  if (event.button !== 0) return
+  if (event.button !== 0 || event.shiftKey) return
   pointerDownAt = { x: event.clientX, y: event.clientY }
 }
 
 function handlePointerUp(event: PointerEvent): void {
+  if (boxSelecting.value) {
+    finishBoxSelection(event)
+    return
+  }
   if (event.button !== 0) {
     pointerDownAt = null
     return
@@ -390,8 +707,14 @@ function handlePointerUp(event: PointerEvent): void {
   // 拖动旋转视角时不触发选择
   if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6) return
 
+  if (props.measureMode) {
+    handleMeasureClick(event)
+    return
+  }
+
   const hit = pickInteractive(event)
   if (!hit) {
+    clearBoxSelection()
     emit('select-camera', null)
   } else if (hit.kind === 'camera') {
     emit('select-camera', hit.id)
@@ -417,8 +740,14 @@ function animate(now: number): void {
   frameHandle = requestAnimationFrame(animate)
   if (!renderer || !scene || !camera || !controls) return
 
-  // 聚焦运镜（rAF 时间戳与 performance.now 同域）
-  if (focusAnimation) {
+  // 巡检飞行（优先于普通聚焦运镜）
+  if (patrolAnimation) {
+    const progress = Math.min(1, (now - patrolAnimation.startedAt) / patrolAnimation.duration)
+    const eased = easeInOutCubic(progress)
+    controls.target.lerpVectors(patrolAnimation.fromTarget, patrolAnimation.toTarget, eased)
+    camera.position.lerpVectors(patrolAnimation.fromPosition, patrolAnimation.toPosition, eased)
+    if (progress >= 1) patrolAnimation = null
+  } else if (focusAnimation) {
     const progress = Math.min(1, (now - focusAnimation.startedAt) / focusAnimation.duration)
     const eased = easeInOutCubic(progress)
     controls.target.lerpVectors(focusAnimation.fromTarget, focusAnimation.toTarget, eased)
@@ -528,11 +857,13 @@ function initScene(): void {
 
   const dom = webglRenderer.domElement
   dom.addEventListener('pointermove', handlePointerMove)
+  dom.addEventListener('pointerdown', handlePointerDownCapture, { capture: true })
   dom.addEventListener('pointerdown', handlePointerDown)
   dom.addEventListener('pointerup', handlePointerUp)
   dom.addEventListener('pointerleave', handlePointerLeave)
   removePointerListeners = () => {
     dom.removeEventListener('pointermove', handlePointerMove)
+    dom.removeEventListener('pointerdown', handlePointerDownCapture, { capture: true })
     dom.removeEventListener('pointerdown', handlePointerDown)
     dom.removeEventListener('pointerup', handlePointerUp)
     dom.removeEventListener('pointerleave', handlePointerLeave)
@@ -559,6 +890,9 @@ function disposeScene(): void {
   trackLayer?.dispose()
   trackLayer = null
 
+  clearMeasurement()
+  clearBoxSelection()
+  disposePatrolLayers()
   disposeFusion()
   buildingLayer?.dispose()
   buildingLayer = null
@@ -649,6 +983,21 @@ watch(
   },
 )
 watch(
+  () => props.measureMode,
+  (active) => {
+    if (!active) clearMeasurement()
+    if (renderer) renderer.domElement.style.cursor = active ? 'crosshair' : 'grab'
+  },
+)
+watch(
+  [() => props.patrolRoute, () => props.patrolIndex, () => props.patrolPlaying],
+  () => syncPatrolPlayback(),
+)
+watch(
+  () => props.cameras,
+  () => syncBoxHighlights(),
+)
+watch(
   () => props.focusRequest,
   (request) => {
     if (!request || request.seq === lastFocusSeq) return
@@ -681,14 +1030,60 @@ onBeforeUnmount(disposeScene)
     :data-model-detail="showModelDetails ? 'lod' : 'simple'"
     :data-video-fusion="fusionActive ? 'active' : 'off'"
     :data-model-status="modelStatus"
+    :data-measure-mode="measureMode ? 'on' : 'off'"
+    :data-measure-distance="measureDistance ?? ''"
+    :data-measure-points="measurePointCount"
+    :data-box-selected="boxSelectedIds.length"
+    :data-patrol-playing="patrolPlaying ? 'on' : 'off'"
+    :data-patrol-index="patrolIndex"
   >
     <div class="scene-hud">
       <span class="scene-fps">{{ fpsDisplay > 0 ? fpsDisplay : '—' }} FPS</span>
       <span class="scene-model-status" :class="modelStatusClass" :title="modelMessage">
         模型：{{ modelStatusLabel }}
       </span>
-      <span class="scene-hint">左键旋转 · 右键平移 · 滚轮缩放</span>
+      <button class="hud-tool" :class="{ active: measureMode }" title="测距：点击地面两点" @click.stop="emit('toggle-measure')">
+        测距
+      </button>
+      <button class="hud-tool" :class="{ active: !!patrolRoute }" title="巡检路线 / 播放" @click.stop="emit('open-patrol')">
+        巡检
+      </button>
+      <span class="scene-hint">左键旋转 · Shift+拖拽框选 · 右键平移 · 滚轮缩放</span>
     </div>
+
+    <div v-if="measureMode" class="measure-panel">
+      <span>测距：{{ measureLabel }}</span>
+      <button class="tiny-btn" @click="clearMeasurement">清除</button>
+    </div>
+
+    <div v-if="boxSelectedIds.length > 0" class="box-select-panel">
+      <div class="box-select-head">
+        <span class="box-select-title">框选相机 {{ boxSelectedIds.length }} 台</span>
+        <button class="tiny-btn" @click="clearBoxSelection">清除</button>
+      </div>
+      <div class="box-select-chips">
+        <button
+          v-for="camera in boxSelectedCameras"
+          :key="camera.id"
+          class="box-select-chip"
+          :title="`选中 ${camera.code}`"
+          @click="emit('select-camera', camera.id)"
+        >
+          {{ camera.code }}
+        </button>
+      </div>
+    </div>
+
+    <div v-if="patrolRoute" class="patrol-status">
+      <span>巡检：{{ patrolRoute.name }}</span>
+      <span class="mono">{{ patrolPlaying ? `播放中 ${patrolIndex + 1}/${patrolRoute.waypoints.length}` : '已暂停' }}</span>
+    </div>
+
+    <div
+      v-if="boxRect"
+      class="box-select-rect"
+      :style="{ left: `${boxRect.left}px`, top: `${boxRect.top}px`, width: `${boxRect.width}px`, height: `${boxRect.height}px` }"
+    />
 
     <div
       v-if="tooltip"

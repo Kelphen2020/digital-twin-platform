@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AuditPanel from './components/AuditPanel.vue'
 import BusPanel from './components/BusPanel.vue'
 import UserPanel from './components/UserPanel.vue'
@@ -10,6 +10,7 @@ import EventFeed from './components/EventFeed.vue'
 import LoginView from './components/LoginView.vue'
 import OfflineBanner from './components/OfflineBanner.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
+import PatrolPanel from './components/PatrolPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -19,12 +20,28 @@ import TwinScene from './scene/TwinScene.vue'
 import { useAdminStore } from './store/admin'
 import { useAuthStore } from './store/auth'
 import { useDutyStore } from './store/duty'
+import { usePatrolStore } from './store/patrol'
 import { useTwinStore } from './store/twin'
 
 const { state: authState, isAuthenticated, restoreSession } = useAuthStore()
 const { state, start, stop, reset, selectCamera, selectEvent, setFps, setSidebarTab } = useTwinStore()
 const admin = useAdminStore()
 const duty = useDutyStore()
+const patrol = usePatrolStore()
+
+// ---- P12：测距 / 框选 / 巡检面板 ----
+const measureMode = ref(false)
+const patrolOpen = ref(false)
+const boxSelectedCameraIds = ref<string[]>([])
+const patrolRoute = computed(() => patrol.selectedRoute.value)
+
+function toggleMeasureMode(): void {
+  measureMode.value = !measureMode.value
+}
+
+function handleBoxSelect(cameraIds: string[]): void {
+  boxSelectedCameraIds.value = cameraIds
+}
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
 
@@ -54,6 +71,10 @@ watch(isAuthenticated, (authenticated) => {
     reset()
     admin.reset()
     duty.reset()
+    patrol.reset()
+    measureMode.value = false
+    patrolOpen.value = false
+    boxSelectedCameraIds.value = []
   }
 })
 </script>
@@ -85,9 +106,21 @@ watch(isAuthenticated, (authenticated) => {
           :show-base-map="state.showBaseMap"
           :show-model-details="state.showModelDetails"
           :show-video-fusion="state.showVideoFusion"
+          :measure-mode="measureMode"
+          :patrol-route="patrolRoute"
+          :patrol-playing="patrol.state.playing"
+          :patrol-index="patrol.state.currentIndex"
           @select-camera="selectCamera"
           @open-event="selectEvent"
           @fps="setFps"
+          @toggle-measure="toggleMeasureMode"
+          @open-patrol="patrolOpen = true"
+          @box-select="handleBoxSelect"
+        />
+        <PatrolPanel
+          v-if="patrolOpen"
+          :box-selected-camera-ids="boxSelectedCameraIds"
+          @close="patrolOpen = false"
         />
         <OfflineBanner />
         <EventDetail />

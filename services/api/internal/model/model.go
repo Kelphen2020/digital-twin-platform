@@ -446,3 +446,23 @@ type RefreshToken struct {
 	IP        string    `json:"ip"`
 	UserAgent string    `json:"user_agent"`
 }
+
+// Waypoint is one patrol tour stop in local ENU metres.
+type Waypoint struct {
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Z       float64 `json:"z"`
+	Heading float64 `json:"heading"`
+}
+
+// PatrolRoute is a saved camera tour over the 3D scene.
+type PatrolRoute struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Waypoints       []Waypoint `json:"waypoints"`
+	CameraIDs       []string   `json:"camera_ids"`
+	IntervalSeconds int        `json:"interval_seconds"`
+	CreatedBy       string     `json:"created_by"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}

@@ -38,6 +38,7 @@ const (
 	PermCameraWrite       = "camera.write"
 	PermCameraCalibration = "camera.calibration"
 	PermCameraRules       = "camera.rules"
+	PermPatrolWrite       = "patrol.write"
 	PermAdmin             = "admin"
 )
 
@@ -445,7 +446,7 @@ func Can(role, permission string) bool {
 	switch permission {
 	case PermRead:
 		return role == RoleViewer || role == RoleOperator || role == RoleAdmin
-	case PermEventAction, PermOrderWrite, PermCameraWrite:
+	case PermEventAction, PermOrderWrite, PermCameraWrite, PermPatrolWrite:
 		return role == RoleOperator || role == RoleAdmin
 	case PermCameraCalibration, PermCameraRules, PermAdmin:
 		return role == RoleAdmin

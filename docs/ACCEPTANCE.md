@@ -589,3 +589,43 @@ P11 覆盖：登录返回 refresh + 过期时间；refresh 轮换（旧 token 40
 - WS 长连接不主动断开（令牌失效后新请求 401，但已建立的 WS 在断开前仍可接收推送）；可加服务端定期校验。
 - 无设备指纹/异地登录告警；refresh 重用检测仅拒绝旧 token（未做令牌家族级联吊销）。
 - access 默认 1h，时钟偏移敏感场景需 NTP；多实例需共享 refresh 表（已用 PostgreSQL 支持）。
+
+---
+
+# P12.0 验收记录（2026-11-09 傍晚）
+
+## 56. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：巡检路线创建/列表/PATCH/删除、viewer 只读 403、1/51 航点与 interval 越界 400、未知相机 400 `unknown_camera`、创建者或 admin 才能改删、审计 patrol.create/update/delete |
+
+## 57. smoke.sh（P0–P11 169 项 + P12 18 项 = 187 项 / 49 步）
+
+```
+smoke: PASS (187 checks passed)
+```
+
+P12 覆盖：admin/operator 列表、operator 创建（2 航点、cam_001+cam_006、interval 2）、列表包含、PATCH 名称+间隔、viewer 创建 403/读取 200、校验矩阵（1/51 航点、未知相机、interval 0）、operator 删除自己 204、admin 删除他人路线 204、审计、清理无残留。
+
+## 58. 前端 P12（typecheck + build + 浏览器验证）
+
+| 项 | 结果 |
+|---|---|
+| 构建 | ✅ `pnpm typecheck` + `pnpm build` 通过（主包约 830 kB / gzip ~225 kB） |
+| 测距 | ✅ HUD「测距」开关；点击地面两次 → 黄色连线 + 米制距离标签；再次点击重置/清除；测距模式不影响原有拾取 |
+| 框选 | ✅ Shift+拖拽蓝色矩形；屏幕投影命中框内相机；显示「框选相机 N 台」chip 列表，场景高亮环/光柱；空白点击清除 |
+| 巡检 | ✅ 浮层列表（GET /api/patrol/routes）；创建表单（名称/间隔/相机勾选生成 ENU 航点，支持框选预填）；创建者或 admin 可编辑/两步删除；播放/暂停/继续/停止：相机按 interval 沿航点飞行、折线 + 当前航点高亮、camera_ids 联动高亮；viewer 只读（可播放，无写按钮） |
+| 回归 | ✅ 8 页签/4 场景开关/模型/视频/WS 指示器正常 |
+| 截图 | `docs/screenshots/p12-measure.png`、`p12-box-select.png`、`p12-patrol-list.png`、`p12-patrol-create.png`、`p12-patrol-play.png`、`p12-viewer-patrol.png` |
+
+## 59. 已知限制（P12.0）
+
+- 巡检播放是客户端动画（手动触发），无服务端调度/定时巡检任务；多用户同时播放互不影响（各自本地）。
+- 航点由选中相机位置生成（含朝向），不支持自由拖拽任意路径点；路线按创建者+admin 权限管理。
+- 测距基于地面平面（z=0 投影），不支持点云/建筑表面精确测距。
+- 路线存储在内存模式重启后丢失（PostgreSQL 持久化）。

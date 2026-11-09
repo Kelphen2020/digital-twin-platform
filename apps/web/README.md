@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P11.0）
+# 数字孪生安防平台 · Web 前端（P12.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,15 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 三维测距 / 框选 / 巡检路线（P12）
+
+- **测距**：场景 HUD「测距」开关（可再次点击或清除关闭）；开启后点击地面两次 → 场景内黄色连线 + 距离标签（ENU 米制，如 `98.4 m`），第三次点击重新开始，面板「清除」复位；测距模式下跳过相机/事件拾取，不影响原有选择。
+- **Shift 框选**：在画布按住 Shift 拖拽 → 蓝色矩形框；松开后按相机标记的屏幕投影命中框内相机，显示「框选相机 N 台」列表（可点 chip 定位相机），场景中为被选相机绘制高亮环与光柱；点击空白处或「清除」清空。
+- **巡检路线**（HUD「巡检」按钮打开浮层；operator/admin 可写，viewer 只读）：
+  - 列表来自 `GET /api/patrol/routes`；创建表单填写名称、航点间隔（1–60s），从相机列表勾选 2–50 台生成 ENU 航点（含朝向），支持「使用框选/当前选中相机」快速预填；创建者或 admin 可编辑/删除（两步确认）。
+  - 播放/暂停/继续/停止：相机按 `interval_seconds` 沿航点飞行，场景绘制巡检折线、当前航点高亮与编号，路线 `camera_ids` 关联相机同步高亮；停止后清理路线图层。viewer 可播放但无创建/编辑/删除按钮。
+- **保持原有交互**：4 个场景开关、8 个 admin tab / 4 个 operator tab、P0–P11 功能不变。
+
 ### 会话自动续期 / 强制下线（P11）
 
 - **令牌生命周期**：登录响应的 `token` + `refresh_token` + `refresh_expires_at` 分别持久化（`twin.auth.token` / `twin.auth.refresh` / `twin.auth.refresh_expires_at`）。access token 过期返回 **401** 时，api 客户端**单飞**（同一时刻只发一个 refresh）调用 `POST /api/auth/refresh`，持久化轮换后的新 access+refresh 并**重试原请求一次**；刷新失败清理本地会话并提示「登录已过期，请重新登录」。每个请求最多刷新一次，避免刷新风暴/死循环。
@@ -217,6 +226,9 @@ pnpm dev          # http://127.0.0.1:5173
 | POST | `/api/auth/logout` | 已登录 | 吊销当前 refresh token |
 | GET | `/api/users/{id}/sessions` | admin | 用户有效 refresh 会话（IP/UA/时间） |
 | POST | `/api/users/{id}/logout` | admin | 强制下线（吊销全部 refresh + token 版本递增） |
+| GET | `/api/patrol/routes` | 已登录 | 巡检路线列表 |
+| POST | `/api/patrol/routes` | operator/admin | 创建巡检路线 |
+| PATCH/DELETE | `/api/patrol/routes/{id}` | 创建者/admin | 修改/删除巡检路线 |
 | GET | `/api/audit/export` | admin | 审计 CSV（from/to/action/actor/limit，text/csv） |
 | PATCH/DELETE | `/api/users/{id}` | admin | 修改 / 删除用户（self_protected 保护） |
 | GET | `/api/bus/status` | admin | 事件总线运行状态 |
@@ -290,6 +302,7 @@ apps/web/
 | WS 连接质量 / 限流 | **实时**：WS 帧计数（前端统计）、REST 429 `rate_limited` → 中文 Toast；`INGEST_RATE_LIMIT` 默认 0 |
 | 登录锁定 / 密码策略 / 审计导出 | **实时**：`429 too_many_attempts`+`Retry-After`、用户密码 `400` 策略、`GET /api/audit/export` CSV |
 | 令牌续期 / 会话吊销 | **实时**：`POST /api/auth/refresh` 轮换、`/api/auth/logout`、管理员 `/api/users/{id}/sessions` 与 `/logout` |
+| 巡检路线 | **实时**：`/api/patrol/routes` CRUD；航点/相机高亮/相机飞行均为前端实现 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -337,6 +350,13 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P12：巡检路线（operator/admin）
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/patrol/routes
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"测试巡检","waypoints":[{"x":-90,"y":-60,"z":12,"heading":90},{"x":0,"y":0,"z":14,"heading":225}],"camera_ids":["cam_001","cam_006"],"interval_seconds":3}' \
+  http://localhost:8080/api/patrol/routes
+# 前端：场景 HUD「测距」「巡检」；Shift+拖拽框选相机
 
 # P11：刷新令牌轮换 + 强制下线（admin）
 LOGIN=$(curl -s -X POST -H 'Content-Type: application/json' \
@@ -445,3 +465,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P11 access token 默认 1h、refresh token 7 天；refresh 为一次性轮换（旧 refresh 立即失效），api 客户端已做单飞与“每请求仅重试一次”。
 - 强制下线/修改密码/logout-all 递增 token 版本，旧 access 立即失效；当前页面在下一次 API 401 时自动刷新或回登录页（WS 断线由既有重连逻辑处理）。
 - 自操作保护：admin 无法通过用户列表强制下线自己（`400 self_protected`），请使用「退出」；`POST /api/auth/logout-all` 未提供独立 UI 按钮。
+- P12 巡检路线的 UI 航点由**所选相机坐标**按勾选顺序生成（不提供任意地面点编辑）；`interval_seconds` 同时用作航点推进与飞行时长参考（飞行动画约 0.9s，其余为停留）。
+- 播放为纯前端定时器 + 运镜（不修改后端状态）；暂停/继续不重置已播放航点，停止会清理折线/高亮；viewer 可播放但不可写。
+- 测距基于 y=0 地面平面（ENU 米制），框选按相机标记的屏幕投影中心判定；两者与相机/事件拾取互斥或互不干扰。

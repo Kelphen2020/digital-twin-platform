@@ -83,7 +83,7 @@ async function submit(): Promise<void> {
         <span class="brand-mark login-mark">DT</span>
         <div>
           <h1>数字孪生安防平台</h1>
-          <p>P11.0 · 刷新令牌 / 会话吊销 / 在线会话</p>
+          <p>P12.0 · 三维测距 / 框选 / 巡检路线</p>
         </div>
       </header>
 
@@ -157,6 +157,6 @@ async function submit(): Promise<void> {
       </p>
     </main>
 
-    <footer class="login-footer">数字孪生安防平台 · P11.0 演示环境 · 请勿用于生产</footer>
+    <footer class="login-footer">数字孪生安防平台 · P12.0 演示环境 · 请勿用于生产</footer>
   </div>
 </template>

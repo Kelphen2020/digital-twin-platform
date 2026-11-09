@@ -132,6 +132,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/duty/groups/{id}", s.handleUpdateDutyGroup)
 	mux.HandleFunc("DELETE /api/duty/groups/{id}", s.handleDeleteDutyGroup)
 	mux.HandleFunc("GET /api/duty/current", s.handleCurrentDuty)
+	mux.HandleFunc("GET /api/patrol/routes", s.handleListPatrolRoutes)
+	mux.HandleFunc("POST /api/patrol/routes", s.handleCreatePatrolRoute)
+	mux.HandleFunc("PATCH /api/patrol/routes/{id}", s.handleUpdatePatrolRoute)
+	mux.HandleFunc("DELETE /api/patrol/routes/{id}", s.handleDeletePatrolRoute)
 	mux.HandleFunc("GET /api/site", s.handleSite)
 	mux.HandleFunc("GET /api/bus/status", s.handleBusStatus)
 	mux.HandleFunc("POST /api/bus/replay", s.handleBusReplay)
@@ -2458,6 +2462,170 @@ func (s *Server) writeDutyError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+}
+
+type patrolBody struct {
+	Name            string            `json:"name"`
+	Waypoints       *[]model.Waypoint `json:"waypoints"`
+	CameraIDs       *[]string         `json:"camera_ids"`
+	IntervalSeconds *int              `json:"interval_seconds"`
+}
+
+func (s *Server) writePatrolError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errUnknownCamera) {
+		writeError(w, http.StatusBadRequest, "unknown_camera", err.Error())
+		return
+	}
+	writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+}
+
+func (s *Server) handleListPatrolRoutes(w http.ResponseWriter, r *http.Request) {
+	routes, err := s.store.ListPatrolRoutes(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if routes == nil {
+		routes = []model.PatrolRoute{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": routes})
+}
+
+func (s *Server) handleCreatePatrolRoute(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	var body patrolBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	route, err := s.validatePatrolBody(r, body, nil)
+	if err != nil {
+		s.writePatrolError(w, err)
+		return
+	}
+	now := time.Now().UTC()
+	route.ID = newID("patrol")
+	route.CreatedBy = user.Username
+	route.CreatedAt = now
+	route.UpdatedAt = now
+	if err := s.store.CreatePatrolRoute(r.Context(), *route); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.create", route.ID, map[string]any{"name": route.Name, "waypoints": len(route.Waypoints)})
+	writeJSON(w, http.StatusCreated, route)
+}
+
+func (s *Server) handleUpdatePatrolRoute(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	existing, found, err := s.store.GetPatrolRoute(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "patrol_not_found", "patrol route not found")
+		return
+	}
+	if user.Role != auth.RoleAdmin && existing.CreatedBy != user.Username {
+		writeError(w, http.StatusForbidden, "forbidden", "only the creator or an admin can modify this route")
+		return
+	}
+	var body patrolBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	updated, err := s.validatePatrolBody(r, body, &existing)
+	if err != nil {
+		s.writePatrolError(w, err)
+		return
+	}
+	updated.ID = existing.ID
+	updated.CreatedBy = existing.CreatedBy
+	updated.CreatedAt = existing.CreatedAt
+	updated.UpdatedAt = time.Now().UTC()
+	if err := s.store.UpdatePatrolRoute(r.Context(), *updated); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.update", updated.ID, map[string]any{"name": updated.Name})
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDeletePatrolRoute(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	existing, found, err := s.store.GetPatrolRoute(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "patrol_not_found", "patrol route not found")
+		return
+	}
+	if user.Role != auth.RoleAdmin && existing.CreatedBy != user.Username {
+		writeError(w, http.StatusForbidden, "forbidden", "only the creator or an admin can delete this route")
+		return
+	}
+	if err := s.store.DeletePatrolRoute(r.Context(), existing.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "patrol.delete", existing.ID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// validatePatrolBody merges a request body over an existing route (nil = create).
+var errUnknownCamera = errors.New("unknown_camera")
+
+func (s *Server) validatePatrolBody(r *http.Request, body patrolBody, existing *model.PatrolRoute) (*model.PatrolRoute, error) {
+	route := model.PatrolRoute{IntervalSeconds: 3, CameraIDs: []string{}}
+	if existing != nil {
+		route = *existing
+	}
+	if name := strings.TrimSpace(body.Name); name != "" {
+		route.Name = name
+	}
+	if route.Name == "" {
+		return nil, errors.New("name is required")
+	}
+	if body.Waypoints != nil {
+		route.Waypoints = *body.Waypoints
+	}
+	if len(route.Waypoints) < 2 || len(route.Waypoints) > 50 {
+		return nil, errors.New("waypoints must contain 2 to 50 points")
+	}
+	if body.CameraIDs != nil {
+		route.CameraIDs = *body.CameraIDs
+	}
+	if route.CameraIDs == nil {
+		route.CameraIDs = []string{}
+	}
+	if len(route.CameraIDs) > 50 {
+		return nil, errors.New("at most 50 cameras are accepted")
+	}
+	for _, cameraID := range route.CameraIDs {
+		if _, err := s.store.GetCamera(r.Context(), cameraID); err != nil {
+			return nil, fmt.Errorf("%w %q", errUnknownCamera, cameraID)
+		}
+	}
+	if body.IntervalSeconds != nil {
+		route.IntervalSeconds = *body.IntervalSeconds
+	}
+	if route.IntervalSeconds < 1 || route.IntervalSeconds > 60 {
+		return nil, errors.New("interval_seconds must be within [1,60]")
+	}
+	return &route, nil
 }
 
 func (s *Server) writeCameraError(w http.ResponseWriter, err error) {

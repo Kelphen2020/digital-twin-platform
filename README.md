@@ -195,6 +195,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P11.md`](docs/API_P11.md)。
 
+![P12.0 巡检路线播放](docs/screenshots/p12-patrol-play.png)
+
+## P12.0 能力（三维交互与巡检）
+
+- **测距**：开启后点击地面两点，场景内连线并显示米制距离。
+- **框选**：Shift+拖拽矩形选中框内相机，显示多选列表/数量并高亮。
+- **巡检路线**：`/api/patrol/routes` CRUD（operator/admin 可写，创建者或 admin 可改删）；前端可播放/暂停/停止相机沿航点飞行，路线折线 + 当前航点高亮，联动相机高亮。
+- 审计：`patrol.create/update/delete`。
+
+契约见 [`docs/API_P12.md`](docs/API_P12.md)。
+
 ## 目录
 
 ```

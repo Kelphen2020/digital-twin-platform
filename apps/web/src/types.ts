@@ -465,6 +465,41 @@ export interface DutyCurrent {
   operators: string[]
 }
 
+// ---------------- P12：巡检路线 ----------------
+
+export interface PatrolWaypoint {
+  /** ENU 米制点位。 */
+  x: number
+  y: number
+  z: number
+  /** 视角方位角（度，默认 0）。 */
+  heading?: number
+}
+
+export interface PatrolRoute {
+  id: string
+  name: string
+  waypoints: PatrolWaypoint[]
+  /** 用于播放时高亮联动的相机 id。 */
+  camera_ids: string[]
+  /** 航点间飞行/停留秒数（1–60）。 */
+  interval_seconds: number
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PatrolRoutePayload {
+  name: string
+  waypoints: PatrolWaypoint[]
+  camera_ids: string[]
+  interval_seconds: number
+}
+
+export interface PatrolRouteListResponse {
+  items: PatrolRoute[]
+}
+
 // ---------------- P7：用户与账号管理 ----------------
 
 /** GET /api/users 用户对象（密码永不返回）。 */
