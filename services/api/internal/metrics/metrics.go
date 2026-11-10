@@ -3,7 +3,9 @@ package metrics
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -31,10 +33,37 @@ type Metrics struct {
 	IngestRejected          atomic.Int64
 	IngestForwarded         atomic.Int64
 	IngestFallbackFailures  atomic.Int64
+
+	tenantMu       sync.Mutex
+	tenantRequests map[string]int64
 }
 
 // New returns an empty counter set.
-func New() *Metrics { return &Metrics{} }
+func New() *Metrics { return &Metrics{tenantRequests: make(map[string]int64)} }
+
+// RecordTenantRequest counts one request for the resolved tenant (P27.0).
+func (m *Metrics) RecordTenantRequest(tenant string) {
+	if tenant == "" {
+		return
+	}
+	m.tenantMu.Lock()
+	if m.tenantRequests == nil {
+		m.tenantRequests = make(map[string]int64)
+	}
+	m.tenantRequests[tenant]++
+	m.tenantMu.Unlock()
+}
+
+// TenantRequests returns a copy of the per-tenant request counters.
+func (m *Metrics) TenantRequests() map[string]int64 {
+	m.tenantMu.Lock()
+	defer m.tenantMu.Unlock()
+	out := make(map[string]int64, len(m.tenantRequests))
+	for tenant, count := range m.tenantRequests {
+		out[tenant] = count
+	}
+	return out
+}
 
 // ObserveIngest records one ingest handler duration in microseconds.
 func (m *Metrics) ObserveIngest(microseconds int64) {
@@ -138,5 +167,16 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	b.WriteString("# HELP dsh_twin_cameras_online Cameras currently online.\n")
 	b.WriteString("# TYPE dsh_twin_cameras_online gauge\n")
 	fmt.Fprintf(&b, "dsh_twin_cameras_online %d\n", onlineCameras)
+	b.WriteString("# HELP dsh_twin_tenant_requests_total API requests received per tenant (P27.0).\n")
+	b.WriteString("# TYPE dsh_twin_tenant_requests_total counter\n")
+	tenants := m.TenantRequests()
+	names := make([]string, 0, len(tenants))
+	for tenant := range tenants {
+		names = append(names, tenant)
+	}
+	sort.Strings(names)
+	for _, tenant := range names {
+		fmt.Fprintf(&b, "dsh_twin_tenant_requests_total{tenant=%q} %d\n", tenant, tenants[tenant])
+	}
 	return b.String()
 }

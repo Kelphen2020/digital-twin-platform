@@ -2,16 +2,19 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ROLE_COLORS, ROLE_LABELS, WS_STATE_LABELS, formatArea, formatClock } from '../labels'
 import { useAuthStore } from '../store/auth'
+import { useTenantStore } from '../store/tenant'
 import { useTwinStore } from '../store/twin'
 import { framesInWindow, pruneFrameTimes, wsQuality } from '../store/wsQuality'
 
 const { state, onlineCameras, toggleTracks, toggleVideoFusion, toggleModelDetails, toggleBaseMap } = useTwinStore()
 const { state: authState, role, logout } = useAuthStore()
+const tenantStore = useTenantStore()
 
 const now = ref(new Date())
 let clockTimer: number | null = null
 
 onMounted(() => {
+  if (role.value === 'admin') void tenantStore.loadTenants()
   clockTimer = window.setInterval(() => {
     now.value = new Date()
     pruneFrameTimes(now.value.getTime())
@@ -92,6 +95,11 @@ const userTitle = computed(() =>
     ? `${authState.user.username} · ${roleLabel.value} · 负责区域：${areaText.value} · 会话自动续期（refresh token）`
     : '',
 )
+/** P27：当前租户名（admin 从 GET /api/tenants 获取，非 admin/失败时回退为 tenant id）。 */
+const tenantName = computed(() => {
+  const id = authState.tenantId ?? 'default'
+  return tenantStore.state.tenants.find((tenant) => tenant.id === id)?.name ?? id
+})
 </script>
 
 <template>
@@ -100,7 +108,7 @@ const userTitle = computed(() =>
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P17.0 生产持久化</p>
+        <p>园区三维安防 · P27.0 多租户隔离</p>
       </div>
     </div>
 
@@ -178,6 +186,9 @@ const userTitle = computed(() =>
         <span class="quality-reconnect" title="自页面加载以来重连次数">↻{{ wsQuality.reconnectCount }}</span>
       </div>
       <time class="clock">{{ clock }}</time>
+      <div class="tenant-chip" :title="`当前租户：${authState.tenantId ?? 'default'}`">
+        租户：{{ tenantName }}
+      </div>
 
       <div class="user-chip" :title="userTitle">
         <span class="user-avatar" :style="{ borderColor: roleColor, color: roleColor }">{{ userInitial }}</span>

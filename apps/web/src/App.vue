@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AuditPanel from './components/AuditPanel.vue'
 import BusPanel from './components/BusPanel.vue'
+import TenantPanel from './components/TenantPanel.vue'
 import UserPanel from './components/UserPanel.vue'
 import CameraDetail from './components/CameraDetail.vue'
 import DutyPanel from './components/DutyPanel.vue'
@@ -21,6 +22,7 @@ import { useAdminStore } from './store/admin'
 import { useAuthStore } from './store/auth'
 import { useDutyStore } from './store/duty'
 import { usePatrolStore } from './store/patrol'
+import { useTenantStore } from './store/tenant'
 import { useTwinStore } from './store/twin'
 
 const { state: authState, isAuthenticated, restoreSession } = useAuthStore()
@@ -28,6 +30,7 @@ const { state, start, stop, reset, selectCamera, selectEvent, setFps, setSidebar
 const admin = useAdminStore()
 const duty = useDutyStore()
 const patrol = usePatrolStore()
+const tenantStore = useTenantStore()
 
 // ---- P12：测距 / 框选 / 巡检面板 ----
 const measureMode = ref(false)
@@ -76,6 +79,7 @@ watch(isAuthenticated, (authenticated) => {
     admin.reset()
     duty.reset()
     patrol.reset()
+    tenantStore.reset()
     measureMode.value = false
     patrolOpen.value = false
     boxSelectedCameraIds.value = []
@@ -215,6 +219,16 @@ watch(isAuthenticated, (authenticated) => {
           >
             用户
           </button>
+          <button
+            v-if="isAdmin"
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'tenant' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'tenant'"
+            @click="setSidebarTab('tenant')"
+          >
+            租户
+          </button>
         </div>
         <EventFeed v-if="state.sidebarTab === 'events'" />
         <StatsPanel v-else-if="state.sidebarTab === 'stats'" />
@@ -224,6 +238,7 @@ watch(isAuthenticated, (authenticated) => {
         <AuditPanel v-else-if="state.sidebarTab === 'audit' && isAdmin" />
         <BusPanel v-else-if="state.sidebarTab === 'bus' && isAdmin" />
         <UserPanel v-else-if="state.sidebarTab === 'users' && isAdmin" />
+        <TenantPanel v-else-if="state.sidebarTab === 'tenant' && isAdmin" />
         <EventFeed v-else />
       </aside>
     </div>

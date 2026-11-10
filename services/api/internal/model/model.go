@@ -13,6 +13,19 @@ var (
 	ErrConflict = errors.New("conflict")
 )
 
+// Tenant is one isolation boundary. All tenant-scoped entities carry TenantID;
+// "default" is the seeded implicit tenant and keeps legacy clients working.
+type Tenant struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DefaultTenantID is the implicit tenant used when no X-Tenant-ID is supplied.
+const DefaultTenantID = "default"
+
 // Calibration is the pixel → world homography of one camera.
 type Calibration struct {
 	// Matrix maps homogeneous pixel coordinates to world ENU metres.
@@ -26,6 +39,7 @@ type Calibration struct {
 // Camera is one fixed camera on the site. Coordinates are local ENU metres:
 // X east, Y north, Z up. Heading is degrees clockwise from north.
 type Camera struct {
+	TenantID    string       `json:"tenant_id"`
 	ID          string       `json:"id"`
 	Code        string       `json:"code"`
 	Name        string       `json:"name"`
@@ -54,6 +68,7 @@ type CameraPatch struct {
 
 // Area is a site zone. The polygon is a closed ring of ENU points.
 type Area struct {
+	TenantID string       `json:"tenant_id"`
 	ID      string       `json:"id"`
 	Name    string       `json:"name"`
 	Type    string       `json:"type"`
@@ -62,6 +77,7 @@ type Area struct {
 
 // Event is one produced event (P0 stand-in for the Kafka event envelope).
 type Event struct {
+	TenantID      string         `json:"tenant_id"`
 	ID            string         `json:"id"`
 	CameraID      string         `json:"camera_id"`
 	CameraCode    string         `json:"camera_code"`
@@ -117,6 +133,7 @@ func DefaultEscalationSettings() EscalationSettings {
 
 // NotificationLog is one webhook delivery attempt.
 type NotificationLog struct {
+	TenantID   string    `json:"tenant_id"`
 	ID         string    `json:"id"`
 	At         time.Time `json:"at"`
 	Kind       string    `json:"kind"`
@@ -179,6 +196,7 @@ type EventAction struct {
 
 // AuditEntry is one recorded mutation.
 type AuditEntry struct {
+	TenantID string         `json:"tenant_id"`
 	ID       string         `json:"id"`
 	At       time.Time      `json:"at"`
 	Actor    string         `json:"actor"`
@@ -307,6 +325,7 @@ type SolveResult struct {
 
 // CameraRules is the per-camera detection rule configuration (P2.0).
 type CameraRules struct {
+	TenantID            string   `json:"tenant_id"`
 	CameraID            string   `json:"camera_id"`
 	ConfidenceThreshold float64  `json:"confidence_threshold"`
 	DedupeSeconds       int      `json:"dedupe_seconds"`
@@ -329,6 +348,7 @@ func DefaultCameraRules(cameraID string) CameraRules {
 
 // Order is one work order created from an event (P2.0).
 type Order struct {
+	TenantID  string     `json:"tenant_id"`
 	ID        string     `json:"id"`
 	EventID   string     `json:"event_id"`
 	CameraID  string     `json:"camera_id"`
@@ -424,6 +444,7 @@ func DefaultSite() Site {
 
 // UserAccount is one login account. PasswordHash never leaves the server.
 type UserAccount struct {
+	TenantID     string    `json:"tenant_id"`
 	ID           string    `json:"id"`
 	Username     string    `json:"username"`
 	DisplayName  string    `json:"display_name"`
@@ -438,6 +459,7 @@ type UserAccount struct {
 
 // RefreshToken is one opaque refresh-token record (only its SHA-256 is stored).
 type RefreshToken struct {
+	TenantID  string    `json:"tenant_id"`
 	ID        string    `json:"id"`
 	UserID    string    `json:"-"`
 	TokenHash string    `json:"-"`
@@ -458,6 +480,7 @@ type Waypoint struct {
 
 // PatrolRoute is a saved camera tour over the 3D scene.
 type PatrolRoute struct {
+	TenantID        string     `json:"tenant_id"`
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
 	Waypoints       []Waypoint `json:"waypoints"`
@@ -470,6 +493,7 @@ type PatrolRoute struct {
 
 // PatrolSchedule schedules a patrol route to run periodically.
 type PatrolSchedule struct {
+	TenantID        string    `json:"tenant_id"`
 	ID              string    `json:"id"`
 	Name            string    `json:"name"`
 	RouteID         string    `json:"route_id"`
@@ -483,6 +507,7 @@ type PatrolSchedule struct {
 
 // PatrolExecution is one due/manual patrol run with its workflow state.
 type PatrolExecution struct {
+	TenantID    string     `json:"tenant_id"`
 	ID          string     `json:"id"`
 	ScheduleID  string     `json:"schedule_id"`
 	RouteID     string     `json:"route_id"`

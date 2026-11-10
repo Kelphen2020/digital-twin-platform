@@ -126,7 +126,8 @@ func (s *Service) Enabled() bool { return s.mode }
 
 // DevUser is the implicit administrator used when authentication is off.
 func DevUser() User {
-	return model.UserAccount{ID: "usr_dev", Username: "dev", DisplayName: "本地开发", Role: RoleAdmin, Active: true}
+	return model.UserAccount{ID: "usr_dev", Username: "dev", DisplayName: "本地开发", Role: RoleAdmin, Active: true,
+		TenantID: model.DefaultTenantID}
 }
 
 func seedAccounts() []struct {
@@ -137,9 +138,9 @@ func seedAccounts() []struct {
 		user     model.UserAccount
 		password string
 	}{
-		{model.UserAccount{ID: "usr_admin", Username: "admin", DisplayName: "管理员", Role: RoleAdmin, Active: true}, "Admin@123456"},
-		{model.UserAccount{ID: "usr_operator", Username: "operator", DisplayName: "值班员", Role: RoleOperator, Active: true, Areas: []string{"area_gate", "area_parking"}}, "Operator@123"},
-		{model.UserAccount{ID: "usr_viewer", Username: "viewer", DisplayName: "观察员", Role: RoleViewer, Active: true}, "Viewer@123"},
+		{model.UserAccount{ID: "usr_admin", Username: "admin", DisplayName: "管理员", Role: RoleAdmin, Active: true, TenantID: model.DefaultTenantID}, "Admin@123456"},
+		{model.UserAccount{ID: "usr_operator", Username: "operator", DisplayName: "值班员", Role: RoleOperator, Active: true, Areas: []string{"area_gate", "area_parking"}, TenantID: model.DefaultTenantID}, "Operator@123"},
+		{model.UserAccount{ID: "usr_viewer", Username: "viewer", DisplayName: "观察员", Role: RoleViewer, Active: true, TenantID: model.DefaultTenantID}, "Viewer@123"},
 	}
 }
 
@@ -251,6 +252,7 @@ func (s *Service) Verify(token string) (User, error) {
 		Areas   []string `json:"areas"`
 		Active  bool     `json:"active"`
 		Version int      `json:"ver"`
+		Tenant  string   `json:"tnt"`
 		Exp     int64    `json:"exp"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
@@ -259,18 +261,27 @@ func (s *Service) Verify(token string) (User, error) {
 	if time.Now().Unix() >= claims.Exp || !claims.Active {
 		return User{}, ErrInvalidToken
 	}
+	tenantID := claims.Tenant
+	if tenantID == "" {
+		tenantID = model.DefaultTenantID
+	}
 	return model.UserAccount{
 		ID: claims.Sub, Username: claims.Usr, DisplayName: claims.Name,
 		Role: claims.Role, Areas: claims.Areas, Active: true, TokenVersion: claims.Version,
+		TenantID: tenantID,
 	}, nil
 }
 
 func (s *Service) sign(user User, expires time.Time) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	tenantID := user.TenantID
+	if tenantID == "" {
+		tenantID = model.DefaultTenantID
+	}
 	claims, err := json.Marshal(map[string]any{
 		"sub": user.ID, "usr": user.Username, "name": user.DisplayName,
 		"role": user.Role, "areas": user.Areas, "active": user.Active,
-		"ver": user.TokenVersion,
+		"ver": user.TokenVersion, "tnt": tenantID,
 		"iat": time.Now().Unix(), "exp": expires.Unix(),
 	})
 	if err != nil {
@@ -348,6 +359,9 @@ func (s *Service) CreateUser(ctx context.Context, input CreateUserInput) (User, 
 		ID: newID("usr"), Username: input.Username, DisplayName: displayName,
 		Role: input.Role, Areas: input.Areas, Active: input.Active,
 		PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now,
+	}
+	if tenantID := tenantOf(ctx); tenantID != "" {
+		account.TenantID = tenantID
 	}
 	if account.Areas == nil {
 		account.Areas = []string{}
@@ -541,6 +555,30 @@ func newID(prefix string) string {
 	return prefix + "_" + base64.RawURLEncoding.EncodeToString(raw)
 }
 
+// tenantOf returns the tenant carried by ctx, defaulting to "default".
+func tenantOf(ctx context.Context) string {
+	if ctx == nil {
+		return model.DefaultTenantID
+	}
+	if tenantID, ok := ctx.Value(tenantKey{}).(string); ok && tenantID != "" {
+		return tenantID
+	}
+	return model.DefaultTenantID
+}
+
+type tenantKey struct{}
+
+// WithTenant returns a context scoped to a tenant, mirroring store.WithTenant.
+func WithTenant(ctx context.Context, tenantID string) context.Context {
+	if tenantID == "" {
+		tenantID = model.DefaultTenantID
+	}
+	return context.WithValue(ctx, tenantKey{}, tenantID)
+}
+
+// tenantOfCtx is shared by the in-memory repo used when auth is off.
+func memoryTenant(ctx context.Context) string { return tenantOf(ctx) }
+
 // ---- memory repository (tests / auth-off demos) -------------------------
 
 type memoryRepo struct {
@@ -553,10 +591,10 @@ func newMemoryRepo() *memoryRepo {
 	return &memoryRepo{byID: make(map[string]model.UserAccount), byName: make(map[string]string)}
 }
 
-func (m *memoryRepo) GetUserAccountByUsername(_ context.Context, username string) (model.UserAccount, bool, error) {
+func (m *memoryRepo) GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	id, ok := m.byName[username]
+	id, ok := m.byName[memoryTenant(ctx)+"|"+username]
 	if !ok {
 		return model.UserAccount{}, false, nil
 	}
@@ -570,35 +608,47 @@ func (m *memoryRepo) GetUserAccountByID(_ context.Context, id string) (model.Use
 	return account, ok, nil
 }
 
-func (m *memoryRepo) ListUserAccounts(context.Context) ([]model.UserAccount, error) {
+func (m *memoryRepo) ListUserAccounts(ctx context.Context) ([]model.UserAccount, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenant := memoryTenant(ctx)
 	out := make([]model.UserAccount, 0, len(m.byID))
 	for _, account := range m.byID {
-		out = append(out, account)
+		if account.TenantID == tenant {
+			out = append(out, account)
+		}
 	}
 	return out, nil
 }
 
-func (m *memoryRepo) CreateUserAccount(_ context.Context, account model.UserAccount) error {
+func (m *memoryRepo) CreateUserAccount(ctx context.Context, account model.UserAccount) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.byName[account.Username]; exists {
+	tenant := memoryTenant(ctx)
+	if account.TenantID == "" {
+		account.TenantID = tenant
+	}
+	if _, exists := m.byName[account.TenantID+"|"+account.Username]; exists {
 		return model.ErrConflict
 	}
 	m.byID[account.ID] = account
-	m.byName[account.Username] = account.ID
+	m.byName[account.TenantID+"|"+account.Username] = account.ID
 	return nil
 }
 
 func (m *memoryRepo) UpdateUserAccount(_ context.Context, account model.UserAccount) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.byID[account.ID]; !exists {
+	existing, exists := m.byID[account.ID]
+	if !exists {
 		return model.ErrNotFound
 	}
+	if account.TenantID == "" {
+		account.TenantID = existing.TenantID
+	}
+	delete(m.byName, existing.TenantID+"|"+existing.Username)
 	m.byID[account.ID] = account
-	m.byName[account.Username] = account.ID
+	m.byName[account.TenantID+"|"+account.Username] = account.ID
 	return nil
 }
 
@@ -610,6 +660,6 @@ func (m *memoryRepo) DeleteUserAccount(_ context.Context, id string) error {
 		return model.ErrNotFound
 	}
 	delete(m.byID, id)
-	delete(m.byName, account.Username)
+	delete(m.byName, account.TenantID+"|"+account.Username)
 	return nil
 }

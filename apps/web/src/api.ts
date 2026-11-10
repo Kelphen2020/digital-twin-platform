@@ -1,4 +1,4 @@
-import { clearTokens, getAuthToken, getRefreshToken, setTokens } from './auth/token'
+import { clearTokens, getAuthToken, getRefreshToken, getTenantId, setTokens } from './auth/token'
 import type {
   Area,
   AreaListResponse,
@@ -47,6 +47,10 @@ import type {
   SiteConfig,
   StatsSummary,
   TrackListResponse,
+  Tenant,
+  TenantCreatePayload,
+  TenantListResponse,
+  TenantUpdatePayload,
   TrackPoint,
   TwinEvent,
   UpdateOrderPayload,
@@ -90,7 +94,12 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken() ?? ENV_API_TOKEN
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  // P27：所有 API 请求携带当前租户（缺省不发送，由后端按 default 处理）
+  const tenant = getTenantId()
+  if (tenant) headers['X-Tenant-ID'] = tenant
+  return headers
 }
 
 export function apiUrl(path: string): string {
@@ -145,9 +154,14 @@ async function refreshAccessToken(): Promise<boolean> {
   if (refreshPromise) return refreshPromise
   refreshPromise = (async () => {
     try {
+      const tenant = getTenantId()
       const response = await fetch(apiUrl('/api/auth/refresh'), {
         method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          ...(tenant ? { 'X-Tenant-ID': tenant } : {}),
+        },
         body: JSON.stringify({ refresh_token: currentRefresh }),
       })
       if (!response.ok) {
@@ -239,6 +253,12 @@ export function apiErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401) return '登录已过期，请重新登录'
     if (error.status === 403) {
+      if (error.code === 'tenant_inactive' || error.message.includes('tenant_inactive')) {
+        return '租户已停用'
+      }
+      if (error.code === 'cross_tenant' || error.message.includes('cross_tenant')) {
+        return '登录租户与请求不一致，请重新登录'
+      }
       if (error.code === 'out_of_scope' || error.message.includes('out_of_scope')) {
         return '该相机不在您的负责区域，操作被拒绝（403 out_of_scope）'
       }
@@ -253,6 +273,9 @@ export function apiErrorMessage(error: unknown): string {
       return '请求过于频繁，已限流'
     }
     if (error.status === 400) {
+      if (error.code === 'unknown_tenant' || error.message.includes('unknown_tenant')) {
+        return '租户不存在'
+      }
       if (error.code === 'self_protected' || error.message.includes('self_protected')) {
         return '不能停用、降级或删除当前登录账号（400 self_protected）'
       }
@@ -283,9 +306,13 @@ export function apiErrorMessage(error: unknown): string {
 
 // ---------------- P2 身份 ----------------
 
-/** POST /api/auth/login → JWT + 用户信息。 */
-export async function login(username: string, password: string): Promise<LoginResponse> {
-  return postJson<LoginResponse>('/api/auth/login', { username, password })
+/** POST /api/auth/login（P27：tenant_id 缺省 default）→ JWT + 用户信息 + tenant_id。 */
+export async function login(username: string, password: string, tenantId = 'default'): Promise<LoginResponse> {
+  return requestJson<LoginResponse>('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': tenantId },
+    body: JSON.stringify({ username, password, tenant_id: tenantId }),
+  })
 }
 
 /** GET /api/auth/me → 当前登录用户。 */
@@ -771,6 +798,24 @@ export async function purgePatrolExecutions(params: { before?: string; status?: 
   const response = await fetchWithAuth(`/api/patrol/executions${suffix ? `?${suffix}` : ''}`, { method: 'DELETE' })
   if (!response.ok) throw await parseError(response)
   return (await response.json()) as { deleted: number }
+}
+
+// ---------------- P27 多租户（admin） ----------------
+
+/** GET /api/tenants（admin）→ 租户列表。 */
+export async function fetchTenants(): Promise<Tenant[]> {
+  const data = await requestJson<TenantListResponse>('/api/tenants')
+  return data.items ?? []
+}
+
+/** POST /api/tenants（admin）→ 创建租户（id 自动生成）。 */
+export async function createTenant(payload: TenantCreatePayload): Promise<Tenant> {
+  return postJson<Tenant>('/api/tenants', payload)
+}
+
+/** PATCH /api/tenants/{id}（admin）→ 修改名称/启用状态。 */
+export async function updateTenant(tenantId: string, payload: TenantUpdatePayload): Promise<Tenant> {
+  return patchJson<Tenant>(`/api/tenants/${encodeURIComponent(tenantId)}`, payload)
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

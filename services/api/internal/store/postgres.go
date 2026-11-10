@@ -80,8 +80,75 @@ func (p *Postgres) migrate(ctx context.Context) error {
 	return nil
 }
 
+// ---- tenants (P27.0) ------------------------------------------------------
+
+func (p *Postgres) CreateTenant(ctx context.Context, tenant model.Tenant) error {
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO tenants (id, name, active, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5)`,
+		tenant.ID, tenant.Name, tenant.Active, tenant.CreatedAt, tenant.UpdatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return model.ErrConflict
+		}
+	}
+	return err
+}
+
+func (p *Postgres) GetTenant(ctx context.Context, id string) (model.Tenant, bool, error) {
+	var tenant model.Tenant
+	err := p.pool.QueryRow(ctx, `
+        SELECT id, name, active, created_at, updated_at FROM tenants WHERE id=$1`, id).
+		Scan(&tenant.ID, &tenant.Name, &tenant.Active, &tenant.CreatedAt, &tenant.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Tenant{}, false, nil
+		}
+		return model.Tenant{}, false, err
+	}
+	tenant.CreatedAt = tenant.CreatedAt.UTC()
+	tenant.UpdatedAt = tenant.UpdatedAt.UTC()
+	return tenant, true, nil
+}
+
+func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
+	rows, err := p.pool.Query(ctx, `
+        SELECT id, name, active, created_at, updated_at FROM tenants ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tenants := make([]model.Tenant, 0, 4)
+	for rows.Next() {
+		var tenant model.Tenant
+		if scanErr := rows.Scan(&tenant.ID, &tenant.Name, &tenant.Active, &tenant.CreatedAt, &tenant.UpdatedAt); scanErr != nil {
+			return nil, scanErr
+		}
+		tenant.CreatedAt = tenant.CreatedAt.UTC()
+		tenant.UpdatedAt = tenant.UpdatedAt.UTC()
+		tenants = append(tenants, tenant)
+	}
+	return tenants, rows.Err()
+}
+
+func (p *Postgres) UpdateTenant(ctx context.Context, tenant model.Tenant) error {
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE tenants SET name=$2, active=$3, updated_at=now() WHERE id=$1`,
+		tenant.ID, tenant.Name, tenant.Active)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
 func (p *Postgres) ListAreas(ctx context.Context) ([]model.Area, error) {
-	rows, err := p.pool.Query(ctx, `SELECT id, name, type, polygon FROM areas ORDER BY id`)
+	rows, err := p.pool.Query(ctx, `
+        SELECT id, name, type, polygon, tenant_id FROM areas
+        WHERE tenant_id=$1 ORDER BY id`, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +157,7 @@ func (p *Postgres) ListAreas(ctx context.Context) ([]model.Area, error) {
 	for rows.Next() {
 		var area model.Area
 		var polygon []byte
-		if err := rows.Scan(&area.ID, &area.Name, &area.Type, &polygon); err != nil {
+		if err := rows.Scan(&area.ID, &area.Name, &area.Type, &polygon, &area.TenantID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(polygon, &area.Polygon); err != nil {
@@ -102,7 +169,7 @@ func (p *Postgres) ListAreas(ctx context.Context) ([]model.Area, error) {
 }
 
 func (p *Postgres) ListCameras(ctx context.Context) ([]model.Camera, error) {
-	rows, err := p.pool.Query(ctx, cameraSelect+` ORDER BY code`)
+	rows, err := p.pool.Query(ctx, cameraSelect+` WHERE tenant_id=$1 ORDER BY code`, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -119,11 +186,11 @@ func (p *Postgres) ListCameras(ctx context.Context) ([]model.Camera, error) {
 }
 
 func (p *Postgres) GetCamera(ctx context.Context, id string) (model.Camera, error) {
-	return scanCamera(p.pool.QueryRow(ctx, cameraSelect+` WHERE id = $1`, id))
+	return scanCamera(p.pool.QueryRow(ctx, cameraSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 }
 
 func (p *Postgres) GetCameraByCode(ctx context.Context, code string) (model.Camera, error) {
-	return scanCamera(p.pool.QueryRow(ctx, cameraSelect+` WHERE code = $1`, code))
+	return scanCamera(p.pool.QueryRow(ctx, cameraSelect+` WHERE code=$1 AND tenant_id=$2`, code, tenantOf(ctx)))
 }
 
 func (p *Postgres) UpdateCamera(ctx context.Context, id string, patch model.CameraPatch) (model.Camera, error) {
@@ -134,7 +201,7 @@ func (p *Postgres) UpdateCamera(ctx context.Context, id string, patch model.Came
 	applyPatch(&current, patch)
 	_, err = p.pool.Exec(ctx, `
         UPDATE cameras SET status=$2, x=$3, y=$4, z=$5, heading=$6, updated_at=now()
-        WHERE id=$1`, id, current.Status, current.X, current.Y, current.Z, current.Heading)
+        WHERE id=$1 AND tenant_id=$7`, id, current.Status, current.X, current.Y, current.Z, current.Heading, tenantOf(ctx))
 	if err != nil {
 		return model.Camera{}, err
 	}
@@ -143,7 +210,7 @@ func (p *Postgres) UpdateCamera(ctx context.Context, id string, patch model.Came
 
 func (p *Postgres) SetCameraCalibration(ctx context.Context, id string, calibration *model.Calibration) (model.Camera, error) {
 	if calibration == nil {
-		_, err := p.pool.Exec(ctx, `UPDATE cameras SET calibration=NULL, updated_at=now() WHERE id=$1`, id)
+		_, err := p.pool.Exec(ctx, `UPDATE cameras SET calibration=NULL, updated_at=now() WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 		if err != nil {
 			return model.Camera{}, err
 		}
@@ -156,7 +223,7 @@ func (p *Postgres) SetCameraCalibration(ctx context.Context, id string, calibrat
 	if err != nil {
 		return model.Camera{}, err
 	}
-	_, err = p.pool.Exec(ctx, `UPDATE cameras SET calibration=$2, updated_at=now() WHERE id=$1`, id, raw)
+	_, err = p.pool.Exec(ctx, `UPDATE cameras SET calibration=$2, updated_at=now() WHERE id=$1 AND tenant_id=$3`, id, raw, tenantOf(ctx))
 	if err != nil {
 		return model.Camera{}, err
 	}
@@ -174,6 +241,7 @@ func (p *Postgres) ListEvents(ctx context.Context, filter model.EventFilter) ([]
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
 	}
+	add("tenant_id = $%d", tenantOf(ctx))
 	if filter.Status != "" {
 		add("status = $%d", filter.Status)
 	}
@@ -208,24 +276,25 @@ func (p *Postgres) ListEvents(ctx context.Context, filter model.EventFilter) ([]
 }
 
 func (p *Postgres) GetEvent(ctx context.Context, id string) (model.Event, error) {
-	return scanEvent(p.pool.QueryRow(ctx, eventSelect+` WHERE id=$1`, id))
+	return scanEvent(p.pool.QueryRow(ctx, eventSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 }
 
 func (p *Postgres) CreateEvents(ctx context.Context, events []model.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
+	tenant := tenantOf(ctx)
 	batch := &pgx.Batch{}
-	for _, event := range events {
-		payload, err := json.Marshal(event.Payload)
+	for i := range events {
+		payload, err := json.Marshal(events[i].Payload)
 		if err != nil {
 			return err
 		}
 		batch.Queue(`INSERT INTO events
-            (id, camera_id, camera_code, camera_name, type, severity, confidence, x, y, z, occurred_at, status, payload)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			event.ID, event.CameraID, event.CameraCode, event.CameraName, event.Type, event.Severity,
-			event.Confidence, event.X, event.Y, event.Z, event.OccurredAt, event.Status, payload)
+            (id, camera_id, camera_code, camera_name, type, severity, confidence, x, y, z, occurred_at, status, payload, tenant_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			events[i].ID, events[i].CameraID, events[i].CameraCode, events[i].CameraName, events[i].Type, events[i].Severity,
+			events[i].Confidence, events[i].X, events[i].Y, events[i].Z, events[i].OccurredAt, events[i].Status, payload, tenant)
 	}
 	results := p.pool.SendBatch(ctx, batch)
 	defer results.Close()
@@ -238,7 +307,7 @@ func (p *Postgres) CreateEvents(ctx context.Context, events []model.Event) error
 }
 
 func (p *Postgres) AckEvent(ctx context.Context, id string) (model.Event, error) {
-	_, err := p.pool.Exec(ctx, `UPDATE events SET status='acked' WHERE id=$1`, id)
+	_, err := p.pool.Exec(ctx, `UPDATE events SET status='acked' WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -246,7 +315,7 @@ func (p *Postgres) AckEvent(ctx context.Context, id string) (model.Event, error)
 }
 
 func (p *Postgres) CloseEvent(ctx context.Context, id string) (model.Event, error) {
-	_, err := p.pool.Exec(ctx, `UPDATE events SET status='closed', closed_at=now() WHERE id=$1`, id)
+	_, err := p.pool.Exec(ctx, `UPDATE events SET status='closed', closed_at=now() WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -349,9 +418,9 @@ func (p *Postgres) AddAudit(ctx context.Context, entry model.AuditEntry) error {
 		return err
 	}
 	_, err = p.pool.Exec(ctx, `
-        INSERT INTO audit_log (id, at, actor, action, resource, detail)
-        VALUES ($1,$2,$3,$4,$5,$6)`,
-		entry.ID, entry.At, entry.Actor, entry.Action, entry.Resource, detail)
+        INSERT INTO audit_log (id, at, actor, action, resource, detail, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		entry.ID, entry.At, entry.Actor, entry.Action, entry.Resource, detail, tenantOf(ctx))
 	return err
 }
 
@@ -366,6 +435,7 @@ func (p *Postgres) ListAudit(ctx context.Context, filter model.AuditFilter) ([]m
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
 	}
+	add("tenant_id = $%d", tenantOf(ctx))
 	if filter.Action != "" {
 		add("action = $%d", filter.Action)
 	}
@@ -378,7 +448,7 @@ func (p *Postgres) ListAudit(ctx context.Context, filter model.AuditFilter) ([]m
 	if filter.To != nil {
 		add("at <= $%d", *filter.To)
 	}
-	query := `SELECT id, at, actor, action, resource, detail FROM audit_log`
+	query := `SELECT id, at, actor, action, resource, detail, tenant_id FROM audit_log`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -392,7 +462,7 @@ func (p *Postgres) ListAudit(ctx context.Context, filter model.AuditFilter) ([]m
 	for rows.Next() {
 		var entry model.AuditEntry
 		var detail []byte
-		if err := rows.Scan(&entry.ID, &entry.At, &entry.Actor, &entry.Action, &entry.Resource, &detail); err != nil {
+		if err := rows.Scan(&entry.ID, &entry.At, &entry.Actor, &entry.Action, &entry.Resource, &detail, &entry.TenantID); err != nil {
 			return nil, err
 		}
 		if len(detail) > 0 {
@@ -404,6 +474,7 @@ func (p *Postgres) ListAudit(ctx context.Context, filter model.AuditFilter) ([]m
 }
 
 func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error) {
+	tenant := tenantOf(ctx)
 	summary := model.StatsSummary{
 		From:   from,
 		To:     to,
@@ -416,8 +487,8 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 	}
 	severityRows, err := p.pool.Query(ctx,
 		`SELECT severity, count(*) FROM events
-		 WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
-		 GROUP BY severity`, from, to, filterArg)
+		 WHERE tenant_id = $4 AND occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
+		 GROUP BY severity`, from, to, filterArg, tenant)
 	if err != nil {
 		return summary, err
 	}
@@ -435,8 +506,8 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 
 	typeRows, err := p.pool.Query(ctx,
 		`SELECT type, count(*) FROM events
-		 WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
-		 GROUP BY type`, from, to, filterArg)
+		 WHERE tenant_id = $4 AND occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
+		 GROUP BY type`, from, to, filterArg, tenant)
 	if err != nil {
 		return summary, err
 	}
@@ -453,9 +524,9 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 
 	cameraRows, err := p.pool.Query(ctx, `
         SELECT e.camera_id, c.code, c.name, count(*) AS count
-        FROM events e JOIN cameras c ON c.id = e.camera_id
-        WHERE e.occurred_at >= $1 AND e.occurred_at <= $2 AND ($3::text[] IS NULL OR e.camera_id = ANY($3))
-        GROUP BY e.camera_id, c.code, c.name ORDER BY count DESC LIMIT 20`, from, to, filterArg)
+        FROM events e JOIN cameras c ON c.id = e.camera_id AND c.tenant_id = e.tenant_id
+        WHERE e.tenant_id = $4 AND e.occurred_at >= $1 AND e.occurred_at <= $2 AND ($3::text[] IS NULL OR e.camera_id = ANY($3))
+        GROUP BY e.camera_id, c.code, c.name ORDER BY count DESC LIMIT 20`, from, to, filterArg, tenant)
 	if err != nil {
 		return summary, err
 	}
@@ -471,8 +542,8 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 
 	hourRows, err := p.pool.Query(ctx, `
         SELECT date_trunc('hour', occurred_at) AS hour, count(*)
-        FROM events WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
-        GROUP BY hour ORDER BY hour`, from, to, filterArg)
+        FROM events WHERE tenant_id = $4 AND occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
+        GROUP BY hour ORDER BY hour`, from, to, filterArg, tenant)
 	if err != nil {
 		return summary, err
 	}
@@ -489,17 +560,19 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 }
 
 func (p *Postgres) Counts(ctx context.Context) (model.Counts, error) {
+	tenant := tenantOf(ctx)
 	var counts model.Counts
 	err := p.pool.QueryRow(ctx, `
-        SELECT (SELECT count(*) FROM events),
-               (SELECT count(*) FROM cameras WHERE status='online')`).Scan(&counts.EventsTotal, &counts.OnlineCameras)
+        SELECT (SELECT count(*) FROM events WHERE tenant_id=$1),
+               (SELECT count(*) FROM cameras WHERE status='online' AND tenant_id=$1)`, tenant).
+		Scan(&counts.EventsTotal, &counts.OnlineCameras)
 	return counts, err
 }
 
-const cameraSelect = `SELECT id, code, name, area_id, x, y, z, heading, fov_h, fov_v, range_m, status, stream_url, calibration, updated_at FROM cameras`
+const cameraSelect = `SELECT id, code, name, area_id, x, y, z, heading, fov_h, fov_v, range_m, status, stream_url, calibration, updated_at, tenant_id FROM cameras`
 
 const eventSelect = `SELECT id, camera_id, camera_code, camera_name, type, severity, confidence,
-                            x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload FROM events`
+                            x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload, tenant_id FROM events`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -510,7 +583,7 @@ func scanCamera(row rowScanner) (model.Camera, error) {
 	var calibration []byte
 	err := row.Scan(&camera.ID, &camera.Code, &camera.Name, &camera.AreaID, &camera.X, &camera.Y, &camera.Z,
 		&camera.Heading, &camera.FovH, &camera.FovV, &camera.RangeM, &camera.Status, &camera.StreamURL,
-		&calibration, &camera.UpdatedAt)
+		&calibration, &camera.UpdatedAt, &camera.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.Camera{}, model.ErrNotFound
@@ -531,7 +604,7 @@ func scanEvent(row rowScanner) (model.Event, error) {
 	var payload []byte
 	err := row.Scan(&event.ID, &event.CameraID, &event.CameraCode, &event.CameraName, &event.Type, &event.Severity,
 		&event.Confidence, &event.X, &event.Y, &event.Z, &event.OccurredAt, &event.Status, &event.ClosedAt,
-		&event.EscalatedAt, &event.ReEscalatedAt, &payload)
+		&event.EscalatedAt, &event.ReEscalatedAt, &payload, &event.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.Event{}, model.ErrNotFound
@@ -561,9 +634,9 @@ func (p *Postgres) GetCameraRules(ctx context.Context, cameraID string) (model.C
 	var rules model.CameraRules
 	var classes, roi []byte
 	err := p.pool.QueryRow(ctx, `
-        SELECT camera_id, confidence_threshold, dedupe_seconds, enabled_classes, roi, updated_at
-        FROM camera_rules WHERE camera_id=$1`, cameraID).
-		Scan(&rules.CameraID, &rules.ConfidenceThreshold, &rules.DedupeSeconds, &classes, &roi, &rules.UpdatedAt)
+        SELECT camera_id, confidence_threshold, dedupe_seconds, enabled_classes, roi, updated_at, tenant_id
+        FROM camera_rules WHERE camera_id=$1 AND tenant_id=$2`, cameraID, tenantOf(ctx)).
+		Scan(&rules.CameraID, &rules.ConfidenceThreshold, &rules.DedupeSeconds, &classes, &roi, &rules.UpdatedAt, &rules.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.CameraRules{}, model.ErrNotFound
@@ -591,16 +664,17 @@ func (p *Postgres) SetCameraRules(ctx context.Context, rules model.CameraRules) 
 			return model.CameraRules{}, err
 		}
 	}
+	tenant := tenantOf(ctx)
 	_, err = p.pool.Exec(ctx, `
-        INSERT INTO camera_rules (camera_id, confidence_threshold, dedupe_seconds, enabled_classes, roi, updated_at)
-        VALUES ($1,$2,$3,$4,$5,now())
-        ON CONFLICT (camera_id) DO UPDATE SET
+        INSERT INTO camera_rules (camera_id, confidence_threshold, dedupe_seconds, enabled_classes, roi, updated_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,now(),$6)
+        ON CONFLICT (tenant_id, camera_id) DO UPDATE SET
             confidence_threshold=EXCLUDED.confidence_threshold,
             dedupe_seconds=EXCLUDED.dedupe_seconds,
             enabled_classes=EXCLUDED.enabled_classes,
             roi=EXCLUDED.roi,
             updated_at=now()`,
-		rules.CameraID, rules.ConfidenceThreshold, rules.DedupeSeconds, classes, roi)
+		rules.CameraID, rules.ConfidenceThreshold, rules.DedupeSeconds, classes, roi, tenant)
 	if err != nil {
 		return model.CameraRules{}, err
 	}
@@ -609,15 +683,15 @@ func (p *Postgres) SetCameraRules(ctx context.Context, rules model.CameraRules) 
 
 func (p *Postgres) CreateOrder(ctx context.Context, order model.Order) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO orders (id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        INSERT INTO orders (id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		order.ID, nullableString(order.EventID), order.CameraID, order.Title, order.Status, order.Priority,
-		order.Assignee, order.Note, order.CreatedAt, order.UpdatedAt)
+		order.Assignee, order.Note, order.CreatedAt, order.UpdatedAt, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) GetOrder(ctx context.Context, id string) (model.Order, error) {
-	return scanOrder(p.pool.QueryRow(ctx, orderSelect+` WHERE id=$1`, id))
+	return scanOrder(p.pool.QueryRow(ctx, orderSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 }
 
 func (p *Postgres) UpdateOrder(ctx context.Context, id string, update model.OrderUpdate) (model.Order, error) {
@@ -640,8 +714,9 @@ func (p *Postgres) UpdateOrder(ctx context.Context, id string, update model.Orde
 		current.Note = *update.Note
 	}
 	_, err = p.pool.Exec(ctx, `
-        UPDATE orders SET status=$2, assignee=$3, note=$4, updated_at=$5, closed_at=$6 WHERE id=$1`,
-		id, current.Status, current.Assignee, current.Note, now, current.ClosedAt)
+        UPDATE orders SET status=$2, assignee=$3, note=$4, updated_at=$5, closed_at=$6
+        WHERE id=$1 AND tenant_id=$7`,
+		id, current.Status, current.Assignee, current.Note, now, current.ClosedAt, tenantOf(ctx))
 	if err != nil {
 		return model.Order{}, err
 	}
@@ -659,6 +734,7 @@ func (p *Postgres) ListOrders(ctx context.Context, filter model.OrderFilter) ([]
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
 	}
+	add("tenant_id = $%d", tenantOf(ctx))
 	if filter.Status != "" {
 		add("status = $%d", filter.Status)
 	}
@@ -692,13 +768,13 @@ func (p *Postgres) ListOrders(ctx context.Context, filter model.OrderFilter) ([]
 	return orders, rows.Err()
 }
 
-const orderSelect = `SELECT id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at, closed_at FROM orders`
+const orderSelect = `SELECT id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at, closed_at, tenant_id FROM orders`
 
 func scanOrder(row rowScanner) (model.Order, error) {
 	var order model.Order
 	var eventID sql.NullString
 	err := row.Scan(&order.ID, &eventID, &order.CameraID, &order.Title, &order.Status, &order.Priority,
-		&order.Assignee, &order.Note, &order.CreatedAt, &order.UpdatedAt, &order.ClosedAt)
+		&order.Assignee, &order.Note, &order.CreatedAt, &order.UpdatedAt, &order.ClosedAt, &order.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.Order{}, model.ErrNotFound
@@ -717,7 +793,7 @@ func scanOrder(row rowScanner) (model.Order, error) {
 
 func (p *Postgres) GetSetting(ctx context.Context, key string) ([]byte, bool, error) {
 	var value []byte
-	err := p.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, key).Scan(&value)
+	err := p.pool.QueryRow(ctx, `SELECT value FROM settings WHERE tenant_id=$1 AND key=$2`, tenantOf(ctx), key).Scan(&value)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, false, nil
@@ -729,17 +805,18 @@ func (p *Postgres) GetSetting(ctx context.Context, key string) ([]byte, bool, er
 
 func (p *Postgres) SetSetting(ctx context.Context, key string, value []byte) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,now())
-        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, key, value)
+        INSERT INTO settings (tenant_id, key, value, updated_at) VALUES ($1,$2,$3,now())
+        ON CONFLICT (tenant_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+		tenantOf(ctx), key, value)
 	return err
 }
 
 func (p *Postgres) CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO notification_log (id, at, kind, event_id, url, format, ok, status_code, error, attempts)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        INSERT INTO notification_log (id, at, kind, event_id, url, format, ok, status_code, error, attempts, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		entry.ID, entry.At, entry.Kind, entry.EventID, entry.URL, entry.Format,
-		entry.OK, entry.StatusCode, entry.Error, entry.Attempts)
+		entry.OK, entry.StatusCode, entry.Error, entry.Attempts, tenantOf(ctx))
 	return err
 }
 
@@ -748,8 +825,8 @@ func (p *Postgres) ListNotificationLog(ctx context.Context, limit int) ([]model.
 		limit = 50
 	}
 	rows, err := p.pool.Query(ctx, `
-        SELECT id, at, kind, event_id, url, format, ok, status_code, error, attempts
-        FROM notification_log ORDER BY at DESC LIMIT $1`, limit)
+        SELECT id, at, kind, event_id, url, format, ok, status_code, error, attempts, tenant_id
+        FROM notification_log WHERE tenant_id=$1 ORDER BY at DESC LIMIT $2`, tenantOf(ctx), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -758,7 +835,7 @@ func (p *Postgres) ListNotificationLog(ctx context.Context, limit int) ([]model.
 	for rows.Next() {
 		var entry model.NotificationLog
 		if err := rows.Scan(&entry.ID, &entry.At, &entry.Kind, &entry.EventID, &entry.URL,
-			&entry.Format, &entry.OK, &entry.StatusCode, &entry.Error, &entry.Attempts); err != nil {
+			&entry.Format, &entry.OK, &entry.StatusCode, &entry.Error, &entry.Attempts, &entry.TenantID); err != nil {
 			return nil, err
 		}
 		entry.At = entry.At.UTC()
@@ -773,10 +850,10 @@ func (p *Postgres) EscalateStale(ctx context.Context, before time.Time, severiti
 	}
 	rows, err := p.pool.Query(ctx, `
         UPDATE events SET escalated_at = now()
-        WHERE status <> 'closed' AND escalated_at IS NULL
+        WHERE tenant_id = $3 AND status <> 'closed' AND escalated_at IS NULL
           AND occurred_at < $1 AND severity = ANY($2)
         RETURNING id, camera_id, camera_code, camera_name, type, severity, confidence,
-                  x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload`, before, severities)
+                  x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload, tenant_id`, before, severities, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -879,7 +956,7 @@ func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 }
 
 func (p *Postgres) GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error) {
-	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE username=$1`, username))
+	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE username=$1 AND tenant_id=$2`, username, tenantOf(ctx)))
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.UserAccount{}, false, nil
@@ -890,7 +967,7 @@ func (p *Postgres) GetUserAccountByUsername(ctx context.Context, username string
 }
 
 func (p *Postgres) GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error) {
-	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE id=$1`, id))
+	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.UserAccount{}, false, nil
@@ -901,7 +978,7 @@ func (p *Postgres) GetUserAccountByID(ctx context.Context, id string) (model.Use
 }
 
 func (p *Postgres) ListUserAccounts(ctx context.Context) ([]model.UserAccount, error) {
-	rows, err := p.pool.Query(ctx, userSelect+` ORDER BY username`)
+	rows, err := p.pool.Query(ctx, userSelect+` WHERE tenant_id=$1 ORDER BY username`, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -920,10 +997,10 @@ func (p *Postgres) ListUserAccounts(ctx context.Context) ([]model.UserAccount, e
 func (p *Postgres) CreateUserAccount(ctx context.Context, account model.UserAccount) error {
 	areas, _ := json.Marshal(account.Areas)
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO users (id, username, display_name, role, areas, active, token_version, password_hash, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        INSERT INTO users (id, username, display_name, role, areas, active, token_version, password_hash, created_at, updated_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		account.ID, account.Username, account.DisplayName, account.Role, areas, account.Active,
-		account.TokenVersion, account.PasswordHash, account.CreatedAt, account.UpdatedAt)
+		account.TokenVersion, account.PasswordHash, account.CreatedAt, account.UpdatedAt, tenantOf(ctx))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return model.ErrConflict
@@ -936,9 +1013,9 @@ func (p *Postgres) UpdateUserAccount(ctx context.Context, account model.UserAcco
 	tag, err := p.pool.Exec(ctx, `
         UPDATE users SET username=$2, display_name=$3, role=$4, areas=$5, active=$6,
                          token_version=$7, password_hash=$8, updated_at=now()
-        WHERE id=$1`,
+        WHERE id=$1 AND tenant_id=$9`,
 		account.ID, account.Username, account.DisplayName, account.Role, areas,
-		account.Active, account.TokenVersion, account.PasswordHash)
+		account.Active, account.TokenVersion, account.PasswordHash, tenantOf(ctx))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -953,7 +1030,7 @@ func (p *Postgres) UpdateUserAccount(ctx context.Context, account model.UserAcco
 }
 
 func (p *Postgres) DeleteUserAccount(ctx context.Context, id string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
+	tag, err := p.pool.Exec(ctx, `DELETE FROM users WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -963,13 +1040,13 @@ func (p *Postgres) DeleteUserAccount(ctx context.Context, id string) error {
 	return nil
 }
 
-const userSelect = `SELECT id, username, display_name, role, areas, active, token_version, password_hash, created_at, updated_at FROM users`
+const userSelect = `SELECT id, username, display_name, role, areas, active, token_version, password_hash, created_at, updated_at, tenant_id FROM users`
 
 func scanUserAccount(row rowScanner) (model.UserAccount, error) {
 	var account model.UserAccount
 	var areas []byte
 	err := row.Scan(&account.ID, &account.Username, &account.DisplayName, &account.Role,
-		&areas, &account.Active, &account.TokenVersion, &account.PasswordHash, &account.CreatedAt, &account.UpdatedAt)
+		&areas, &account.Active, &account.TokenVersion, &account.PasswordHash, &account.CreatedAt, &account.UpdatedAt, &account.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.UserAccount{}, model.ErrNotFound
@@ -986,8 +1063,8 @@ func scanUserAccount(row rowScanner) (model.UserAccount, error) {
 
 func (p *Postgres) FindOpenOrderForEvent(ctx context.Context, eventID string) (model.Order, bool, error) {
 	order, err := scanOrder(p.pool.QueryRow(ctx, orderSelect+`
-        WHERE event_id=$1 AND status IN ('open','assigned','processing')
-        ORDER BY created_at DESC LIMIT 1`, eventID))
+        WHERE event_id=$1 AND tenant_id=$2 AND status IN ('open','assigned','processing')
+        ORDER BY created_at DESC LIMIT 1`, eventID, tenantOf(ctx)))
 	if err != nil {
 		if err == model.ErrNotFound {
 			return model.Order{}, false, nil
@@ -1003,10 +1080,10 @@ func (p *Postgres) ReEscalateStale(ctx context.Context, before time.Time, severi
 	}
 	rows, err := p.pool.Query(ctx, `
         UPDATE events SET re_escalated_at = now()
-        WHERE status <> 'closed' AND escalated_at IS NOT NULL AND re_escalated_at IS NULL
+        WHERE tenant_id = $3 AND status <> 'closed' AND escalated_at IS NOT NULL AND re_escalated_at IS NULL
           AND escalated_at < $1 AND severity = ANY($2)
         RETURNING id, camera_id, camera_code, camera_name, type, severity, confidence,
-                  x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload`, before, severities)
+                  x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload, tenant_id`, before, severities, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1024,15 +1101,15 @@ func (p *Postgres) ReEscalateStale(ctx context.Context, before time.Time, severi
 
 func (p *Postgres) CreateRefreshToken(ctx context.Context, token model.RefreshToken) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at, revoked, ip, user_agent)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at, revoked, ip, user_agent, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		token.ID, token.UserID, token.TokenHash, token.ExpiresAt, token.CreatedAt,
-		token.Revoked, token.IP, token.UserAgent)
+		token.Revoked, token.IP, token.UserAgent, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error) {
-	token, err := scanRefreshToken(p.pool.QueryRow(ctx, refreshSelect+` WHERE token_hash=$1`, tokenHash))
+	token, err := scanRefreshToken(p.pool.QueryRow(ctx, refreshSelect+` WHERE token_hash=$1 AND tenant_id=$2`, tokenHash, tenantOf(ctx)))
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.RefreshToken{}, false, nil
@@ -1043,17 +1120,17 @@ func (p *Postgres) GetRefreshTokenByHash(ctx context.Context, tokenHash string) 
 }
 
 func (p *Postgres) RevokeRefreshToken(ctx context.Context, id string) error {
-	_, err := p.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked=true WHERE id=$1`, id)
+	_, err := p.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked=true WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) RevokeUserRefreshTokens(ctx context.Context, userID string) error {
-	_, err := p.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked=true WHERE user_id=$1`, userID)
+	_, err := p.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked=true WHERE user_id=$1 AND tenant_id=$2`, userID, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) ListUserRefreshTokens(ctx context.Context, userID string) ([]model.RefreshToken, error) {
-	rows, err := p.pool.Query(ctx, refreshSelect+` WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	rows, err := p.pool.Query(ctx, refreshSelect+` WHERE user_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`, userID, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1069,12 +1146,12 @@ func (p *Postgres) ListUserRefreshTokens(ctx context.Context, userID string) ([]
 	return tokens, rows.Err()
 }
 
-const refreshSelect = `SELECT id, user_id, token_hash, expires_at, created_at, revoked, ip, user_agent FROM refresh_tokens`
+const refreshSelect = `SELECT id, user_id, token_hash, expires_at, created_at, revoked, ip, user_agent, tenant_id FROM refresh_tokens`
 
 func scanRefreshToken(row rowScanner) (model.RefreshToken, error) {
 	var token model.RefreshToken
 	err := row.Scan(&token.ID, &token.UserID, &token.TokenHash, &token.ExpiresAt,
-		&token.CreatedAt, &token.Revoked, &token.IP, &token.UserAgent)
+		&token.CreatedAt, &token.Revoked, &token.IP, &token.UserAgent, &token.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.RefreshToken{}, model.ErrNotFound
@@ -1090,15 +1167,15 @@ func (p *Postgres) CreatePatrolRoute(ctx context.Context, route model.PatrolRout
 	waypoints, _ := json.Marshal(route.Waypoints)
 	cameras, _ := json.Marshal(route.CameraIDs)
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO patrol_routes (id, name, waypoints, camera_ids, interval_seconds, created_by, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        INSERT INTO patrol_routes (id, name, waypoints, camera_ids, interval_seconds, created_by, created_at, updated_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		route.ID, route.Name, waypoints, cameras, route.IntervalSeconds, route.CreatedBy,
-		route.CreatedAt, route.UpdatedAt)
+		route.CreatedAt, route.UpdatedAt, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) GetPatrolRoute(ctx context.Context, id string) (model.PatrolRoute, bool, error) {
-	route, err := scanPatrolRoute(p.pool.QueryRow(ctx, patrolSelect+` WHERE id=$1`, id))
+	route, err := scanPatrolRoute(p.pool.QueryRow(ctx, patrolSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.PatrolRoute{}, false, nil
@@ -1109,7 +1186,7 @@ func (p *Postgres) GetPatrolRoute(ctx context.Context, id string) (model.PatrolR
 }
 
 func (p *Postgres) ListPatrolRoutes(ctx context.Context) ([]model.PatrolRoute, error) {
-	rows, err := p.pool.Query(ctx, patrolSelect+` ORDER BY created_at DESC`)
+	rows, err := p.pool.Query(ctx, patrolSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1130,7 +1207,7 @@ func (p *Postgres) UpdatePatrolRoute(ctx context.Context, route model.PatrolRout
 	cameras, _ := json.Marshal(route.CameraIDs)
 	tag, err := p.pool.Exec(ctx, `
         UPDATE patrol_routes SET name=$2, waypoints=$3, camera_ids=$4, interval_seconds=$5, updated_at=now()
-        WHERE id=$1`, route.ID, route.Name, waypoints, cameras, route.IntervalSeconds)
+        WHERE id=$1 AND tenant_id=$6`, route.ID, route.Name, waypoints, cameras, route.IntervalSeconds, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -1141,7 +1218,7 @@ func (p *Postgres) UpdatePatrolRoute(ctx context.Context, route model.PatrolRout
 }
 
 func (p *Postgres) DeletePatrolRoute(ctx context.Context, id string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM patrol_routes WHERE id=$1`, id)
+	tag, err := p.pool.Exec(ctx, `DELETE FROM patrol_routes WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -1151,13 +1228,13 @@ func (p *Postgres) DeletePatrolRoute(ctx context.Context, id string) error {
 	return nil
 }
 
-const patrolSelect = `SELECT id, name, waypoints, camera_ids, interval_seconds, created_by, created_at, updated_at FROM patrol_routes`
+const patrolSelect = `SELECT id, name, waypoints, camera_ids, interval_seconds, created_by, created_at, updated_at, tenant_id FROM patrol_routes`
 
 func scanPatrolRoute(row rowScanner) (model.PatrolRoute, error) {
 	var route model.PatrolRoute
 	var waypoints, cameras []byte
 	err := row.Scan(&route.ID, &route.Name, &waypoints, &cameras, &route.IntervalSeconds,
-		&route.CreatedBy, &route.CreatedAt, &route.UpdatedAt)
+		&route.CreatedBy, &route.CreatedAt, &route.UpdatedAt, &route.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.PatrolRoute{}, model.ErrNotFound
@@ -1177,15 +1254,15 @@ func scanPatrolRoute(row rowScanner) (model.PatrolRoute, error) {
 
 func (p *Postgres) CreatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO patrol_schedules (id, name, route_id, interval_minutes, enabled, created_by, created_at, updated_at, next_run_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        INSERT INTO patrol_schedules (id, name, route_id, interval_minutes, enabled, created_by, created_at, updated_at, next_run_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		schedule.ID, schedule.Name, schedule.RouteID, schedule.IntervalMinutes, schedule.Enabled,
-		schedule.CreatedBy, schedule.CreatedAt, schedule.UpdatedAt, schedule.NextRunAt)
+		schedule.CreatedBy, schedule.CreatedAt, schedule.UpdatedAt, schedule.NextRunAt, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) GetPatrolSchedule(ctx context.Context, id string) (model.PatrolSchedule, bool, error) {
-	schedule, err := scanPatrolSchedule(p.pool.QueryRow(ctx, patrolScheduleSelect+` WHERE id=$1`, id))
+	schedule, err := scanPatrolSchedule(p.pool.QueryRow(ctx, patrolScheduleSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.PatrolSchedule{}, false, nil
@@ -1196,7 +1273,7 @@ func (p *Postgres) GetPatrolSchedule(ctx context.Context, id string) (model.Patr
 }
 
 func (p *Postgres) ListPatrolSchedules(ctx context.Context) ([]model.PatrolSchedule, error) {
-	rows, err := p.pool.Query(ctx, patrolScheduleSelect+` ORDER BY created_at DESC`)
+	rows, err := p.pool.Query(ctx, patrolScheduleSelect+` WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1215,7 +1292,7 @@ func (p *Postgres) ListPatrolSchedules(ctx context.Context) ([]model.PatrolSched
 func (p *Postgres) UpdatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error {
 	tag, err := p.pool.Exec(ctx, `
         UPDATE patrol_schedules SET name=$2, route_id=$3, interval_minutes=$4, enabled=$5, updated_at=now(), next_run_at=$6
-        WHERE id=$1`, schedule.ID, schedule.Name, schedule.RouteID, schedule.IntervalMinutes, schedule.Enabled, schedule.NextRunAt)
+        WHERE id=$1 AND tenant_id=$7`, schedule.ID, schedule.Name, schedule.RouteID, schedule.IntervalMinutes, schedule.Enabled, schedule.NextRunAt, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -1226,7 +1303,7 @@ func (p *Postgres) UpdatePatrolSchedule(ctx context.Context, schedule model.Patr
 }
 
 func (p *Postgres) DeletePatrolSchedule(ctx context.Context, id string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM patrol_schedules WHERE id=$1`, id)
+	tag, err := p.pool.Exec(ctx, `DELETE FROM patrol_schedules WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -1238,16 +1315,16 @@ func (p *Postgres) DeletePatrolSchedule(ctx context.Context, id string) error {
 
 func (p *Postgres) CreatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO patrol_executions (id, schedule_id, route_id, route_name, event_id, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        INSERT INTO patrol_executions (id, schedule_id, route_id, route_name, event_id, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		execution.ID, execution.ScheduleID, execution.RouteID, execution.RouteName, execution.EventID, execution.Status,
 		execution.Assignee, execution.Result, execution.Note, execution.OrderID,
-		execution.ScheduledAt, execution.CreatedAt, execution.StartedAt, execution.FinishedAt)
+		execution.ScheduledAt, execution.CreatedAt, execution.StartedAt, execution.FinishedAt, tenantOf(ctx))
 	return err
 }
 
 func (p *Postgres) GetPatrolExecution(ctx context.Context, id string) (model.PatrolExecution, bool, error) {
-	execution, err := scanPatrolExecution(p.pool.QueryRow(ctx, patrolExecutionSelect+` WHERE id=$1`, id))
+	execution, err := scanPatrolExecution(p.pool.QueryRow(ctx, patrolExecutionSelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return model.PatrolExecution{}, false, nil
@@ -1258,8 +1335,9 @@ func (p *Postgres) GetPatrolExecution(ctx context.Context, id string) (model.Pat
 }
 
 func (p *Postgres) ListPatrolExecutions(ctx context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error) {
-	where := " WHERE 1=1"
-	args := make([]any, 0, 3)
+	where := " WHERE tenant_id=$1"
+	args := make([]any, 1, 6)
+	args[0] = tenantOf(ctx)
 	if filter.Status != "" {
 		args = append(args, filter.Status)
 		where += fmt.Sprintf(" AND status=$%d", len(args))
@@ -1304,8 +1382,8 @@ func (p *Postgres) ListPatrolExecutions(ctx context.Context, filter model.Patrol
 func (p *Postgres) UpdatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
 	tag, err := p.pool.Exec(ctx, `
         UPDATE patrol_executions SET status=$2, assignee=$3, result=$4, note=$5, order_id=$6, started_at=$7, finished_at=$8
-        WHERE id=$1`, execution.ID, execution.Status, execution.Assignee, execution.Result,
-		execution.Note, execution.OrderID, execution.StartedAt, execution.FinishedAt)
+        WHERE id=$1 AND tenant_id=$9`, execution.ID, execution.Status, execution.Assignee, execution.Result,
+		execution.Note, execution.OrderID, execution.StartedAt, execution.FinishedAt, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -1315,12 +1393,12 @@ func (p *Postgres) UpdatePatrolExecution(ctx context.Context, execution model.Pa
 	return nil
 }
 
-const patrolScheduleSelect = `SELECT id, name, route_id, interval_minutes, enabled, created_by, created_at, updated_at, next_run_at FROM patrol_schedules`
+const patrolScheduleSelect = `SELECT id, name, route_id, interval_minutes, enabled, created_by, created_at, updated_at, next_run_at, tenant_id FROM patrol_schedules`
 
 func scanPatrolSchedule(row rowScanner) (model.PatrolSchedule, error) {
 	var schedule model.PatrolSchedule
 	err := row.Scan(&schedule.ID, &schedule.Name, &schedule.RouteID, &schedule.IntervalMinutes,
-		&schedule.Enabled, &schedule.CreatedBy, &schedule.CreatedAt, &schedule.UpdatedAt, &schedule.NextRunAt)
+		&schedule.Enabled, &schedule.CreatedBy, &schedule.CreatedAt, &schedule.UpdatedAt, &schedule.NextRunAt, &schedule.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.PatrolSchedule{}, model.ErrNotFound
@@ -1333,13 +1411,13 @@ func scanPatrolSchedule(row rowScanner) (model.PatrolSchedule, error) {
 	return schedule, nil
 }
 
-const patrolExecutionSelect = `SELECT id, schedule_id, route_id, route_name, event_id, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at FROM patrol_executions`
+const patrolExecutionSelect = `SELECT id, schedule_id, route_id, route_name, event_id, status, assignee, result, note, order_id, scheduled_at, created_at, started_at, finished_at, tenant_id FROM patrol_executions`
 
 func scanPatrolExecution(row rowScanner) (model.PatrolExecution, error) {
 	var execution model.PatrolExecution
 	err := row.Scan(&execution.ID, &execution.ScheduleID, &execution.RouteID, &execution.RouteName,
 		&execution.EventID, &execution.Status, &execution.Assignee, &execution.Result, &execution.Note, &execution.OrderID,
-		&execution.ScheduledAt, &execution.CreatedAt, &execution.StartedAt, &execution.FinishedAt)
+		&execution.ScheduledAt, &execution.CreatedAt, &execution.StartedAt, &execution.FinishedAt, &execution.TenantID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.PatrolExecution{}, model.ErrNotFound
@@ -1361,7 +1439,8 @@ func scanPatrolExecution(row rowScanner) (model.PatrolExecution, error) {
 
 func (p *Postgres) DeletePatrolExecutions(ctx context.Context, before time.Time, statuses []string) (int, error) {
 	tag, err := p.pool.Exec(ctx,
-		`DELETE FROM patrol_executions WHERE created_at <= $1 AND status = ANY($2)`, before, statuses)
+		`DELETE FROM patrol_executions WHERE tenant_id=$1 AND created_at <= $2 AND status = ANY($3)`,
+		tenantOf(ctx), before, statuses)
 	if err != nil {
 		return 0, err
 	}

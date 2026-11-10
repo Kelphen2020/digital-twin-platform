@@ -178,6 +178,8 @@ export interface AuthUser {
 export interface LoginResponse {
   token: string
   expires_at: string
+  /** P27：登录租户 id（缺省 default）。 */
+  tenant_id?: string
   /** P11：refresh token（轮换，服务端只存哈希）。 */
   refresh_token?: string
   /** P11：refresh token 过期时间（RFC3339）。 */
@@ -557,6 +559,27 @@ export interface WsPatrolExecutionMessage {
   data: PatrolExecution
 }
 
+// ---------------- P27：多租户 ----------------
+
+export interface Tenant {
+  id: string
+  name: string
+  active: boolean
+}
+
+export interface TenantListResponse {
+  items: Tenant[]
+}
+
+export interface TenantCreatePayload {
+  name: string
+}
+
+export interface TenantUpdatePayload {
+  name?: string
+  active?: boolean
+}
+
 // ---------------- P12：巡检路线 ----------------
 
 export interface PatrolWaypoint {
@@ -719,7 +742,7 @@ export interface ReplayFeedItem {
   receivedAt: number
 }
 
-export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus' | 'users'
+export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus' | 'users' | 'tenant'
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

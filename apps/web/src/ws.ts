@@ -1,4 +1,4 @@
-import { getAuthToken } from './auth/token'
+import { getAuthToken, getTenantId } from './auth/token'
 import { noteConnecting, noteFrame, noteOffline, noteOnline, resetWsQuality } from './store/wsQuality'
 import type { WsMessage, WsState } from './types'
 
@@ -30,6 +30,9 @@ export function resolveWsUrl(): string {
   url.search = ''
   url.hash = ''
   if (token) url.searchParams.set('token', token)
+  // P27：浏览器 WebSocket 无法自定义 header，租户以查询参数传给后端（token 中的 tnt 仍是最终校验）
+  const tenant = getTenantId()
+  if (tenant) url.searchParams.set('tenant_id', tenant)
   return url.toString()
 }
 

@@ -8,7 +8,7 @@ import {
   setTokenRefreshHandler,
   setUnauthorizedHandler,
 } from '../api'
-import { clearTokens, loadStoredTokens, setTokens } from '../auth/token'
+import { clearTokens, getTenantId, loadStoredTenant, loadStoredTokens, setTenantId, setTokens } from '../auth/token'
 import { pushToast } from './ui'
 import type { AuthUser, LoginResponse, Permission, Role } from '../types'
 
@@ -17,6 +17,8 @@ interface AuthState {
   token: string | null
   /** P11：refresh token 过期时间（用于会话续期提示/排查）。 */
   refreshExpiresAt: string | null
+  /** P27：当前租户 id（登录返回，缺省 default）。 */
+  tenantId: string | null
   /** 启动时校验本地令牌的加载态（用于避免登录页闪烁）。 */
   booting: boolean
   loggingIn: boolean
@@ -29,6 +31,7 @@ const state = reactive<AuthState>({
   user: null,
   token: null,
   refreshExpiresAt: null,
+  tenantId: null,
   booting: true,
   loggingIn: false,
   error: null,
@@ -64,6 +67,7 @@ function clearSession(): void {
   state.user = null
   state.token = null
   state.refreshExpiresAt = null
+  state.tenantId = null
   state.error = null
   state.lockoutUntil = null
 }
@@ -78,6 +82,7 @@ async function restoreSession(): Promise<void> {
   }
   state.token = stored.accessToken || null
   state.refreshExpiresAt = stored.refreshExpiresAt
+  state.tenantId = loadStoredTenant()
   try {
     // fetchMe 遇 401 时由 api.ts 自动 refresh + 重试；轮换后回调同步 state.token
     const user = await fetchMe()
@@ -91,18 +96,22 @@ async function restoreSession(): Promise<void> {
   }
 }
 
-async function login(username: string, password: string): Promise<boolean> {
+async function login(username: string, password: string, tenantId = 'default'): Promise<boolean> {
   if (state.loggingIn) return false
   state.loggingIn = true
   state.error = null
   try {
-    const result: LoginResponse = await requestLogin(username.trim(), password)
+    const loginTenant = tenantId.trim() || 'default'
+    const result: LoginResponse = await requestLogin(username.trim(), password, loginTenant)
     state.lockoutUntil = null
     setTokens({
       accessToken: result.token,
       refreshToken: result.refresh_token ?? null,
       refreshExpiresAt: result.refresh_expires_at ?? null,
     })
+    const resolvedTenant = result.tenant_id ?? loginTenant
+    setTenantId(resolvedTenant)
+    state.tenantId = resolvedTenant
     state.token = result.token
     state.refreshExpiresAt = result.refresh_expires_at ?? null
     state.user = result.user
@@ -141,6 +150,7 @@ setUnauthorizedHandler(handleUnauthorized)
 setTokenRefreshHandler((bundle) => {
   state.token = bundle.accessToken
   state.refreshExpiresAt = bundle.refreshExpiresAt
+  state.tenantId = getTenantId()
 })
 
 export function useAuthStore() {

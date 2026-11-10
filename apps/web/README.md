@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P16.0）
+# 数字孪生安防平台 · Web 前端（P27.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16）、`docs/API_P17.md`–`API_P26.md`（P17–P26 后端/测试阶段，前端沿用）、`docs/API_P27.md`（P27，均为固定契约）。
 
 ## 快速开始
 
@@ -132,6 +132,15 @@ pnpm dev          # http://127.0.0.1:5173
 - **当前值班**：`GET /api/duty/current?area_id=` 响应新增 `shift`；卡片显示当前班次与当班人员，非值班时间/无班次给出明确提示。
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
+
+### 多租户隔离基础（P27）
+
+- **登录租户**：登录页新增可选「租户」输入（默认 `default`），登录 body 发送 `tenant_id`；登录响应返回 `tenant_id` 后写入 `twin.auth.tenant`，刷新页面/恢复会话时沿用。演示账号一键填入会重置为 `default`。
+- **请求头**：所有 REST 请求统一附带 `X-Tenant-ID: <当前租户>`；`/api/auth/refresh` 同样携带；WebSocket 因浏览器无法自定义 header，改以 `?tenant_id=` 查询参数传递（JWT 内 `tnt` 声明仍是最终校验）。
+- **顶栏租户名**：admin 登录后调用 `GET /api/tenants` 查找当前租户名并显示「租户：默认园区」；非 admin 或查询失败时回退显示 tenant id。
+- **Admin「租户」第 9 个页签**：租户列表（id/name/active）、新建（名称 ≤64 字符）、编辑（名称/启用状态）、两步「停用/确认停用」、已停用可「启用」；内置 `default` 标记「内置」且不可停用；非 admin 隐藏。
+- **错误映射**：`400 unknown_tenant` →「租户不存在」；`403 tenant_inactive` →「租户已停用」；`403 cross_tenant` →「登录租户与请求不一致，请重新登录」。
+- **切换租户**：切换租户需要退出后以目标租户重新登录（租户 id 存在登录会话与请求头中，切换会刷新数据视图）；跨租户 token 由后端拒绝。
 
 ### 巡检任务取消 / 超时治理（P16）
 
@@ -267,6 +276,8 @@ pnpm dev          # http://127.0.0.1:5173
 | POST | `/api/patrol/schedules/{id}/run` | operator/admin | 立即生成执行任务 |
 | GET | `/api/patrol/executions` | 登录 | 执行列表（status/event_id/limit 过滤） |
 | POST | `/api/patrol/executions/{id}/cancel` | operator/admin（running 仅认领人/admin） | 取消任务（pending/running→cancelled） |
+| GET/POST | `/api/tenants` | admin | 租户列表 / 新建租户 |
+| PATCH | `/api/tenants/{id}` | admin | 修改租户名称 / 启用状态 |
 | POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
 | POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
 | GET | `/api/patrol/stats` | 登录 | 巡检统计（from/to 可选） |
@@ -350,6 +361,7 @@ apps/web/
 | 巡检统计 / 导出 / 归档 | **实时**：`/api/patrol/stats`、`/api/patrol/executions/export` CSV、admin `DELETE /api/patrol/executions` |
 | 告警联动巡检 | **实时**：升级设置 `auto_patrol`；执行 `event_id` 关联/筛选；服务端按路线匹配生成任务 |
 | 巡检取消 / 超时 | **实时**：`POST .../cancel`、stats.cancelled、后端 pending/running 超时自动关闭 |
+| 多租户 | **实时**：登录 `tenant_id`、`X-Tenant-ID` 头、WS `tenant_id` 查询参数、admin `/api/tenants` CRUD |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -397,6 +409,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P27：多租户（admin 管理；登录可指定 tenant_id）
+# 登录时 body 可带 tenant_id（缺省 default）；之后所有请求带 X-Tenant-ID: <tenant>
+curl -s -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"Admin@123456","tenant_id":"default"}' \
+  http://localhost:8080/api/auth/login
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: default" http://localhost:8080/api/tenants
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H "X-Tenant-ID: default" \
+  -d '{"name":"测试租户"}' http://localhost:8080/api/tenants
 
 # P16：巡检取消（operator/admin；running 仅认领人/admin）
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -555,5 +575,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P15 事件关联仅从当前前端事件 store（最近 200 条）查找类型/相机；更早的告警仍展示 `event_id` 但「定位」禁用。筛选输入按 `event_id` 精确查询（后端过滤）。
 - `auto_patrol` 默认关闭；开启后由后端升级 worker 在首次升级/再升级时生成任务，前端通过 WS `patrol_execution` 刷新执行列表与角标。
 - P16 取消：pending 由 operator/admin 取消，running 仅认领人或 admin；前端二次确认 + 可选备注，成功后刷新列表与统计；已完成/已取消不显示取消按钮。
+- P27 租户：登录后租户 id 持久化，切租户需重新登录；非 admin 顶栏回退显示 tenant id（`GET /api/tenants` 为 admin 接口）；内置 `default` 页签内不可停用。
+- P27 数据隔离由后端执行（严格模式 `TENANT_SHARED=0`；无 `X-Tenant-ID` 的旧客户端仍按 default）；前端只负责携带与展示租户上下文。
 - 超时自动关闭由后端调度器执行（pending 60 分钟 / running 120 分钟，环境变量可关）；前端通过 WS `patrol_execution` 感知，不做本地计时。
 - 历史归档默认仍清理 done/issue；`cancelled` 已纳入后端允许的归档状态，但当前 UI 默认不勾选 cancelled（保持 P14 行为）。

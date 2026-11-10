@@ -10,6 +10,7 @@
 const ACCESS_KEY = 'twin.auth.token'
 const REFRESH_KEY = 'twin.auth.refresh'
 const REFRESH_EXPIRES_KEY = 'twin.auth.refresh_expires_at'
+const TENANT_KEY = 'twin.auth.tenant'
 
 export interface TokenBundle {
   accessToken: string
@@ -20,6 +21,7 @@ export interface TokenBundle {
 let accessToken: string | null = null
 let refreshToken: string | null = null
 let refreshExpiresAt: string | null = null
+let tenantId: string | null = null
 
 function readStorage(key: string): string | null {
   try {
@@ -66,6 +68,22 @@ export function getRefreshExpiresAt(): string | null {
   return refreshExpiresAt
 }
 
+/** P27：当前租户 id（登录成功/恢复会话时写入，登出清理）。 */
+export function setTenantId(next: string | null): void {
+  tenantId = next
+  writeStorage(TENANT_KEY, next)
+}
+
+export function getTenantId(): string | null {
+  return tenantId
+}
+
+/** 从 localStorage 恢复租户到内存（应用启动时与令牌一起调用）。 */
+export function loadStoredTenant(): string | null {
+  tenantId = readStorage(TENANT_KEY)
+  return tenantId
+}
+
 /** 从 localStorage 恢复令牌到内存（应用启动时调用）。 */
 export function loadStoredTokens(): TokenBundle | null {
   const storedAccess = readStorage(ACCESS_KEY)
@@ -87,7 +105,9 @@ export function clearTokens(): void {
   accessToken = null
   refreshToken = null
   refreshExpiresAt = null
+  tenantId = null
   writeStorage(ACCESS_KEY, null)
   writeStorage(REFRESH_KEY, null)
   writeStorage(REFRESH_EXPIRES_KEY, null)
+  writeStorage(TENANT_KEY, null)
 }

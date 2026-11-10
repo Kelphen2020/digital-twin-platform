@@ -1,6 +1,10 @@
 // Package store defines persistence for the API. The in-memory implementation
 // is used when DATABASE_URL is empty (smoke tests, laptop demo); the PostgreSQL
 // implementation is used by docker compose and production.
+//
+// P27.0 adds multi-tenancy: every tenant-scoped entity lives behind the tenant
+// carried by the request context (store.WithTenant / store.TenantFrom). The
+// "default" tenant keeps the pre-P27 behaviour, so old clients keep working.
 package store
 
 import (
@@ -29,6 +33,11 @@ func IsConflict(err error) bool { return errors.Is(err, model.ErrConflict) }
 
 // Store is the persistence seam. Every method is safe for concurrent use.
 type Store interface {
+	CreateTenant(ctx context.Context, tenant model.Tenant) error
+	GetTenant(ctx context.Context, id string) (model.Tenant, bool, error)
+	ListTenants(ctx context.Context) ([]model.Tenant, error)
+	UpdateTenant(ctx context.Context, tenant model.Tenant) error
+
 	ListAreas(ctx context.Context) ([]model.Area, error)
 	ListCameras(ctx context.Context) ([]model.Camera, error)
 	GetCamera(ctx context.Context, id string) (model.Camera, error)
@@ -94,9 +103,9 @@ type Store interface {
 	Counts(ctx context.Context) (model.Counts, error)
 }
 
-// Memory is the in-memory Store used without a database.
-type Memory struct {
-	mu            sync.RWMutex
+// memoryState holds the per-tenant dataset. duty_groups and track_points stay
+// global for now (docs/API_P27.md §3) and live on Memory directly.
+type memoryState struct {
 	cameras       map[string]*model.Camera
 	order         []string
 	areas         []model.Area
@@ -105,7 +114,6 @@ type Memory struct {
 	orders        []model.Order
 	settings      map[string][]byte
 	logs          []model.NotificationLog
-	duty          []model.DutyGroup
 	users         map[string]model.UserAccount
 	usernames     map[string]string
 	refresh       map[string]model.RefreshToken
@@ -113,24 +121,48 @@ type Memory struct {
 	patrols       map[string]model.PatrolRoute
 	schedules     map[string]model.PatrolSchedule
 	executions    map[string]model.PatrolExecution
-	tracks        []model.TrackPoint
 	actions       map[string][]model.EventAction
 	audit         []model.AuditEntry
-	maxEvents     int
-	maxTracks     int
-	maxAudit      int
 }
 
-// NewMemory creates an empty in-memory store.
+// Memory is the in-memory Store used without a database.
+type Memory struct {
+	mu     sync.RWMutex
+	states map[string]*memoryState
+	// tenant metadata (P27)
+	tenants map[string]model.Tenant
+
+	duty      []model.DutyGroup
+	tracks    []model.TrackPoint
+	maxEvents int
+	maxTracks int
+	maxAudit  int
+}
+
+// NewMemory creates an empty in-memory store with the seeded default tenant.
 func NewMemory(maxEvents int) *Memory {
 	if maxEvents < 100 {
 		maxEvents = 100
 	}
-	return &Memory{
+	m := &Memory{
+		states:    make(map[string]*memoryState),
+		tenants:   make(map[string]model.Tenant),
+		maxEvents: maxEvents,
+		maxTracks: 50000,
+		maxAudit:  5000,
+	}
+	m.states[model.DefaultTenantID] = newMemoryState()
+	now := time.Now().UTC()
+	m.tenants[model.DefaultTenantID] = model.Tenant{
+		ID: model.DefaultTenantID, Name: "默认园区", Active: true,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	return m
+}
+
+func newMemoryState() *memoryState {
+	return &memoryState{
 		cameras:       make(map[string]*model.Camera),
-		maxEvents:     maxEvents,
-		maxTracks:     50000,
-		maxAudit:      5000,
 		actions:       make(map[string][]model.EventAction),
 		rules:         make(map[string]model.CameraRules),
 		settings:      make(map[string][]byte),
@@ -144,64 +176,149 @@ func NewMemory(maxEvents int) *Memory {
 	}
 }
 
-// Seed loads the demo site. It is idempotent per id.
+// stateLocked returns the dataset for the context tenant. Callers must hold at
+// least the read lock; create must only be true under the write lock.
+func (m *Memory) stateLocked(tenantID string, create bool) *memoryState {
+	if state, ok := m.states[tenantID]; ok {
+		return state
+	}
+	if !create {
+		return nil
+	}
+	state := newMemoryState()
+	m.states[tenantID] = state
+	return state
+}
+
+func (m *Memory) state(ctx context.Context, create bool) *memoryState {
+	return m.stateLocked(tenantOf(ctx), create)
+}
+
+// ---- tenants (P27.0) ------------------------------------------------------
+
+func (m *Memory) CreateTenant(_ context.Context, tenant model.Tenant) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.tenants[tenant.ID]; exists {
+		return model.ErrConflict
+	}
+	m.tenants[tenant.ID] = tenant
+	m.stateLocked(tenant.ID, true)
+	return nil
+}
+
+func (m *Memory) GetTenant(_ context.Context, id string) (model.Tenant, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tenant, ok := m.tenants[id]
+	return tenant, ok, nil
+}
+
+func (m *Memory) ListTenants(_ context.Context) ([]model.Tenant, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.Tenant, 0, len(m.tenants))
+	for _, tenant := range m.tenants {
+		out = append(out, tenant)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *Memory) UpdateTenant(_ context.Context, tenant model.Tenant) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.tenants[tenant.ID]; !exists {
+		return model.ErrNotFound
+	}
+	m.tenants[tenant.ID] = tenant
+	return nil
+}
+
+// Seed loads the demo site into the default tenant. It is idempotent per id.
 func (m *Memory) Seed(cameras []model.Camera, areas []model.Area) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.areas = append([]model.Area(nil), areas...)
-	for _, camera := range cameras {
-		clone := camera
-		if _, exists := m.cameras[clone.ID]; !exists {
-			m.order = append(m.order, clone.ID)
+	state := m.stateLocked(model.DefaultTenantID, true)
+	for i := range areas {
+		areas[i].TenantID = model.DefaultTenantID
+	}
+	state.areas = append([]model.Area(nil), areas...)
+	for i := range cameras {
+		clone := cameras[i]
+		clone.TenantID = model.DefaultTenantID
+		if _, exists := state.cameras[clone.ID]; !exists {
+			state.order = append(state.order, clone.ID)
 		}
-		m.cameras[clone.ID] = &clone
+		state.cameras[clone.ID] = &clone
 	}
 }
 
-func (m *Memory) ListAreas(context.Context) ([]model.Area, error) {
+func (m *Memory) ListAreas(ctx context.Context) ([]model.Area, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]model.Area(nil), m.areas...), nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.Area{}, nil
+	}
+	return append([]model.Area(nil), state.areas...), nil
 }
 
-func (m *Memory) ListCameras(context.Context) ([]model.Camera, error) {
+func (m *Memory) ListCameras(ctx context.Context) ([]model.Camera, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]model.Camera, 0, len(m.order))
-	for _, id := range m.order {
-		if camera, ok := m.cameras[id]; ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.Camera{}, nil
+	}
+	out := make([]model.Camera, 0, len(state.order))
+	for _, id := range state.order {
+		if camera, ok := state.cameras[id]; ok {
 			out = append(out, *camera)
 		}
 	}
 	return out, nil
 }
 
-func (m *Memory) GetCamera(_ context.Context, id string) (model.Camera, error) {
+func (m *Memory) GetCamera(ctx context.Context, id string) (model.Camera, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	camera, ok := m.cameras[id]
-	if !ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Camera{}, model.ErrNotFound
+	}
+	camera, ok := state.cameras[id]
+	if !ok || camera.TenantID != tenantOf(ctx) {
 		return model.Camera{}, model.ErrNotFound
 	}
 	return *camera, nil
 }
 
-func (m *Memory) GetCameraByCode(_ context.Context, code string) (model.Camera, error) {
+func (m *Memory) GetCameraByCode(ctx context.Context, code string) (model.Camera, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, camera := range m.cameras {
-		if camera.Code == code {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Camera{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	for _, camera := range state.cameras {
+		if camera.Code == code && camera.TenantID == tenant {
 			return *camera, nil
 		}
 	}
 	return model.Camera{}, model.ErrNotFound
 }
 
-func (m *Memory) UpdateCamera(_ context.Context, id string, patch model.CameraPatch) (model.Camera, error) {
+func (m *Memory) UpdateCamera(ctx context.Context, id string, patch model.CameraPatch) (model.Camera, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	camera, ok := m.cameras[id]
-	if !ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Camera{}, model.ErrNotFound
+	}
+	camera, ok := state.cameras[id]
+	if !ok || camera.TenantID != tenantOf(ctx) {
 		return model.Camera{}, model.ErrNotFound
 	}
 	applyPatch(camera, patch)
@@ -209,11 +326,15 @@ func (m *Memory) UpdateCamera(_ context.Context, id string, patch model.CameraPa
 	return *camera, nil
 }
 
-func (m *Memory) SetCameraCalibration(_ context.Context, id string, calibration *model.Calibration) (model.Camera, error) {
+func (m *Memory) SetCameraCalibration(ctx context.Context, id string, calibration *model.Calibration) (model.Camera, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	camera, ok := m.cameras[id]
-	if !ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Camera{}, model.ErrNotFound
+	}
+	camera, ok := state.cameras[id]
+	if !ok || camera.TenantID != tenantOf(ctx) {
 		return model.Camera{}, model.ErrNotFound
 	}
 	if calibration != nil {
@@ -228,16 +349,24 @@ func (m *Memory) SetCameraCalibration(_ context.Context, id string, calibration 
 	return *camera, nil
 }
 
-func (m *Memory) ListEvents(_ context.Context, filter model.EventFilter) ([]model.Event, error) {
+func (m *Memory) ListEvents(ctx context.Context, filter model.EventFilter) ([]model.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.Event{}, nil
+	}
+	tenant := tenantOf(ctx)
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 50
 	}
 	out := make([]model.Event, 0, limit)
-	for i := len(m.events) - 1; i >= 0 && len(out) < limit; i-- {
-		event := m.events[i]
+	for i := len(state.events) - 1; i >= 0 && len(out) < limit; i-- {
+		event := state.events[i]
+		if event.TenantID != tenant {
+			continue
+		}
 		if filter.Status != "" && event.Status != filter.Status {
 			continue
 		}
@@ -255,23 +384,33 @@ func (m *Memory) ListEvents(_ context.Context, filter model.EventFilter) ([]mode
 	return out, nil
 }
 
-func (m *Memory) GetEvent(_ context.Context, id string) (model.Event, error) {
+func (m *Memory) GetEvent(ctx context.Context, id string) (model.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for i := range m.events {
-		if m.events[i].ID == id {
-			return m.events[i], nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Event{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	for i := range state.events {
+		if state.events[i].ID == id && state.events[i].TenantID == tenant {
+			return state.events[i], nil
 		}
 	}
 	return model.Event{}, model.ErrNotFound
 }
 
-func (m *Memory) CreateEvents(_ context.Context, events []model.Event) error {
+func (m *Memory) CreateEvents(ctx context.Context, events []model.Event) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.events = append(m.events, events...)
-	if len(m.events) > m.maxEvents {
-		m.events = append([]model.Event(nil), m.events[len(m.events)-m.maxEvents:]...)
+	state := m.state(ctx, true)
+	tenant := tenantOf(ctx)
+	for i := range events {
+		events[i].TenantID = tenant
+	}
+	state.events = append(state.events, events...)
+	if len(state.events) > m.maxEvents {
+		state.events = append([]model.Event(nil), state.events[len(state.events)-m.maxEvents:]...)
 	}
 	return nil
 }
@@ -279,12 +418,17 @@ func (m *Memory) CreateEvents(_ context.Context, events []model.Event) error {
 func (m *Memory) AckEvent(ctx context.Context, id string) (model.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := range m.events {
-		if m.events[i].ID != id {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Event{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	for i := range state.events {
+		if state.events[i].ID != id || state.events[i].TenantID != tenant {
 			continue
 		}
-		m.events[i].Status = "acked"
-		return m.events[i], nil
+		state.events[i].Status = "acked"
+		return state.events[i], nil
 	}
 	return model.Event{}, model.ErrNotFound
 }
@@ -292,32 +436,45 @@ func (m *Memory) AckEvent(ctx context.Context, id string) (model.Event, error) {
 func (m *Memory) CloseEvent(ctx context.Context, id string) (model.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := range m.events {
-		if m.events[i].ID != id {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Event{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	for i := range state.events {
+		if state.events[i].ID != id || state.events[i].TenantID != tenant {
 			continue
 		}
 		now := time.Now().UTC()
-		m.events[i].Status = "closed"
-		m.events[i].ClosedAt = &now
-		return m.events[i], nil
+		state.events[i].Status = "closed"
+		state.events[i].ClosedAt = &now
+		return state.events[i], nil
 	}
 	return model.Event{}, model.ErrNotFound
 }
 
-func (m *Memory) CreateEventAction(_ context.Context, action model.EventAction) error {
+func (m *Memory) CreateEventAction(ctx context.Context, action model.EventAction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.findEventLocked(action.EventID); !ok {
+	state := m.state(ctx, false)
+	if state == nil {
 		return model.ErrNotFound
 	}
-	m.actions[action.EventID] = append(m.actions[action.EventID], action)
+	if _, ok := findEventLocked(state, action.EventID, tenantOf(ctx)); !ok {
+		return model.ErrNotFound
+	}
+	state.actions[action.EventID] = append(state.actions[action.EventID], action)
 	return nil
 }
 
-func (m *Memory) ListEventActions(_ context.Context, eventID string) ([]model.EventAction, error) {
+func (m *Memory) ListEventActions(ctx context.Context, eventID string) ([]model.EventAction, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]model.EventAction(nil), m.actions[eventID]...), nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.EventAction{}, nil
+	}
+	return append([]model.EventAction(nil), state.actions[eventID]...), nil
 }
 
 func (m *Memory) CreateTrackPoints(_ context.Context, points []model.TrackPoint) error {
@@ -354,26 +511,36 @@ func (m *Memory) ListTrackPoints(_ context.Context, filter model.TrackFilter) ([
 	return out, nil
 }
 
-func (m *Memory) AddAudit(_ context.Context, entry model.AuditEntry) error {
+func (m *Memory) AddAudit(ctx context.Context, entry model.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.audit = append(m.audit, entry)
-	if len(m.audit) > m.maxAudit {
-		m.audit = append([]model.AuditEntry(nil), m.audit[len(m.audit)-m.maxAudit:]...)
+	state := m.state(ctx, true)
+	entry.TenantID = tenantOf(ctx)
+	state.audit = append(state.audit, entry)
+	if len(state.audit) > m.maxAudit {
+		state.audit = append([]model.AuditEntry(nil), state.audit[len(state.audit)-m.maxAudit:]...)
 	}
 	return nil
 }
 
-func (m *Memory) ListAudit(_ context.Context, filter model.AuditFilter) ([]model.AuditEntry, error) {
+func (m *Memory) ListAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEntry, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.AuditEntry{}, nil
+	}
+	tenant := tenantOf(ctx)
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	out := make([]model.AuditEntry, 0, limit)
-	for i := len(m.audit) - 1; i >= 0 && len(out) < limit; i-- {
-		entry := m.audit[i]
+	for i := len(state.audit) - 1; i >= 0 && len(out) < limit; i-- {
+		entry := state.audit[i]
+		if entry.TenantID != tenant {
+			continue
+		}
 		if filter.Action != "" && entry.Action != filter.Action {
 			continue
 		}
@@ -391,17 +558,25 @@ func (m *Memory) ListAudit(_ context.Context, filter model.AuditFilter) ([]model
 	return out, nil
 }
 
-func (m *Memory) Stats(_ context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error) {
+func (m *Memory) Stats(ctx context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
 	summary := model.StatsSummary{
 		From:   from,
 		To:     to,
 		Totals: model.StatsTotals{BySeverity: map[string]int64{}, ByType: map[string]int64{}},
 	}
+	if state == nil {
+		return summary, nil
+	}
+	tenant := tenantOf(ctx)
 	perCamera := map[string]int64{}
 	perHour := map[time.Time]int64{}
-	for _, event := range m.events {
+	for _, event := range state.events {
+		if event.TenantID != tenant {
+			continue
+		}
 		if event.OccurredAt.Before(from) || event.OccurredAt.After(to) {
 			continue
 		}
@@ -414,9 +589,9 @@ func (m *Memory) Stats(_ context.Context, from, to time.Time, cameraIDs []string
 		perCamera[event.CameraID]++
 		perHour[event.OccurredAt.UTC().Truncate(time.Hour)]++
 	}
-	for _, id := range m.order {
-		camera, ok := m.cameras[id]
-		if !ok {
+	for _, id := range state.order {
+		camera, ok := state.cameras[id]
+		if !ok || camera.TenantID != tenant {
 			continue
 		}
 		count := perCamera[id]
@@ -435,37 +610,52 @@ func (m *Memory) Stats(_ context.Context, from, to time.Time, cameraIDs []string
 	return summary, nil
 }
 
-func (m *Memory) GetCameraRules(_ context.Context, cameraID string) (model.CameraRules, error) {
+func (m *Memory) GetCameraRules(ctx context.Context, cameraID string) (model.CameraRules, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	rules, ok := m.rules[cameraID]
-	if !ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.CameraRules{}, model.ErrNotFound
+	}
+	rules, ok := state.rules[cameraID]
+	if !ok || rules.TenantID != tenantOf(ctx) {
 		return model.CameraRules{}, model.ErrNotFound
 	}
 	return rules, nil
 }
 
-func (m *Memory) SetCameraRules(_ context.Context, rules model.CameraRules) (model.CameraRules, error) {
+func (m *Memory) SetCameraRules(ctx context.Context, rules model.CameraRules) (model.CameraRules, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.cameras[rules.CameraID]; !ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.CameraRules{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	if camera, ok := state.cameras[rules.CameraID]; !ok || camera.TenantID != tenant {
 		return model.CameraRules{}, model.ErrNotFound
 	}
 	now := time.Now().UTC()
+	rules.TenantID = tenant
 	rules.UpdatedAt = &now
 	if rules.EnabledClasses == nil {
 		rules.EnabledClasses = []string{}
 	}
-	m.rules[rules.CameraID] = rules
+	state.rules[rules.CameraID] = rules
 	return rules, nil
 }
 
-func (m *Memory) FindOpenOrderForEvent(_ context.Context, eventID string) (model.Order, bool, error) {
+func (m *Memory) FindOpenOrderForEvent(ctx context.Context, eventID string) (model.Order, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for i := len(m.orders) - 1; i >= 0; i-- {
-		order := m.orders[i]
-		if order.EventID != eventID {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Order{}, false, nil
+	}
+	tenant := tenantOf(ctx)
+	for i := len(state.orders) - 1; i >= 0; i-- {
+		order := state.orders[i]
+		if order.EventID != eventID || order.TenantID != tenant {
 			continue
 		}
 		switch order.Status {
@@ -476,13 +666,21 @@ func (m *Memory) FindOpenOrderForEvent(_ context.Context, eventID string) (model
 	return model.Order{}, false, nil
 }
 
-func (m *Memory) ReEscalateStale(_ context.Context, before time.Time, severities []string) ([]model.Event, error) {
+func (m *Memory) ReEscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.Event{}, nil
+	}
+	tenant := tenantOf(ctx)
 	now := time.Now().UTC()
 	escalated := make([]model.Event, 0, 4)
-	for i := range m.events {
-		event := &m.events[i]
+	for i := range state.events {
+		event := &state.events[i]
+		if event.TenantID != tenant {
+			continue
+		}
 		if event.Status == "closed" || event.EscalatedAt == nil || event.ReEscalatedAt != nil {
 			continue
 		}
@@ -499,50 +697,70 @@ func (m *Memory) ReEscalateStale(_ context.Context, before time.Time, severities
 	return escalated, nil
 }
 
-func (m *Memory) CreateOrder(_ context.Context, order model.Order) error {
+func (m *Memory) CreateOrder(ctx context.Context, order model.Order) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.orders = append(m.orders, order)
-	if len(m.orders) > 10000 {
-		m.orders = append([]model.Order(nil), m.orders[len(m.orders)-10000:]...)
+	state := m.state(ctx, true)
+	order.TenantID = tenantOf(ctx)
+	state.orders = append(state.orders, order)
+	if len(state.orders) > 10000 {
+		state.orders = append([]model.Order(nil), state.orders[len(state.orders)-10000:]...)
 	}
 	return nil
 }
 
-func (m *Memory) GetOrder(_ context.Context, id string) (model.Order, error) {
+func (m *Memory) GetOrder(ctx context.Context, id string) (model.Order, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for i := range m.orders {
-		if m.orders[i].ID == id {
-			return m.orders[i], nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Order{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	for i := range state.orders {
+		if state.orders[i].ID == id && state.orders[i].TenantID == tenant {
+			return state.orders[i], nil
 		}
 	}
 	return model.Order{}, model.ErrNotFound
 }
 
-func (m *Memory) UpdateOrder(_ context.Context, id string, update model.OrderUpdate) (model.Order, error) {
+func (m *Memory) UpdateOrder(ctx context.Context, id string, update model.OrderUpdate) (model.Order, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := range m.orders {
-		if m.orders[i].ID != id {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.Order{}, model.ErrNotFound
+	}
+	tenant := tenantOf(ctx)
+	for i := range state.orders {
+		if state.orders[i].ID != id || state.orders[i].TenantID != tenant {
 			continue
 		}
-		applyOrderUpdate(&m.orders[i], update)
-		return m.orders[i], nil
+		applyOrderUpdate(&state.orders[i], update)
+		return state.orders[i], nil
 	}
 	return model.Order{}, model.ErrNotFound
 }
 
-func (m *Memory) ListOrders(_ context.Context, filter model.OrderFilter) ([]model.Order, error) {
+func (m *Memory) ListOrders(ctx context.Context, filter model.OrderFilter) ([]model.Order, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.Order{}, nil
+	}
+	tenant := tenantOf(ctx)
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	out := make([]model.Order, 0, limit)
-	for i := len(m.orders) - 1; i >= 0 && len(out) < limit; i-- {
-		order := m.orders[i]
+	for i := len(state.orders) - 1; i >= 0 && len(out) < limit; i-- {
+		order := state.orders[i]
+		if order.TenantID != tenant {
+			continue
+		}
 		if filter.Status != "" && order.Status != filter.Status {
 			continue
 		}
@@ -578,134 +796,215 @@ func applyOrderUpdate(order *model.Order, update model.OrderUpdate) {
 	order.UpdatedAt = now
 }
 
-func (m *Memory) Counts(_ context.Context) (model.Counts, error) {
+func (m *Memory) Counts(ctx context.Context) (model.Counts, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	counts := model.Counts{EventsTotal: int64(len(m.events))}
-	for _, camera := range m.cameras {
-		if camera.Status == "online" {
+	state := m.state(ctx, false)
+	counts := model.Counts{}
+	if state == nil {
+		return counts, nil
+	}
+	tenant := tenantOf(ctx)
+	for _, event := range state.events {
+		if event.TenantID == tenant {
+			counts.EventsTotal++
+		}
+	}
+	for _, camera := range state.cameras {
+		if camera.TenantID == tenant && camera.Status == "online" {
 			counts.OnlineCameras++
 		}
 	}
 	return counts, nil
 }
 
-func (m *Memory) findEventLocked(id string) (*model.Event, bool) {
-	for i := range m.events {
-		if m.events[i].ID == id {
-			return &m.events[i], true
+func findEventLocked(state *memoryState, id, tenantID string) (*model.Event, bool) {
+	for i := range state.events {
+		if state.events[i].ID == id && state.events[i].TenantID == tenantID {
+			return &state.events[i], true
 		}
 	}
 	return nil, false
 }
 
-func (m *Memory) CreatePatrolRoute(_ context.Context, route model.PatrolRoute) error {
+func (m *Memory) CreatePatrolRoute(ctx context.Context, route model.PatrolRoute) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.patrols[route.ID] = route
+	state := m.state(ctx, true)
+	route.TenantID = tenantOf(ctx)
+	state.patrols[route.ID] = route
 	return nil
 }
 
-func (m *Memory) GetPatrolRoute(_ context.Context, id string) (model.PatrolRoute, bool, error) {
+func (m *Memory) GetPatrolRoute(ctx context.Context, id string) (model.PatrolRoute, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	route, ok := m.patrols[id]
-	return route, ok, nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.PatrolRoute{}, false, nil
+	}
+	route, ok := state.patrols[id]
+	if !ok || route.TenantID != tenantOf(ctx) {
+		return model.PatrolRoute{}, false, nil
+	}
+	return route, true, nil
 }
 
-func (m *Memory) ListPatrolRoutes(_ context.Context) ([]model.PatrolRoute, error) {
+func (m *Memory) ListPatrolRoutes(ctx context.Context) ([]model.PatrolRoute, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]model.PatrolRoute, 0, len(m.patrols))
-	for _, route := range m.patrols {
-		out = append(out, route)
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.PatrolRoute{}, nil
+	}
+	tenant := tenantOf(ctx)
+	out := make([]model.PatrolRoute, 0, len(state.patrols))
+	for _, route := range state.patrols {
+		if route.TenantID == tenant {
+			out = append(out, route)
+		}
 	}
 	return out, nil
 }
 
-func (m *Memory) UpdatePatrolRoute(_ context.Context, route model.PatrolRoute) error {
+func (m *Memory) UpdatePatrolRoute(ctx context.Context, route model.PatrolRoute) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.patrols[route.ID]; !ok {
+	state := m.state(ctx, false)
+	if state == nil {
 		return model.ErrNotFound
 	}
-	m.patrols[route.ID] = route
-	return nil
-}
-
-func (m *Memory) DeletePatrolRoute(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.patrols[id]; !ok {
+	existing, ok := state.patrols[route.ID]
+	if !ok || existing.TenantID != tenantOf(ctx) {
 		return model.ErrNotFound
 	}
-	delete(m.patrols, id)
+	route.TenantID = existing.TenantID
+	state.patrols[route.ID] = route
 	return nil
 }
 
-func (m *Memory) CreatePatrolSchedule(_ context.Context, schedule model.PatrolSchedule) error {
+func (m *Memory) DeletePatrolRoute(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.schedules[schedule.ID] = schedule
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.ErrNotFound
+	}
+	existing, ok := state.patrols[id]
+	if !ok || existing.TenantID != tenantOf(ctx) {
+		return model.ErrNotFound
+	}
+	delete(state.patrols, id)
 	return nil
 }
 
-func (m *Memory) GetPatrolSchedule(_ context.Context, id string) (model.PatrolSchedule, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	schedule, ok := m.schedules[id]
-	return schedule, ok, nil
+func (m *Memory) CreatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.state(ctx, true)
+	schedule.TenantID = tenantOf(ctx)
+	state.schedules[schedule.ID] = schedule
+	return nil
 }
 
-func (m *Memory) ListPatrolSchedules(_ context.Context) ([]model.PatrolSchedule, error) {
+func (m *Memory) GetPatrolSchedule(ctx context.Context, id string) (model.PatrolSchedule, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]model.PatrolSchedule, 0, len(m.schedules))
-	for _, schedule := range m.schedules {
-		out = append(out, schedule)
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.PatrolSchedule{}, false, nil
+	}
+	schedule, ok := state.schedules[id]
+	if !ok || schedule.TenantID != tenantOf(ctx) {
+		return model.PatrolSchedule{}, false, nil
+	}
+	return schedule, true, nil
+}
+
+func (m *Memory) ListPatrolSchedules(ctx context.Context) ([]model.PatrolSchedule, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.PatrolSchedule{}, nil
+	}
+	tenant := tenantOf(ctx)
+	out := make([]model.PatrolSchedule, 0, len(state.schedules))
+	for _, schedule := range state.schedules {
+		if schedule.TenantID == tenant {
+			out = append(out, schedule)
+		}
 	}
 	return out, nil
 }
 
-func (m *Memory) UpdatePatrolSchedule(_ context.Context, schedule model.PatrolSchedule) error {
+func (m *Memory) UpdatePatrolSchedule(ctx context.Context, schedule model.PatrolSchedule) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.schedules[schedule.ID]; !ok {
+	state := m.state(ctx, false)
+	if state == nil {
 		return model.ErrNotFound
 	}
-	m.schedules[schedule.ID] = schedule
-	return nil
-}
-
-func (m *Memory) DeletePatrolSchedule(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.schedules[id]; !ok {
+	existing, ok := state.schedules[schedule.ID]
+	if !ok || existing.TenantID != tenantOf(ctx) {
 		return model.ErrNotFound
 	}
-	delete(m.schedules, id)
+	schedule.TenantID = existing.TenantID
+	state.schedules[schedule.ID] = schedule
 	return nil
 }
 
-func (m *Memory) CreatePatrolExecution(_ context.Context, execution model.PatrolExecution) error {
+func (m *Memory) DeletePatrolSchedule(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.executions[execution.ID] = execution
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.ErrNotFound
+	}
+	existing, ok := state.schedules[id]
+	if !ok || existing.TenantID != tenantOf(ctx) {
+		return model.ErrNotFound
+	}
+	delete(state.schedules, id)
 	return nil
 }
 
-func (m *Memory) GetPatrolExecution(_ context.Context, id string) (model.PatrolExecution, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	execution, ok := m.executions[id]
-	return execution, ok, nil
+func (m *Memory) CreatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.state(ctx, true)
+	execution.TenantID = tenantOf(ctx)
+	state.executions[execution.ID] = execution
+	return nil
 }
 
-func (m *Memory) ListPatrolExecutions(_ context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error) {
+func (m *Memory) GetPatrolExecution(ctx context.Context, id string) (model.PatrolExecution, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]model.PatrolExecution, 0, len(m.executions))
-	for _, execution := range m.executions {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.PatrolExecution{}, false, nil
+	}
+	execution, ok := state.executions[id]
+	if !ok || execution.TenantID != tenantOf(ctx) {
+		return model.PatrolExecution{}, false, nil
+	}
+	return execution, true, nil
+}
+
+func (m *Memory) ListPatrolExecutions(ctx context.Context, filter model.PatrolExecutionFilter) ([]model.PatrolExecution, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.PatrolExecution{}, nil
+	}
+	tenant := tenantOf(ctx)
+	out := make([]model.PatrolExecution, 0, len(state.executions))
+	for _, execution := range state.executions {
+		if execution.TenantID != tenant {
+			continue
+		}
 		if filter.Status != "" && execution.Status != filter.Status {
 			continue
 		}
@@ -729,150 +1028,221 @@ func (m *Memory) ListPatrolExecutions(_ context.Context, filter model.PatrolExec
 	return out, nil
 }
 
-func (m *Memory) DeletePatrolExecutions(_ context.Context, before time.Time, statuses []string) (int, error) {
+func (m *Memory) DeletePatrolExecutions(ctx context.Context, before time.Time, statuses []string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return 0, nil
+	}
+	tenant := tenantOf(ctx)
 	allowed := make(map[string]struct{}, len(statuses))
 	for _, status := range statuses {
 		allowed[status] = struct{}{}
 	}
 	deleted := 0
-	for id, execution := range m.executions {
+	for id, execution := range state.executions {
+		if execution.TenantID != tenant {
+			continue
+		}
 		if _, ok := allowed[execution.Status]; !ok {
 			continue
 		}
 		if execution.CreatedAt.After(before) {
 			continue
 		}
-		delete(m.executions, id)
+		delete(state.executions, id)
 		deleted++
 	}
 	return deleted, nil
 }
 
-func (m *Memory) UpdatePatrolExecution(_ context.Context, execution model.PatrolExecution) error {
+func (m *Memory) UpdatePatrolExecution(ctx context.Context, execution model.PatrolExecution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.executions[execution.ID]; !ok {
+	state := m.state(ctx, false)
+	if state == nil {
 		return model.ErrNotFound
 	}
-	m.executions[execution.ID] = execution
+	existing, ok := state.executions[execution.ID]
+	if !ok || existing.TenantID != tenantOf(ctx) {
+		return model.ErrNotFound
+	}
+	execution.TenantID = existing.TenantID
+	state.executions[execution.ID] = execution
 	return nil
 }
 
-func (m *Memory) CreateRefreshToken(_ context.Context, token model.RefreshToken) error {
+func (m *Memory) CreateRefreshToken(ctx context.Context, token model.RefreshToken) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.refresh[token.ID] = token
-	m.refreshByHash[token.TokenHash] = token.ID
+	state := m.state(ctx, true)
+	token.TenantID = tenantOf(ctx)
+	state.refresh[token.ID] = token
+	state.refreshByHash[token.TokenHash] = token.ID
 	return nil
 }
 
-func (m *Memory) GetRefreshTokenByHash(_ context.Context, tokenHash string) (model.RefreshToken, bool, error) {
+func (m *Memory) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	id, ok := m.refreshByHash[tokenHash]
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.RefreshToken{}, false, nil
+	}
+	id, ok := state.refreshByHash[tokenHash]
 	if !ok {
 		return model.RefreshToken{}, false, nil
 	}
-	return m.refresh[id], true, nil
+	token, exists := state.refresh[id]
+	if !exists || token.TenantID != tenantOf(ctx) {
+		return model.RefreshToken{}, false, nil
+	}
+	return token, true, nil
 }
 
-func (m *Memory) RevokeRefreshToken(_ context.Context, id string) error {
+func (m *Memory) RevokeRefreshToken(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	token, ok := m.refresh[id]
-	if !ok {
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.ErrNotFound
+	}
+	token, ok := state.refresh[id]
+	if !ok || token.TenantID != tenantOf(ctx) {
 		return model.ErrNotFound
 	}
 	token.Revoked = true
-	m.refresh[id] = token
+	state.refresh[id] = token
 	return nil
 }
 
-func (m *Memory) RevokeUserRefreshTokens(_ context.Context, userID string) error {
+func (m *Memory) RevokeUserRefreshTokens(ctx context.Context, userID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for id, token := range m.refresh {
-		if token.UserID == userID {
+	state := m.state(ctx, false)
+	if state == nil {
+		return nil
+	}
+	tenant := tenantOf(ctx)
+	for id, token := range state.refresh {
+		if token.UserID == userID && token.TenantID == tenant {
 			token.Revoked = true
-			m.refresh[id] = token
+			state.refresh[id] = token
 		}
 	}
 	return nil
 }
 
-func (m *Memory) ListUserRefreshTokens(_ context.Context, userID string) ([]model.RefreshToken, error) {
+func (m *Memory) ListUserRefreshTokens(ctx context.Context, userID string) ([]model.RefreshToken, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.RefreshToken{}, nil
+	}
+	tenant := tenantOf(ctx)
 	out := make([]model.RefreshToken, 0, 4)
-	for _, token := range m.refresh {
-		if token.UserID == userID {
+	for _, token := range state.refresh {
+		if token.UserID == userID && token.TenantID == tenant {
 			out = append(out, token)
 		}
 	}
 	return out, nil
 }
 
-func (m *Memory) GetUserAccountByUsername(_ context.Context, username string) (model.UserAccount, bool, error) {
+func (m *Memory) GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	id, ok := m.usernames[username]
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.UserAccount{}, false, nil
+	}
+	id, ok := state.usernames[username]
 	if !ok {
 		return model.UserAccount{}, false, nil
 	}
-	account, exists := m.users[id]
-	return account, exists, nil
+	account, exists := state.users[id]
+	if !exists || account.TenantID != tenantOf(ctx) {
+		return model.UserAccount{}, false, nil
+	}
+	return account, true, nil
 }
 
-func (m *Memory) GetUserAccountByID(_ context.Context, id string) (model.UserAccount, bool, error) {
+func (m *Memory) GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	account, ok := m.users[id]
-	return account, ok, nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.UserAccount{}, false, nil
+	}
+	account, ok := state.users[id]
+	if !ok || account.TenantID != tenantOf(ctx) {
+		return model.UserAccount{}, false, nil
+	}
+	return account, true, nil
 }
 
-func (m *Memory) ListUserAccounts(context.Context) ([]model.UserAccount, error) {
+func (m *Memory) ListUserAccounts(ctx context.Context) ([]model.UserAccount, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]model.UserAccount, 0, len(m.users))
-	for _, account := range m.users {
-		out = append(out, account)
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.UserAccount{}, nil
+	}
+	tenant := tenantOf(ctx)
+	out := make([]model.UserAccount, 0, len(state.users))
+	for _, account := range state.users {
+		if account.TenantID == tenant {
+			out = append(out, account)
+		}
 	}
 	return out, nil
 }
 
-func (m *Memory) CreateUserAccount(_ context.Context, account model.UserAccount) error {
+func (m *Memory) CreateUserAccount(ctx context.Context, account model.UserAccount) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.usernames[account.Username]; exists {
+	state := m.state(ctx, true)
+	if _, exists := state.usernames[account.Username]; exists {
 		return model.ErrConflict
 	}
-	m.users[account.ID] = account
-	m.usernames[account.Username] = account.ID
+	account.TenantID = tenantOf(ctx)
+	state.users[account.ID] = account
+	state.usernames[account.Username] = account.ID
 	return nil
 }
 
-func (m *Memory) UpdateUserAccount(_ context.Context, account model.UserAccount) error {
+func (m *Memory) UpdateUserAccount(ctx context.Context, account model.UserAccount) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.users[account.ID]; !exists {
+	state := m.state(ctx, false)
+	if state == nil {
 		return model.ErrNotFound
 	}
-	m.users[account.ID] = account
-	m.usernames[account.Username] = account.ID
+	existing, exists := state.users[account.ID]
+	if !exists || existing.TenantID != tenantOf(ctx) {
+		return model.ErrNotFound
+	}
+	account.TenantID = existing.TenantID
+	state.users[account.ID] = account
+	state.usernames[account.Username] = account.ID
 	return nil
 }
 
-func (m *Memory) DeleteUserAccount(_ context.Context, id string) error {
+func (m *Memory) DeleteUserAccount(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	account, exists := m.users[id]
-	if !exists {
+	state := m.state(ctx, false)
+	if state == nil {
 		return model.ErrNotFound
 	}
-	delete(m.users, id)
-	delete(m.usernames, account.Username)
+	account, exists := state.users[id]
+	if !exists || account.TenantID != tenantOf(ctx) {
+		return model.ErrNotFound
+	}
+	delete(state.users, id)
+	delete(state.usernames, account.Username)
 	return nil
 }
 
@@ -928,53 +1298,76 @@ func (m *Memory) DeleteDutyGroup(_ context.Context, id string) error {
 	return model.ErrNotFound
 }
 
-func (m *Memory) GetSetting(_ context.Context, key string) ([]byte, bool, error) {
+func (m *Memory) GetSetting(ctx context.Context, key string) ([]byte, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	value, ok := m.settings[key]
+	state := m.state(ctx, false)
+	if state == nil {
+		return nil, false, nil
+	}
+	value, ok := state.settings[key]
 	if !ok {
 		return nil, false, nil
 	}
 	return append([]byte(nil), value...), true, nil
 }
 
-func (m *Memory) SetSetting(_ context.Context, key string, value []byte) error {
+func (m *Memory) SetSetting(ctx context.Context, key string, value []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.settings[key] = append([]byte(nil), value...)
+	state := m.state(ctx, true)
+	state.settings[key] = append([]byte(nil), value...)
 	return nil
 }
 
-func (m *Memory) CreateNotificationLog(_ context.Context, entry model.NotificationLog) error {
+func (m *Memory) CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.logs = append(m.logs, entry)
-	if len(m.logs) > 1000 {
-		m.logs = append([]model.NotificationLog(nil), m.logs[len(m.logs)-1000:]...)
+	state := m.state(ctx, true)
+	entry.TenantID = tenantOf(ctx)
+	state.logs = append(state.logs, entry)
+	if len(state.logs) > 1000 {
+		state.logs = append([]model.NotificationLog(nil), state.logs[len(state.logs)-1000:]...)
 	}
 	return nil
 }
 
-func (m *Memory) ListNotificationLog(_ context.Context, limit int) ([]model.NotificationLog, error) {
+func (m *Memory) ListNotificationLog(ctx context.Context, limit int) ([]model.NotificationLog, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.NotificationLog{}, nil
+	}
+	tenant := tenantOf(ctx)
 	if limit <= 0 {
 		limit = 50
 	}
 	out := make([]model.NotificationLog, 0, limit)
-	for i := len(m.logs) - 1; i >= 0 && len(out) < limit; i-- {
-		out = append(out, m.logs[i])
+	for i := len(state.logs) - 1; i >= 0 && len(out) < limit; i-- {
+		if state.logs[i].TenantID != tenant {
+			continue
+		}
+		out = append(out, state.logs[i])
 	}
 	return out, nil
 }
 
-func (m *Memory) EscalateStale(_ context.Context, before time.Time, severities []string) ([]model.Event, error) {
+func (m *Memory) EscalateStale(ctx context.Context, before time.Time, severities []string) ([]model.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.Event{}, nil
+	}
+	tenant := tenantOf(ctx)
 	now := time.Now().UTC()
 	escalated := make([]model.Event, 0, 4)
-	for i := range m.events {
-		event := &m.events[i]
+	for i := range state.events {
+		event := &state.events[i]
+		if event.TenantID != tenant {
+			continue
+		}
 		if event.Status == "closed" || event.EscalatedAt != nil {
 			continue
 		}
@@ -984,8 +1377,8 @@ func (m *Memory) EscalateStale(_ context.Context, before time.Time, severities [
 		if len(severities) > 0 && !containsString(severities, event.Severity) {
 			continue
 		}
-		closed := now
-		event.EscalatedAt = &closed
+		stamp := now
+		event.EscalatedAt = &stamp
 		escalated = append(escalated, *event)
 	}
 	return escalated, nil

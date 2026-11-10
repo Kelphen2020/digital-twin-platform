@@ -111,6 +111,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/auth/logout-all", s.handleLogoutAll)
+	mux.HandleFunc("GET /api/tenants", s.handleListTenants)
+	mux.HandleFunc("POST /api/tenants", s.handleCreateTenant)
+	mux.HandleFunc("PATCH /api/tenants/{id}", s.handleUpdateTenant)
 	mux.HandleFunc("GET /api/areas", s.handleAreas)
 	mux.HandleFunc("GET /api/cameras", s.handleCameras)
 	mux.HandleFunc("GET /api/cameras/{id}", s.handleCamera)
@@ -218,10 +221,22 @@ func (s *Server) broadcastStats() {
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	if !s.auth.Enabled() {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, auth.DevUser())))
+			ctx, tenantID, ok := s.resolveTenant(w, r, requestTenant(r))
+			if !ok {
+				return
+			}
+			s.metrics.RecordTenantRequest(tenantID)
+			ctx = context.WithValue(ctx, userContextKey{}, auth.DevUser())
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, tenantID, ok := s.resolveTenant(w, r, requestTenant(r))
+		if !ok {
+			return
+		}
+		s.metrics.RecordTenantRequest(tenantID)
+		r = r.WithContext(ctx)
 		path := r.URL.Path
 		switch path {
 		case "/api/health", "/metrics", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout":
@@ -245,6 +260,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		user, err := s.auth.Verify(token)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
+			return
+		}
+		if user.TenantID != "" && user.TenantID != tenantID {
+			writeError(w, http.StatusForbidden, "cross_tenant", "this token belongs to another tenant")
 			return
 		}
 		account, ok, err := s.auth.GetUser(r.Context(), user.ID)
@@ -442,6 +461,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.RevokeRefreshToken(r.Context(), stored.ID)
+	if store.TenantShared() {
+		if requested := store.TenantFrom(r.Context()); account.TenantID != requested {
+			account.TenantID = requested
+		}
+	}
 	refreshToken, refreshExpires, err := s.issueRefresh(r.Context(), account.ID, clientIP(r), r.UserAgent())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -454,6 +478,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": accessToken, "expires_at": accessExpires.Format(time.RFC3339),
+		"tenant_id": account.TenantID,
 		"refresh_token": refreshToken, "refresh_expires_at": refreshExpires.Format(time.RFC3339),
 	})
 }
@@ -525,10 +550,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TenantID string `json:"tenant_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
+	}
+	// P27.0: the login body may select the tenant; otherwise the middleware
+	// already scoped the request to X-Tenant-ID (default "default").
+	if strings.TrimSpace(request.TenantID) != "" {
+		ctx, _, ok := s.resolveTenant(w, r, request.TenantID)
+		if !ok {
+			return
+		}
+		r = r.WithContext(ctx)
 	}
 	username := strings.TrimSpace(request.Username)
 	key := username + "|" + clientIP(r)
@@ -544,6 +579,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.clearLoginFailures(key)
+	if store.TenantShared() {
+		requested := store.TenantFrom(r.Context())
+		if user.TenantID != requested {
+			user.TenantID = requested
+			reissued, reissuedExpires, issueErr := s.auth.IssueAccessToken(user)
+			if issueErr != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", issueErr.Error())
+				return
+			}
+			token, expires = reissued, reissuedExpires
+		}
+	}
 	refreshToken, refreshExpires, refreshErr := s.issueRefresh(r.Context(), user.ID, clientIP(r), r.UserAgent())
 	if refreshErr != nil {
 		log.Printf("api: issue refresh token: %v", refreshErr)
@@ -551,6 +598,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"token":      token,
 		"expires_at": expires.Format(time.RFC3339),
+		"tenant_id":  user.TenantID,
 		"user":       user,
 	}
 	if refreshToken != "" {
@@ -561,7 +609,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, userOf(r))
+	user := userOf(r)
+	if user.TenantID == "" {
+		user.TenantID = tenantName(r.Context())
+	}
+	writeJSON(w, http.StatusOK, user)
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -589,17 +641,6 @@ func (s *Server) LoadSettings(ctx context.Context) {
 	s.settingsMu.Unlock()
 }
 
-func (s *Server) currentNotify() model.NotificationSettings {
-	s.settingsMu.RLock()
-	defer s.settingsMu.RUnlock()
-	return s.notify
-}
-
-func (s *Server) currentEscalation() model.EscalationSettings {
-	s.settingsMu.RLock()
-	defer s.settingsMu.RUnlock()
-	return s.escalation
-}
 
 // RunEscalation periodically marks stale open alerts as escalated.
 func (s *Server) RunEscalation(ctx context.Context, interval time.Duration) {
@@ -617,7 +658,21 @@ func (s *Server) RunEscalation(ctx context.Context, interval time.Duration) {
 }
 
 func (s *Server) escalateOnce(ctx context.Context) {
-	cfg := s.currentEscalation()
+	tenants, err := s.store.ListTenants(ctx)
+	if err != nil {
+		log.Printf("api: list tenants: %v", err)
+		return
+	}
+	for _, tenant := range tenants {
+		if !tenant.Active {
+			continue
+		}
+		s.escalateTenant(store.WithTenant(ctx, tenant.ID))
+	}
+}
+
+func (s *Server) escalateTenant(ctx context.Context) {
+	cfg := s.loadEscalationSettings(ctx)
 	if !cfg.Enabled || len(cfg.Severities) == 0 {
 		return
 	}
@@ -653,7 +708,21 @@ func (s *Server) escalateOnce(ctx context.Context) {
 
 // reEscalateOnce marks already escalated, still-open events for a second alert.
 func (s *Server) reEscalateOnce(ctx context.Context) {
-	cfg := s.currentEscalation()
+	tenants, err := s.store.ListTenants(ctx)
+	if err != nil {
+		log.Printf("api: list tenants: %v", err)
+		return
+	}
+	for _, tenant := range tenants {
+		if !tenant.Active {
+			continue
+		}
+		s.reEscalateTenant(store.WithTenant(ctx, tenant.ID))
+	}
+}
+
+func (s *Server) reEscalateTenant(ctx context.Context) {
+	cfg := s.loadEscalationSettings(ctx)
 	if !cfg.Enabled || cfg.SecondAfterSeconds <= 0 || len(cfg.Severities) == 0 {
 		return
 	}
@@ -690,14 +759,14 @@ func (s *Server) reEscalateOnce(ctx context.Context) {
 // deliverNotification posts one event/escalation/dispatch to the configured
 // webhook, with a silence window and bounded exponential-backoff retries.
 func (s *Server) deliverNotification(ctx context.Context, kind string, event model.Event, order *model.Order) {
-	cfg := s.currentNotify()
+	cfg := s.loadNotificationSettings(ctx)
 	if !cfg.Enabled || strings.TrimSpace(cfg.WebhookURL) == "" {
 		return
 	}
 	if model.SeverityRank(event.Severity) < model.SeverityRank(cfg.MinSeverity) {
 		return
 	}
-	silenceKey := event.CameraID + "|" + event.Type + "|" + event.Severity
+	silenceKey := store.TenantFrom(ctx) + "|" + event.CameraID + "|" + event.Type + "|" + event.Severity
 	s.notifyMu.Lock()
 	last, seen := s.notifySilence[silenceKey]
 	suppressed := cfg.SilenceSeconds > 0 && seen && time.Since(last) < time.Duration(cfg.SilenceSeconds)*time.Second
@@ -841,7 +910,7 @@ func (s *Server) autoDispatch(ctx context.Context, event model.Event) {
 	assignee := group.Name
 	note := "系统自动派单（告警升级）"
 	if group.Rotation == "operator" && len(operators) > 0 {
-		key := group.ID
+		key := store.TenantFrom(ctx) + "|" + group.ID
 		if shift != nil {
 			key += "|" + shift.ID
 		}
@@ -881,7 +950,7 @@ func (s *Server) autoDispatch(ctx context.Context, event model.Event) {
 		},
 	})
 	s.hub.Broadcast(realtime.Frame{Type: "order_updated", Data: order})
-	go s.deliverNotification(context.Background(), "dispatch", event, &order)
+	go s.deliverNotification(ctx, "dispatch", event, &order)
 }
 
 func (s *Server) skipDispatch(ctx context.Context, event model.Event, areaID, reason string, extra map[string]any) {
@@ -1023,13 +1092,17 @@ func (s *Server) onBusEnvelope(envelope bus.Envelope) {
 	if envelope.Source == "replay" {
 		return
 	}
+	ctx := context.Background()
+	if envelope.Event.TenantID != "" {
+		ctx = store.WithTenant(ctx, envelope.Event.TenantID)
+	}
 	switch envelope.Kind {
 	case bus.KindEventCreated:
 		s.hub.Broadcast(realtime.Frame{Type: "event", Data: envelope.Event})
-		go s.deliverNotification(context.Background(), "event", envelope.Event, nil)
+		go s.deliverNotification(ctx, "event", envelope.Event, nil)
 	case bus.KindEventEscalated:
 		s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: envelope.Event})
-		go s.deliverNotification(context.Background(), "escalation", envelope.Event, nil)
+		go s.deliverNotification(ctx, "escalation", envelope.Event, nil)
 	}
 }
 
@@ -1664,6 +1737,10 @@ func (s *Server) acceptIngest(w http.ResponseWriter, r *http.Request, body []byt
 		cameraRules = model.DefaultCameraRules(camera.ID)
 	}
 	result := s.rules.Evaluate(camera, cameraRules, request.Detections, occurredAt)
+	ingestTenant := store.TenantFrom(r.Context())
+	for i := range result.Events {
+		result.Events[i].TenantID = ingestTenant
+	}
 	s.metrics.Detections.Add(int64(len(request.Detections)))
 	s.metrics.Dropped.Add(int64(result.Dropped))
 	for _, event := range result.Events {
@@ -1713,7 +1790,8 @@ func (s *Server) acceptIngest(w http.ResponseWriter, r *http.Request, body []byt
 			continue
 		}
 		s.hub.Broadcast(realtime.Frame{Type: "event", Data: event})
-		go s.deliverNotification(context.Background(), "event", event, nil)
+		notifyCtx := store.WithTenant(context.Background(), ingestTenant)
+		go s.deliverNotification(notifyCtx, "event", event, nil)
 	}
 	s.metrics.ObserveIngest(time.Since(started).Microseconds())
 	events := result.Events
@@ -2017,7 +2095,7 @@ func (s *Server) handleGetNotificationSettings(w http.ResponseWriter, r *http.Re
 	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.currentNotify())
+	writeJSON(w, http.StatusOK, s.loadNotificationSettings(r.Context()))
 }
 
 func (s *Server) handlePutNotificationSettings(w http.ResponseWriter, r *http.Request) {
@@ -2090,7 +2168,7 @@ func (s *Server) handleGetEscalationSettings(w http.ResponseWriter, r *http.Requ
 	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.currentEscalation())
+	writeJSON(w, http.StatusOK, s.loadEscalationSettings(r.Context()))
 }
 
 func (s *Server) handlePutEscalationSettings(w http.ResponseWriter, r *http.Request) {

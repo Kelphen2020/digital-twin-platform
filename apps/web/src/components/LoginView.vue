@@ -17,6 +17,7 @@ const demoAccounts: DemoAccount[] = [
   { username: 'viewer', password: 'Viewer@123', role: '观察员', description: '只读：相机/事件/轨迹/统计/工单' },
 ]
 
+const tenantId = ref('default')
 const username = ref('')
 const password = ref('')
 const formError = ref('')
@@ -54,6 +55,7 @@ const displayError = computed(() => {
 function fill(account: DemoAccount): void {
   username.value = account.username
   password.value = account.password
+  tenantId.value = 'default'
   formError.value = ''
 }
 
@@ -71,7 +73,7 @@ async function submit(): Promise<void> {
     formError.value = '请输入密码'
     return
   }
-  await login(username.value, password.value)
+  await login(username.value, password.value, tenantId.value.trim() || 'default')
 }
 </script>
 
@@ -83,11 +85,21 @@ async function submit(): Promise<void> {
         <span class="brand-mark login-mark">DT</span>
         <div>
           <h1>数字孪生安防平台</h1>
-          <p>P17.0 · PostgreSQL 持久化验证</p>
+          <p>P27.0 · 多租户隔离基础</p>
         </div>
       </header>
 
       <form class="login-form" @submit.prevent="submit">
+        <label class="login-field">
+          <span>租户（缺省 default）</span>
+          <input
+            v-model="tenantId"
+            type="text"
+            autocomplete="organization"
+            placeholder="default"
+            :disabled="state.loggingIn"
+          />
+        </label>
         <label class="login-field">
           <span>用户名</span>
           <input
@@ -157,6 +169,6 @@ async function submit(): Promise<void> {
       </p>
     </main>
 
-    <footer class="login-footer">数字孪生安防平台 · P17.0 演示环境 · 请勿用于生产</footer>
+    <footer class="login-footer">数字孪生安防平台 · P27.0 演示环境 · 请勿用于生产</footer>
   </div>
 </template>
