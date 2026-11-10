@@ -35,6 +35,7 @@ type Config struct {
 	PatrolTickSeconds           int
 	PatrolPendingTimeoutMinutes int
 	PatrolRunningTimeoutMinutes int
+	IngestFallbackURL           string
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -65,6 +66,7 @@ func Load() Config {
 		PatrolTickSeconds:           envInt("PATROL_TICK_SECONDS", 15),
 		PatrolPendingTimeoutMinutes: envInt("PATROL_PENDING_TIMEOUT_MINUTES", 60),
 		PatrolRunningTimeoutMinutes: envInt("PATROL_RUNNING_TIMEOUT_MINUTES", 120),
+		IngestFallbackURL:           env("INGEST_FALLBACK_URL", ""),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

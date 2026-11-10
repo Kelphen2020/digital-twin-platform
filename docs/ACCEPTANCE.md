@@ -867,3 +867,38 @@ P16 覆盖：pending 取消（200 cancelled/finished_at/note）、重复取消 4
 - 本机 Docker Desktop 反复自动退出（内存压力下 daemon 崩溃），`ci_local.sh` 的 PG 阶段会因 `pg_isready` 通过但 SQL 建连 EOF 而失败；已改为用 `psql -c 'SELECT 1'` 判定就绪，并把 PG 阶段与 Docker 重启错开执行。CI runner（Linux）不受此影响。
 - `smoke-postgres` job 依赖 `postgis/postgis` 镜像拉取（CI runner 可访问 Docker Hub）；受限网络需改镜像源。
 - 未配置覆盖率门禁、代码扫描（golangci-lint、eslint）与制品发布；可作为后续增强。
+
+---
+
+# P19.0 验收记录（2026-11-10 下午）
+
+## 83. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：ingest 回落转发（响应/状态码/原始 payload/转发指标）、回落不可达 502、未配置限流时默认 1 MiB 体积上限 413 |
+
+## 84. 多副本回落实测
+
+| 步骤 | 结果 |
+|---|---|
+| 主副本 :8080（内存）运行 | ✅ |
+| 副本 :18082 设置 `INGEST_FALLBACK_URL=http://127.0.0.1:8080` | ✅ 启动正常 |
+| 向副本 POST /api/ingest/detections（CAM-003） | ✅ 返回 202 `accepted:1`（上游响应透传） |
+| 主副本事件列表 | ✅ 出现 CAM-003/person 事件（由副本转发落库） |
+| 副本指标 `dsh_twin_ingest_forwarded_total` | ✅ 1（`fallback_failures_total` 0） |
+
+## 85. 内存回归
+
+- `make smoke` 263 项（P19 未改契约，全部保持；见本轮执行记录）。
+
+## 86. 已知限制（P19.0）
+
+- WebSocket 推送不做跨副本广播（需 nginx WS 粘性或接 Redis Pub/Sub / Kafka）。
+- 回落为「非主副本 → 主副本」单向静态配置，无健康探测/自动选主。
+- compose 多副本编排（scale + upstream）未提供完整模板，仅说明 env 用法。
+- 本机 Docker Desktop 在内存压力下频繁退出，PG 相关多副本验证改以内存双实例完成；CI/生产环境无此问题。

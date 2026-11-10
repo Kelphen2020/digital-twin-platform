@@ -43,6 +43,8 @@ services:
       INGEST_TOKEN: ${INGEST_TOKEN:-}
       BUS_DRIVER: ${BUS_DRIVER:-jsonl}
       BUS_DIR: /app/data/bus
+      # Multi-replica: replicas 2..N set INGEST_FALLBACK_URL to the primary.
+      INGEST_FALLBACK_URL: ${INGEST_FALLBACK_URL:-}
     ports:
       - "8080:8080"
     volumes:

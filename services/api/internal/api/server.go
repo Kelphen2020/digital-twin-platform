@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
@@ -60,6 +62,8 @@ type Server struct {
 	loginMax             int
 	loginLockout         time.Duration
 	refreshTTL           time.Duration
+	ingestFallbackURL    string
+	ingestClient         *http.Client
 	patrolPendingTimeout time.Duration
 	patrolRunningTimeout time.Duration
 	trackSequence        atomic.Uint64
@@ -1565,23 +1569,79 @@ func (s *Server) handleStatsCSV(w http.ResponseWriter, r *http.Request) {
 	writer.Flush()
 }
 
+// maxIngestBody bounds the ingest payload (1 MiB) even when no guard is set.
+const maxIngestBody = 1 << 20
+
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
-	started := time.Now()
 	if !s.ingestLimiter.Allow() {
 		s.metrics.IngestRejected.Add(1)
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "ingest rate limit exceeded")
 		return
 	}
-	if s.maxBodyBytes > 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
+	limit := s.maxBodyBytes
+	if limit <= 0 {
+		limit = maxIngestBody
 	}
-	var request model.IngestRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body exceeds the configured limit")
 			return
 		}
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body")
+		return
+	}
+	if s.ingestFallbackURL != "" {
+		s.forwardIngest(w, r, body)
+		return
+	}
+	s.acceptIngest(w, r, body)
+}
+
+// SetIngestFallback forwards ingest to another API when this replica lacks the
+// camera (multi-replica deployments share state through PostgreSQL).
+func (s *Server) SetIngestFallback(url string) {
+	s.ingestFallbackURL = strings.TrimRight(url, "/")
+}
+
+// forwardIngest relays the raw body to the fallback replica.
+func (s *Server) forwardIngest(w http.ResponseWriter, r *http.Request, body []byte) {
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, s.ingestFallbackURL+"/api/ingest/detections", bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "bad_gateway", "cannot build fallback request")
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token := r.Header.Get("X-Ingest-Token"); token != "" {
+		request.Header.Set("X-Ingest-Token", token)
+	}
+	client := s.ingestClient
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		s.metrics.IngestFallbackFailures.Add(1)
+		writeError(w, http.StatusBadGateway, "fallback_unavailable", "ingest fallback is unreachable")
+		return
+	}
+	defer response.Body.Close()
+	s.metrics.IngestForwarded.Add(1)
+	for key, values := range response.Header {
+		if strings.EqualFold(key, "Content-Type") {
+			w.Header()[key] = values
+		}
+	}
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, http.MaxBytesReader(w, response.Body, 1<<20))
+}
+
+// acceptIngest validates and stores the detections.
+func (s *Server) acceptIngest(w http.ResponseWriter, r *http.Request, body []byte) {
+	started := time.Now()
+	var request model.IngestRequest
+	if err := json.Unmarshal(body, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}

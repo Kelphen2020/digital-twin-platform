@@ -267,6 +267,15 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 详见 [`docs/CI.md`](docs/CI.md)。
 
+## P19.0 能力（部署与扩展）
+
+- **多副本 API**：状态集中于 PostgreSQL，副本共享；非主副本用 `INGEST_FALLBACK_URL` 把 ingest 原样转发到主副本（指标 `ingest_forwarded_total` / `ingest_fallback_failures_total`，失败 502）。
+- **ingest 默认体积上限**：即使未配置 `MAX_BODY_BYTES` 也限制 1 MiB（超出 413）。
+- **compose 变量**：`INGEST_FALLBACK_URL` 加入 API 环境与 `.env.example`。
+- 部署/扩展说明：`docs/P19.md`。
+
+详见 [`docs/P19.md`](docs/P19.md)。
+
 ## 目录
 
 ```

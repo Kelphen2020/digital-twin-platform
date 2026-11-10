@@ -29,6 +29,8 @@ type Metrics struct {
 	TrackWritten            atomic.Int64
 	TrackBroadcast          atomic.Int64
 	IngestRejected          atomic.Int64
+	IngestForwarded         atomic.Int64
+	IngestFallbackFailures  atomic.Int64
 }
 
 // New returns an empty counter set.
@@ -124,6 +126,14 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	b.WriteString("# HELP dsh_twin_ingest_rejected_total Ingest requests rejected by the rate limiter.\n")
 	b.WriteString("# TYPE dsh_twin_ingest_rejected_total counter\n")
 	fmt.Fprintf(&b, "dsh_twin_ingest_rejected_total %d\n", m.IngestRejected.Load())
+
+	b.WriteString("# HELP dsh_twin_ingest_forwarded_total Ingest requests forwarded to the fallback replica.\n")
+	b.WriteString("# TYPE dsh_twin_ingest_forwarded_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_ingest_forwarded_total %d\n", m.IngestForwarded.Load())
+
+	b.WriteString("# HELP dsh_twin_ingest_fallback_failures_total Failed forwards to the fallback replica.\n")
+	b.WriteString("# TYPE dsh_twin_ingest_fallback_failures_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_ingest_fallback_failures_total %d\n", m.IngestFallbackFailures.Load())
 
 	b.WriteString("# HELP dsh_twin_cameras_online Cameras currently online.\n")
 	b.WriteString("# TYPE dsh_twin_cameras_online gauge\n")
