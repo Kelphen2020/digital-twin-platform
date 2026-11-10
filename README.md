@@ -259,6 +259,14 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约参见 `docs/OPERATIONS.md`。
 
+## P18.0 能力（持续集成）
+
+- **GitHub Actions**：`.github/workflows/ci.yml` 五个 job —— api（build/vet/test）、web（typecheck/build）、simulator（py_compile + bash -n）、smoke-memory、smoke-postgres（PostGIS service + 存储契约测试 + 全量 smoke）。
+- **本地等价**：`scripts/ci_local.sh`（`--quick` 跳过 PG）按相同顺序跑完全部阶段并输出汇总表，自动清理临时 API 进程与 PG 容器。
+- **文档**：`docs/CI.md`（流水线任务、本地跑法、失败排查）。
+
+详见 [`docs/CI.md`](docs/CI.md)。
+
 ## 目录
 
 ```

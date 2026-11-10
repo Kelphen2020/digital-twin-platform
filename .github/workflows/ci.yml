@@ -1,0 +1,130 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOPROXY: https://goproxy.cn,direct
+  GOSUMDB: "off"
+
+jobs:
+  api:
+    name: api (go build/vet/test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -count=1
+
+  web:
+    name: web (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+
+  simulator:
+    name: simulator + scripts lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m py_compile services/simulator/*.py scripts/*.py
+      - run: bash -n scripts/smoke.sh scripts/backup.sh scripts/restore.sh scripts/ci_local.sh
+
+  smoke-memory:
+    name: smoke (in-memory store)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+      - name: Build API
+        working-directory: services/api
+        run: go build -o bin/api ./cmd/server
+      - name: Start API (memory)
+        working-directory: services/api
+        run: |
+          PORT=8080 AUTH_MODE=on JWT_SECRET=ci-secret BUS_DRIVER=memory ./bin/api >/tmp/api.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/api/health && break; sleep 1; done
+      - name: Smoke test
+        run: API_BASE=http://127.0.0.1:8080 bash scripts/smoke.sh
+      - name: API log on failure
+        if: failure()
+        run: tail -100 /tmp/api.log
+
+  smoke-postgres:
+    name: smoke (postgres store)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: twin
+          POSTGRES_PASSWORD: twin
+          POSTGRES_DB: twin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U twin -d twin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+      - name: Store contract test
+        working-directory: services/api
+        env:
+          PG_TEST_URL: postgres://twin:twin@127.0.0.1:5432/twin?sslmode=disable
+        run: go test ./internal/store/ -run TestPostgresContract -v
+      - name: Build API
+        working-directory: services/api
+        run: go build -o bin/api ./cmd/server
+      - name: Start API (postgres)
+        working-directory: services/api
+        env:
+          DATABASE_URL: postgres://twin:twin@127.0.0.1:5432/twin?sslmode=disable
+        run: |
+          PORT=8080 AUTH_MODE=on JWT_SECRET=ci-secret ./bin/api >/tmp/api.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/api/health && break; sleep 1; done
+      - name: Smoke test
+        run: API_BASE=http://127.0.0.1:8080 bash scripts/smoke.sh
+      - name: API log on failure
+        if: failure()
+        run: tail -100 /tmp/api.log

@@ -829,3 +829,40 @@ P16 覆盖：pending 取消（200 cancelled/finished_at/note）、重复取消 4
 - 备份脚本依赖 docker exec（容器名可配）；非容器部署需改用 pg_dump 直连。
 - PG 集成测试需手动创建 `twin_test` 库（未自动化建库），适合 CI 中由 job 初始化。
 - 恢复演练为单机验证，未覆盖跨版本升级/大库耗时场景。
+
+---
+
+# P18.0 验收记录（2026-11-10 上午）
+
+## 80. CI 流水线
+
+| 项 | 结果 |
+|---|---|
+| GitHub Actions 定义 | `.github/workflows/ci.yml`：api（build/vet/test）、web（typecheck/build）、simulator（py_compile+bash -n）、smoke-memory、smoke-postgres（PostGIS service + TestPostgresContract + 全量 smoke） |
+| 本地等价脚本 | `scripts/ci_local.sh`（`--quick` 跳过 PG）：按相同顺序执行并输出汇总表，临时实例 18080（内存）/18081（PG），退出自动清理进程与容器 |
+| 本地全流程实测 | 见下方执行记录（含 PostgreSQL 阶段） |
+| 文档 | `docs/CI.md`：任务矩阵、本地跑法、失败排查 |
+
+## 81. 本地 CI 执行记录
+
+```bash
+./scripts/ci_local.sh            # 全流程（含 PG）
+./scripts/ci_local.sh --quick    # 跳过 PG
+```
+
+| 阶段 | 结果 |
+|---|---|
+| api build | PASS |
+| api vet | PASS |
+| api test（含 PG 契约测试在无 PG_TEST_URL 时跳过） | PASS |
+| simulator lint（py_compile + bash -n） | PASS |
+| web typecheck+build | PASS |
+| smoke (memory) 263 项 | PASS |
+| smoke (postgres) 契约测试 + 263 项 | PASS |
+
+## 82. 已知限制（P18.0）
+
+- 仓库暂无远端（git remote 为空），Actions 仅在推送到 GitHub/GitLab 后生效；本地以 `ci_local.sh` 等价验证。
+- smoke 依赖固定端口（8080/18080/18081）；并行跑多个 CI 会端口冲突（改为随机端口需 smoke 参数化）。
+- `smoke-postgres` job 依赖 `postgis/postgis` 镜像拉取（CI runner 可访问 Docker Hub）；受限网络需改镜像源。
+- 未配置覆盖率门禁、代码扫描（golangci-lint、eslint）与制品发布；可作为后续增强。
