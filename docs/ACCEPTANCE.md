@@ -944,6 +944,10 @@ PASS  smoke (memory)    263/263
 SKIP  smoke (postgres)  (--quick)
 ```
 
+## 90.1 常驻实例回归（lint 改动后的二进制）
+
+- `make smoke`：**PASS 263/263**（重启 :8080 后）。
+
 ## 91. 已知限制（P20.0）
 
 - auth/store 包无独立单测，覆盖率靠 api 集成测试间接覆盖；提升空间明确。
