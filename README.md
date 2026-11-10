@@ -25,6 +25,7 @@
 | P17–P19 | PostgreSQL 全链路验证与修复、备份恢复；CI 流水线；多副本 ingest 回落 |
 | P20–P26 | 代码质量门禁（golangci-lint/eslint/覆盖率）；补测（auth/store/realtime/config/model/rules/metrics/api） |
 | P27 | 多租户隔离基础（租户表、租户作用域存储、JWT `tnt`、租户 CRUD、前端租户选择/页签） |
+| P28 | 值班组与轨迹按租户隔离（迁移 014） |
 
 ## 架构（P0）
 

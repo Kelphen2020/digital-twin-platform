@@ -356,9 +356,9 @@ func (p *Postgres) CreateTrackPoints(ctx context.Context, points []model.TrackPo
 	}
 	batch := &pgx.Batch{}
 	for _, point := range points {
-		batch.Queue(`INSERT INTO track_points (camera_id, track_id, class, x, y, z, ts)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			point.CameraID, point.TrackID, point.Class, point.X, point.Y, point.Z, point.TS)
+		batch.Queue(`INSERT INTO track_points (tenant_id, camera_id, track_id, class, x, y, z, ts)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			tenantOf(ctx), point.CameraID, point.TrackID, point.Class, point.X, point.Y, point.Z, point.TS)
 	}
 	results := p.pool.SendBatch(ctx, batch)
 	defer results.Close()
@@ -376,7 +376,8 @@ func (p *Postgres) ListTrackPoints(ctx context.Context, filter model.TrackFilter
 		limit = 500
 	}
 	conditions := []string{}
-	args := []any{}
+	args := []any{tenantOf(ctx)}
+	conditions = append(conditions, "tenant_id = $1")
 	add := func(condition string, value any) {
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
@@ -390,7 +391,7 @@ func (p *Postgres) ListTrackPoints(ctx context.Context, filter model.TrackFilter
 	if len(filter.CameraIDs) > 0 {
 		add("camera_id = ANY($%d)", filter.CameraIDs)
 	}
-	query := `SELECT track_id, camera_id, class, x, y, z, ts FROM track_points`
+	query := `SELECT tenant_id, track_id, camera_id, class, x, y, z, ts FROM track_points`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -403,7 +404,7 @@ func (p *Postgres) ListTrackPoints(ctx context.Context, filter model.TrackFilter
 	points := make([]model.TrackPoint, 0, limit)
 	for rows.Next() {
 		var point model.TrackPoint
-		if err := rows.Scan(&point.TrackID, &point.CameraID, &point.Class,
+		if err := rows.Scan(&point.TenantID, &point.TrackID, &point.CameraID, &point.Class,
 			&point.X, &point.Y, &point.Z, &point.TS); err != nil {
 			return nil, err
 		}
@@ -874,18 +875,18 @@ func (p *Postgres) CreateDutyGroup(ctx context.Context, group model.DutyGroup) e
 	operators, _ := json.Marshal(group.Operators)
 	shifts, _ := json.Marshal(group.Shifts)
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO duty_groups (id, name, areas, operators, rotation, shifts, active, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		group.ID, group.Name, areas, operators, group.Rotation, shifts, group.Active, group.CreatedAt, group.UpdatedAt)
+        INSERT INTO duty_groups (id, tenant_id, name, areas, operators, rotation, shifts, active, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		group.ID, tenantOf(ctx), group.Name, areas, operators, group.Rotation, shifts, group.Active, group.CreatedAt, group.UpdatedAt)
 	return err
 }
 
 func (p *Postgres) GetDutyGroup(ctx context.Context, id string) (model.DutyGroup, error) {
-	return scanDutyGroup(p.pool.QueryRow(ctx, dutySelect+` WHERE id=$1`, id))
+	return scanDutyGroup(p.pool.QueryRow(ctx, dutySelect+` WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx)))
 }
 
 func (p *Postgres) ListDutyGroups(ctx context.Context) ([]model.DutyGroup, error) {
-	rows, err := p.pool.Query(ctx, dutySelect+` ORDER BY created_at`)
+	rows, err := p.pool.Query(ctx, dutySelect+` WHERE tenant_id=$1 ORDER BY created_at`, tenantOf(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -907,7 +908,7 @@ func (p *Postgres) UpdateDutyGroup(ctx context.Context, id string, group model.D
 	shifts, _ := json.Marshal(group.Shifts)
 	_, err := p.pool.Exec(ctx, `
         UPDATE duty_groups SET name=$2, areas=$3, operators=$4, rotation=$5, shifts=$6, active=$7, updated_at=now()
-        WHERE id=$1`, id, group.Name, areas, operators, group.Rotation, shifts, group.Active)
+        WHERE id=$1 AND tenant_id=$8`, id, group.Name, areas, operators, group.Rotation, shifts, group.Active, tenantOf(ctx))
 	if err != nil {
 		return model.DutyGroup{}, err
 	}
@@ -915,7 +916,7 @@ func (p *Postgres) UpdateDutyGroup(ctx context.Context, id string, group model.D
 }
 
 func (p *Postgres) DeleteDutyGroup(ctx context.Context, id string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM duty_groups WHERE id=$1`, id)
+	tag, err := p.pool.Exec(ctx, `DELETE FROM duty_groups WHERE id=$1 AND tenant_id=$2`, id, tenantOf(ctx))
 	if err != nil {
 		return err
 	}
@@ -925,7 +926,7 @@ func (p *Postgres) DeleteDutyGroup(ctx context.Context, id string) error {
 	return nil
 }
 
-const dutySelect = `SELECT id, name, areas, operators, rotation, shifts, active, created_at, updated_at FROM duty_groups`
+const dutySelect = `SELECT id, tenant_id, name, areas, operators, rotation, shifts, active, created_at, updated_at FROM duty_groups`
 
 type dutyScanner interface {
 	Scan(dest ...any) error
@@ -934,7 +935,7 @@ type dutyScanner interface {
 func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 	var group model.DutyGroup
 	var areas, operators, shifts []byte
-	err := row.Scan(&group.ID, &group.Name, &areas, &operators, &group.Rotation, &shifts, &group.Active, &group.CreatedAt, &group.UpdatedAt)
+	err := row.Scan(&group.ID, &group.TenantID, &group.Name, &areas, &operators, &group.Rotation, &shifts, &group.Active, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.DutyGroup{}, model.ErrNotFound

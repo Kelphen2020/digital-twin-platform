@@ -69,10 +69,10 @@ type CameraPatch struct {
 // Area is a site zone. The polygon is a closed ring of ENU points.
 type Area struct {
 	TenantID string       `json:"tenant_id"`
-	ID      string       `json:"id"`
-	Name    string       `json:"name"`
-	Type    string       `json:"type"`
-	Polygon [][2]float64 `json:"polygon"`
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`
+	Type     string       `json:"type"`
+	Polygon  [][2]float64 `json:"polygon"`
 }
 
 // Event is one produced event (P0 stand-in for the Kafka event envelope).
@@ -150,6 +150,7 @@ type NotificationLog struct {
 // is the global fallback group.
 type DutyGroup struct {
 	ID        string      `json:"id"`
+	TenantID  string      `json:"tenant_id"`
 	Name      string      `json:"name"`
 	Areas     []string    `json:"areas"`
 	Operators []string    `json:"operators"`
@@ -207,6 +208,7 @@ type AuditEntry struct {
 
 // TrackPoint is one sampled position of a tracked target.
 type TrackPoint struct {
+	TenantID string    `json:"tenant_id"`
 	TrackID  string    `json:"track_id"`
 	CameraID string    `json:"camera_id"`
 	Class    string    `json:"class"`

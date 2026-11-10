@@ -31,7 +31,7 @@
 按租户隔离（含索引与唯一约束）：`cameras`、`areas`、`events`、`orders`、`camera_rules`、`audit_log`、`notification_log`、`patrol_routes`、`patrol_schedules`、`patrol_executions`、`users`。
 
 - 唯一约束调整：`cameras` 由全局 `code` 唯一改为 `(tenant_id, code)` 唯一；`users.username` 由全局唯一改为 `(tenant_id, username)` 唯一（不同租户可同名）。
-- `settings` 主键改为 `(tenant_id, key)`；`duty_groups`、`track_points` 本轮仍为全局（后续阶段按租户迁移）。
+- `settings` 主键改为 `(tenant_id, key)`；`duty_groups`、`track_points` 在 **P28** 按租户隔离（迁移 014，接口形状不变）。
 
 ## 4. 指标
 

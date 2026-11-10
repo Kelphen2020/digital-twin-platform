@@ -123,6 +123,8 @@ type memoryState struct {
 	executions    map[string]model.PatrolExecution
 	actions       map[string][]model.EventAction
 	audit         []model.AuditEntry
+	duty          []model.DutyGroup
+	tracks        []model.TrackPoint
 }
 
 // Memory is the in-memory Store used without a database.
@@ -132,8 +134,6 @@ type Memory struct {
 	// tenant metadata (P27)
 	tenants map[string]model.Tenant
 
-	duty      []model.DutyGroup
-	tracks    []model.TrackPoint
 	maxEvents int
 	maxTracks int
 	maxAudit  int
@@ -477,26 +477,35 @@ func (m *Memory) ListEventActions(ctx context.Context, eventID string) ([]model.
 	return append([]model.EventAction(nil), state.actions[eventID]...), nil
 }
 
-func (m *Memory) CreateTrackPoints(_ context.Context, points []model.TrackPoint) error {
+func (m *Memory) CreateTrackPoints(ctx context.Context, points []model.TrackPoint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.tracks = append(m.tracks, points...)
-	if len(m.tracks) > m.maxTracks {
-		m.tracks = append([]model.TrackPoint(nil), m.tracks[len(m.tracks)-m.maxTracks:]...)
+	state := m.state(ctx, true)
+	tenant := tenantOf(ctx)
+	for i := range points {
+		points[i].TenantID = tenant
+	}
+	state.tracks = append(state.tracks, points...)
+	if len(state.tracks) > m.maxTracks {
+		state.tracks = append([]model.TrackPoint(nil), state.tracks[len(state.tracks)-m.maxTracks:]...)
 	}
 	return nil
 }
 
-func (m *Memory) ListTrackPoints(_ context.Context, filter model.TrackFilter) ([]model.TrackPoint, error) {
+func (m *Memory) ListTrackPoints(ctx context.Context, filter model.TrackFilter) ([]model.TrackPoint, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.TrackPoint{}, nil
+	}
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 500
 	}
 	out := make([]model.TrackPoint, 0, limit)
-	for i := len(m.tracks) - 1; i >= 0 && len(out) < limit; i-- {
-		point := m.tracks[i]
+	for i := len(state.tracks) - 1; i >= 0 && len(out) < limit; i-- {
+		point := state.tracks[i]
 		if filter.CameraID != "" && point.CameraID != filter.CameraID {
 			continue
 		}
@@ -1246,52 +1255,68 @@ func (m *Memory) DeleteUserAccount(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *Memory) CreateDutyGroup(_ context.Context, group model.DutyGroup) error {
+func (m *Memory) CreateDutyGroup(ctx context.Context, group model.DutyGroup) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.duty = append(m.duty, group)
+	state := m.state(ctx, true)
+	group.TenantID = tenantOf(ctx)
+	state.duty = append(state.duty, group)
 	return nil
 }
 
-func (m *Memory) GetDutyGroup(_ context.Context, id string) (model.DutyGroup, error) {
+func (m *Memory) GetDutyGroup(ctx context.Context, id string) (model.DutyGroup, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for i := range m.duty {
-		if m.duty[i].ID == id {
-			return m.duty[i], nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.DutyGroup{}, model.ErrNotFound
+	}
+	for i := range state.duty {
+		if state.duty[i].ID == id {
+			return state.duty[i], nil
 		}
 	}
 	return model.DutyGroup{}, model.ErrNotFound
 }
 
-func (m *Memory) ListDutyGroups(_ context.Context) ([]model.DutyGroup, error) {
+func (m *Memory) ListDutyGroups(ctx context.Context) ([]model.DutyGroup, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]model.DutyGroup(nil), m.duty...), nil
+	state := m.state(ctx, false)
+	if state == nil {
+		return []model.DutyGroup{}, nil
+	}
+	return append([]model.DutyGroup(nil), state.duty...), nil
 }
 
-func (m *Memory) UpdateDutyGroup(_ context.Context, id string, group model.DutyGroup) (model.DutyGroup, error) {
+func (m *Memory) UpdateDutyGroup(ctx context.Context, id string, group model.DutyGroup) (model.DutyGroup, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := range m.duty {
-		if m.duty[i].ID != id {
+	state := m.state(ctx, true)
+	for i := range state.duty {
+		if state.duty[i].ID != id {
 			continue
 		}
 		group.ID = id
-		group.CreatedAt = m.duty[i].CreatedAt
+		group.TenantID = tenantOf(ctx)
+		group.CreatedAt = state.duty[i].CreatedAt
 		group.UpdatedAt = time.Now().UTC()
-		m.duty[i] = group
+		state.duty[i] = group
 		return group, nil
 	}
 	return model.DutyGroup{}, model.ErrNotFound
 }
 
-func (m *Memory) DeleteDutyGroup(_ context.Context, id string) error {
+func (m *Memory) DeleteDutyGroup(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := range m.duty {
-		if m.duty[i].ID == id {
-			m.duty = append(m.duty[:i], m.duty[i+1:]...)
+	state := m.state(ctx, false)
+	if state == nil {
+		return model.ErrNotFound
+	}
+	for i := range state.duty {
+		if state.duty[i].ID == id {
+			state.duty = append(state.duty[:i], state.duty[i+1:]...)
 			return nil
 		}
 	}

@@ -1200,3 +1200,32 @@ SKIP  smoke (postgres)  (--quick)
 - 无租户删除接口（默认租户不可删）；演示环境保留一个已停用演示租户。
 - 租户切换需重新登录（JWT 绑定 `tnt`）；如需免登录切换，需要「租户切换」专用接口重签令牌。
 - 管理员可管理所有租户（无「租户管理员」角色划分）。
+
+---
+
+# P28.0 验收记录（2026-11-10 深夜）
+
+## 119. 租户隔离扩展（duty_groups / track_points）
+
+| 项 | 结果 |
+|---|---|
+| 模型 | `DutyGroup.TenantID`、`TrackPoint.TenantID`（json `tenant_id`） |
+| 迁移 | `014_p28_tenant_duty_tracks.sql`：两表新增 `tenant_id` + 索引（幂等） |
+| 内存实现 | duty/track 数据移入 per-tenant `memoryState`（与 P27 结构一致）；删除遗留顶层字段 |
+| PostgreSQL | duty CRUD 全部带 `tenant_id` 条件/写入；track 插入打标、查询强制 `tenant_id = $1` |
+| 测试 | 新增 `TestTenantScopedDutyGroupsAndTracks`：A/B 租户值班组与轨迹互不可见、跨租户读/改/删返回 not-found |
+
+## 120. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint run ./...` | ✅ 0 issues |
+| 覆盖率 | **63.9%**（门禁 62%） |
+| `make smoke`（重启后新二进制） | ✅ **PASS 263/263** |
+
+## 121. 已知限制（P28.0）
+
+- 事件总线（jsonl/memory）仍全局；跨租户回放需按租户过滤（下一阶段）。
+- 租户无初始化模板（新租户无相机/用户），需要「复制默认租户骨架」能力。
+- PG 侧 `track_points` 无历史数据迁移校验（新增列默认 default，旧数据归默认租户，符合预期）。
