@@ -295,6 +295,11 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 - `internal/metrics` 覆盖率 0% → **98.6%**（指标输出格式、标签、时长 summary、空值）。
 - 总覆盖率 **61.4% → 62.2%**。
 
+## P26.0 能力（API 读路径与错误分支补测）
+
+- 新增 areas/site/相机详情/规则/工单 CRUD/值班/设置/bus/未知路由与畸形 JSON/非法状态等用例。
+- 总覆盖率 **62.2% → 63.2%**，CI 门禁 **60% → 62%**。
+
 ## P19.0 能力（部署与扩展）
 
 - **多副本 API**：状态集中于 PostgreSQL，副本共享；非主副本用 `INGEST_FALLBACK_URL` 把 ingest 原样转发到主副本（指标 `ingest_forwarded_total` / `ingest_fallback_failures_total`，失败 502）。

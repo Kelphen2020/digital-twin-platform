@@ -1118,3 +1118,35 @@ SKIP  smoke (postgres)  (--quick)
 
 - 仍以 api（71.1%）与 store（37.9%）为主；PG 实现未逐方法覆盖。
 - rules 剩余未覆盖为 `newEventID` 的 `crypto/rand` 失败分支（不可注入）。
+
+---
+
+# P26.0 验收记录（2026-11-10 深夜）
+
+## 112. API 覆盖补充
+
+| 用例 | 覆盖内容 |
+|---|---|
+| `TestReadEndpointsAndErrorBranches` | `/api/areas`、`/api/site`、相机详情、相机规则、未知相机 404、工单创建/详情/PATCH/列表/404、值班组列表与 current（含缺 area 400）、通知设置读、bus status、未知路由 404 |
+| `TestEventDetailAndInvalidInputs` | 事件详情与 404、四个写接口畸形 JSON → 400、工单非法状态 400、相机非法状态 400 与合法 PATCH 200 |
+
+## 113. 覆盖率与门禁
+
+| 指标 | P25 | **P26** |
+|---|---|---|
+| api 包 | 71.1% | **72.9%** |
+| **总计** | 62.2% | **63.2%** |
+| CI 门禁 | 60% | **62%** |
+
+## 114. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint run ./...` | ✅ 0 issues |
+| 本地 CI（`--quick`，门禁 62%） | ✅ 8 阶段全 PASS，smoke(memory) 263/263 |
+
+## 115. 已知限制（P26.0）
+
+- 仍未覆盖：`RunStats` 周期任务、`broadcastStats`、`RunPatrolScheduler` 长驻循环、`SetSite/SetSessionTTL` 等纯装配方法（多为 1–2 行或需时间驱动）。
+- E2E 正向流程（P0–P16）由 smoke 覆盖，单测只补读路径与错误分支，避免重复。
