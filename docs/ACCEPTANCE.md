@@ -1225,6 +1225,14 @@ SKIP  smoke (postgres)  (--quick)
 | `make smoke`（重启后新二进制） | ✅ **PASS 263/263** |
 | smoke（:8081 PostgreSQL，迁移 014 应用后） | ✅ **PASS 263/263**（首次运行 262/263 出现 1 次偶发失败，立即重跑全绿；疑为 emulation 下的轮询时序，见限制） |
 
+## 120.1 本地 CI
+
+| 项 | 结果 |
+|---|---|
+| `./scripts/ci_local.sh --quick` | ✅ 8 阶段全 PASS（smoke(memory) 263/263） |
+| `./scripts/ci_local.sh`（含 PG） | PG 阶段因本机 Docker Desktop 退出而失败（环境问题，非代码）；PG 全量 smoke 已在 :8081 单独跑通 263/263 |
+| CI 脚本增强 | 失败时自动打印失败检查项并保留 `/tmp/ci-smoke-memory.log`、`/tmp/ci-smoke-postgres.log` |
+
 ## 121. 已知限制（P28.0）
 
 - 事件总线（jsonl/memory）仍全局；跨租户回放需按租户过滤（下一阶段）。
