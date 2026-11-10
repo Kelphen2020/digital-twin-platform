@@ -1019,3 +1019,37 @@ SKIP  smoke (postgres)  (--quick)
 
 - `auth.ErrInvalidCredentials` / `ErrInvalidToken` / `ErrBadInput` 仍为 auth 包私有语义，未并入 model（属于认证域概念，保持独立）。
 - 新增存储实现需自行遵守「返回 model 哨兵」约定，靠 `TestSentinelIdentity` 与代码评审保证。
+
+---
+
+# P23.0 验收记录（2026-11-10 晚间）
+
+## 100. 新增单测（补齐 realtime/config/model）
+
+| 包 | 文件 | 覆盖内容 |
+|---|---|---|
+| `internal/realtime` | `hub_test.go`（4 用例） | WebSocket 握手、OnConnect 问候帧、多客户端广播、帧计数、慢客户端背压（缓冲满 → 丢弃且连接保持）、无客户端广播空操作、不可序列化帧不计数、非 WS 请求 400 且不注册客户端、缓冲区下限钳制 |
+| `internal/config` | `config_test.go`（2 用例） | 全部环境变量默认值（端口/鉴权/总线/hub/ingest/登录/token TTL/巡检）、覆盖生效、非法整数回落默认、`MAX_EVENTS` 下限钳制 |
+| `internal/model` | `model_test.go`（2 用例） | 升级/通知/相机规则/站点默认值、`SeverityRank` 等级与未知值语义 |
+| `internal/store` | `seed_test.go`（1 用例） | 种子相机/区域完整性与相机→区域引用一致性 |
+
+## 101. 覆盖率变化
+
+| 包 | 之前 | 现在 |
+|---|---|---|
+| config | 0% | **100%** |
+| model | 0%（间接） | **100%** |
+| realtime | 0% | **92.2%** |
+| **总计** | 57.0% | **57.5%** |
+
+> 说明：realtime/config/model 三包从 0% 提升到 92–100%，总覆盖率因 store/postgres 体量大（语句多、由集成测试与 smoke 覆盖）仅小幅上升。后续主要提升点仍是 store（内存 + PG）。
+
+## 102. 稳定性
+
+- `go test ./internal/realtime/ -count=5`：稳定 PASS（曾出现「最终帧未到」的不稳定用例，已改写为确定性的背压断言：丢弃计数 > 0、已排队帧 > 0、连接保持）。
+- `go test ./... -count=1`：全绿；`golangci-lint run ./...`：0 issues；`go vet`：通过。
+
+## 103. 已知限制（P23.0）
+
+- store 覆盖率 25.4%（PG 实现路径依赖集成测试/smoke）。
+- 慢客户端测试只断言丢弃与连接保持，未验证「丢弃后仍可继续收帧」（受 gorilla 客户端读取语义限制，已保留在集成 smoke 中验证）。

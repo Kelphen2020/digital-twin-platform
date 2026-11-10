@@ -279,6 +279,11 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 - 新增 `internal/store/errors_test.go` 校验哨兵同一性与内存实现返回值。
 - 约定文档：`docs/OPERATIONS.md` §9。
 
+## P23.0 能力（补齐 WebSocket/配置/模型单测）
+
+- `internal/realtime`（握手/问候/广播/背压丢弃）、`internal/config`（默认值与覆盖）、`internal/model`（默认值/严重级别）、`internal/store/seed`（种子一致性）新增单测。
+- 三包覆盖率从 0% 提升至 **92–100%**；总覆盖率 57.5%。
+
 ## P19.0 能力（部署与扩展）
 
 - **多副本 API**：状态集中于 PostgreSQL，副本共享；非主副本用 `INGEST_FALLBACK_URL` 把 ingest 原样转发到主副本（指标 `ingest_forwarded_total` / `ingest_fallback_failures_total`，失败 502）。
