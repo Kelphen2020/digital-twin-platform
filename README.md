@@ -2,7 +2,8 @@
 
 本仓库从《详细实现方案》的 **P0 最小可运行系统**出发，按里程碑迭代到 **P26**：视频/事件链路、时空对齐、三维态势一张图，以及告警处置、工单、值班排班、巡检、安全加固、性能/运维、PostgreSQL 持久化、CI 与质量门禁。
 
-| 里程碑索引 | [`docs/MILESTONES.md`](docs/MILESTONES.md)（P0→P27 契约文档导航） |
+| 文档地图 | [`docs/README_MAP.md`](docs/README_MAP.md)（所有文档的分组索引） |
+| 里程碑索引 | [`docs/MILESTONES.md`](docs/MILESTONES.md)（P0→P28 契约文档导航） |
 | 快速索引 | 内容 |
 |---|---|
 | 最新状态 | `make smoke` **263/263 PASS**；`go test ./...` 全绿；覆盖率 **63.2%**（门禁 62%） |
@@ -25,7 +26,7 @@
 | P17–P19 | PostgreSQL 全链路验证与修复、备份恢复；CI 流水线；多副本 ingest 回落 |
 | P20–P26 | 代码质量门禁（golangci-lint/eslint/覆盖率）；补测（auth/store/realtime/config/model/rules/metrics/api） |
 | P27 | 多租户隔离基础（租户表、租户作用域存储、JWT `tnt`、租户 CRUD、前端租户选择/页签） |
-| P28 | 值班组与轨迹按租户隔离（迁移 014） |
+| P28 | 值班组与轨迹按租户隔离（迁移 014）；文档地图 `docs/README_MAP.md` |
 
 ## 架构（P0）
 
