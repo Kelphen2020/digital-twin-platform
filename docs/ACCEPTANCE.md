@@ -858,11 +858,12 @@ P16 覆盖：pending 取消（200 cancelled/finished_at/note）、重复取消 4
 | simulator lint（py_compile + bash -n） | PASS |
 | web typecheck+build | PASS |
 | smoke (memory) 263 项 | PASS |
-| smoke (postgres) 契约测试 + 263 项 | PASS |
+| smoke (postgres) 契约测试 + 263 项 | ✅ PASS：`TestPostgresContract` PASS（0.12s）+ PG store 全量 smoke **263/263 PASS**（约 105s） |
 
 ## 82. 已知限制（P18.0）
 
 - 仓库暂无远端（git remote 为空），Actions 仅在推送到 GitHub/GitLab 后生效；本地以 `ci_local.sh` 等价验证。
 - smoke 依赖固定端口（8080/18080/18081）；并行跑多个 CI 会端口冲突（改为随机端口需 smoke 参数化）。
+- 本机 Docker Desktop 反复自动退出（内存压力下 daemon 崩溃），`ci_local.sh` 的 PG 阶段会因 `pg_isready` 通过但 SQL 建连 EOF 而失败；已改为用 `psql -c 'SELECT 1'` 判定就绪，并把 PG 阶段与 Docker 重启错开执行。CI runner（Linux）不受此影响。
 - `smoke-postgres` job 依赖 `postgis/postgis` 镜像拉取（CI runner 可访问 Docker Hub）；受限网络需改镜像源。
 - 未配置覆盖率门禁、代码扫描（golangci-lint、eslint）与制品发布；可作为后续增强。

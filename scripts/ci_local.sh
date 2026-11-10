@@ -92,7 +92,11 @@ stage_pg_smoke() {
     -p "127.0.0.1:$port:5432" "$image" >/dev/null || return 1
   local ready=0
   for _ in $(seq 1 90); do
-    docker exec "$name" pg_isready -U twin -d twin >/dev/null 2>&1 && { ready=1; break; }
+    # pg_isready can pass while the server is still finishing startup recovery;
+    # require an actual SQL round-trip before handing the DB to the tests.
+    if docker exec "$name" psql -U twin -d twin -tAc 'SELECT 1' >/dev/null 2>&1; then
+      ready=1; break
+    fi
     sleep 2
   done
   if [ "$ready" -ne 1 ]; then echo "postgres did not become ready" >&2; docker rm -f "$name" >/dev/null 2>&1; return 1; fi
