@@ -92,8 +92,17 @@ stage_memory_smoke() {
   log="$(mktemp)"
   (cd services/api && "$GO" build -o bin/api ./cmd/server) || return 1
   start_api "$port" "$log" BUS_DRIVER=memory || return 1
-  API_BASE="http://127.0.0.1:$port" bash scripts/smoke.sh
+  local smoke_log
+  smoke_log="$(mktemp)"
+  API_BASE="http://127.0.0.1:$port" bash scripts/smoke.sh >"$smoke_log" 2>&1
   local code=$?
+  tail -5 "$smoke_log"
+  if [ "$code" -ne 0 ]; then
+    echo "--- failing checks (memory smoke) ---" >&2
+    grep -E '^FAIL' "$smoke_log" | head -20 >&2
+  fi
+  cp "$smoke_log" /tmp/ci-smoke-memory.log 2>/dev/null || true
+  rm -f "$smoke_log"
   stop_api "$port"
   [ "$code" -eq 0 ] || tail -30 "$log" >&2
   return $code
@@ -119,7 +128,13 @@ stage_pg_smoke() {
   log="$(mktemp)"
   (cd services/api && PG_TEST_URL="$dburl" "$GO" test ./internal/store/ -run TestPostgresContract -v) || code=1
   if start_api 18081 "$log" DATABASE_URL="$dburl"; then
-    API_BASE="http://127.0.0.1:18081" bash scripts/smoke.sh || code=1
+    local pg_smoke
+    pg_smoke="$(mktemp)"
+    API_BASE="http://127.0.0.1:18081" bash scripts/smoke.sh >"$pg_smoke" 2>&1 || code=1
+    tail -5 "$pg_smoke"
+    [ "$code" -eq 0 ] || { echo "--- failing checks (postgres smoke) ---" >&2; grep -E '^FAIL' "$pg_smoke" | head -20 >&2; }
+    cp "$pg_smoke" /tmp/ci-smoke-postgres.log 2>/dev/null || true
+    rm -f "$pg_smoke"
     stop_api 18081
     [ "$code" -eq 0 ] || tail -30 "$log" >&2
   else
