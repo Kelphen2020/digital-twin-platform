@@ -1190,6 +1190,7 @@ SKIP  smoke (postgres)  (--quick)
 | smoke（:8081 PostgreSQL） | ✅ **PASS 263/263**（迁移 013 正常应用，13 张表均含 tenant_id） |
 | 前端 E2E（headless Chrome） | ✅ 登录携带租户、全量请求/刷新带 `X-Tenant-ID`、WS `?tenant_id=`、顶栏「租户：默认园区」、admin 9 页签（含租户页：新建/改名/两步停用，默认租户受保护）、三种租户错误映射、operator 无租户页签；console errors=[] |
 | PostgreSQL 租户隔离 E2E | ✅ 默认租户 6 相机/3 用户 vs 新租户 0 相机；设置/事件/巡检隔离；跨租户 403、未知 400、停用 403；指标按租户导出 |
+| 本地 CI（`--quick`，门禁 62%） | ✅ 8 阶段全 PASS（smoke(memory) 263/263） |
 | 截图 | `docs/screenshots/p27-login-tenant.png`、`p27-topbar.png`、`p27-tenant-tab.png`、`p27-tenant-disabled.png`、`p27-unknown-tenant.png`、`p27-inactive-tenant.png`、`p27-cross-tenant.png`、`p27-operator.png` |
 
 ## 118. 已知限制（P27.0）
