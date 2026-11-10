@@ -1,11 +1,28 @@
-# 基于视频监控系统的数字孪生平台 — P0 软件 MVP
+# 基于视频监控系统的数字孪生平台（P0 → P26）
 
-本仓库是《详细实现方案》的 **P0 落地**：先用最小可运行系统把方案里最容易翻车的三件事提前验证——**视频/事件链路能通、时空对齐有落点、三维首屏能达标**。
+本仓库从《详细实现方案》的 **P0 最小可运行系统**出发，按里程碑迭代到 **P26**：视频/事件链路、时空对齐、三维态势一张图，以及告警处置、工单、值班排班、巡检、安全加固、性能/运维、PostgreSQL 持久化、CI 与质量门禁。
 
-- 范围与验收：`docs/P0_SCOPE.md`
-- 接口契约：`docs/API.md`
-- 验收记录：`docs/ACCEPTANCE.md`
-- 架构与演进：`docs/ARCHITECTURE.md`
+| 快速索引 | 内容 |
+|---|---|
+| 最新状态 | `make smoke` **263/263 PASS**；`go test ./...` 全绿；覆盖率 **63.2%**（门禁 62%） |
+| 契约文档 | `docs/API.md`（P0）、`docs/API_P1.md` … `docs/API_P16.md`（后续阶段） |
+| 验收记录 | `docs/ACCEPTANCE.md`（P0–P26 逐阶段） |
+| 架构演进 | `docs/ARCHITECTURE.md` |
+| 运维 / 性能 / CI | `docs/OPERATIONS.md`、`docs/PERFORMANCE.md`、`docs/CI.md` |
+| 部署 | `deploy/`（compose、nginx、Dockerfile、observability） |
+
+## 里程碑速览
+
+| 阶段 | 主题 |
+|---|---|
+| P0–P1 | 事件链路、规则引擎、三维首屏、视频、标定、轨迹、处置、统计 |
+| P2–P4 | JWT RBAC、处置规则、工单、区域数据权限、通知 webhook、值班与自动派单、重试/静默 |
+| P5–P7 | 可回放事件总线、2.5D 地图/glTF/视频融合、用户管理 |
+| P8–P10 | 值班班次与轮转、派单去重、二次升级；背压/采样/限流与压测；登录防爆破、密码策略、审计导出、安全头、HTTPS |
+| P11–P13 | 刷新令牌与会话吊销；三维测距/框选/巡检路线；巡检计划与执行（异常建单） |
+| P14–P16 | 巡检报表/导出/归档；告警联动巡检；任务取消与超时治理 |
+| P17–P19 | PostgreSQL 全链路验证与修复、备份恢复；CI 流水线；多副本 ingest 回落 |
+| P20–P26 | 代码质量门禁（golangci-lint/eslint/覆盖率）；补测（auth/store/realtime/config/model/rules/metrics/api） |
 
 ## 架构（P0）
 

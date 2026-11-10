@@ -1,6 +1,20 @@
-# P0 验收记录
+# 验收记录（P0 ~ P26）
 
-环境：macOS 15 (arm64)、Go 1.23.4（本地 `.toolchains/go`）、Node v26.7、pnpm 10、Python 3.14、Docker 29.9（本次 Docker Hub 直连超时，PostGIS 镜像走 daocloud 镜像源）。
+环境：macOS 15 (arm64)、Go 1.23.4（本地 `.toolchains/go`）、Node v26.7、pnpm 10、Python 3.14、Docker 29.9（Docker Hub 直连不稳定，PostGIS 镜像走 daocloud 镜像源）。
+
+> 本文件按里程碑追加（P0 → P26）。**最新阶段速览（P26）**：
+>
+> | 指标 | 当前值 |
+> |---|---|
+> | `make smoke` | **PASS 263/263**（61 步，P0–P16 全链路） |
+> | `go test ./...` | 全绿；语句覆盖率 **63.2%**（门禁 62%） |
+> | `golangci-lint` / `eslint` | 0 issues / 0 warning |
+> | 本地 CI `scripts/ci_local.sh` | 8 阶段全 PASS（含 PostgreSQL 阶段需 docker） |
+> | 已完成里程碑 | P0–P26（详见文末各阶段记录） |
+
+---
+
+# P0 验收记录
 
 ## 1. 后端单元/接口测试
 
