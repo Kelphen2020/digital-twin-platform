@@ -1965,7 +1965,7 @@ func (s *Server) handlePatchOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeOrderError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	if store.IsNotFound(err) {
 		writeError(w, http.StatusNotFound, "order_not_found", "order not found")
 		return
 	}
@@ -2292,9 +2292,9 @@ func (s *Server) validateUserAreas(ctx context.Context, areas []string) error {
 
 func (s *Server) writeUserError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, auth.ErrUsernameTaken), errors.Is(err, model.ErrConflict):
+	case store.IsConflict(err):
 		writeError(w, http.StatusConflict, "username_taken", "username already exists")
-	case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, model.ErrNotFound):
+	case store.IsNotFound(err):
 		writeError(w, http.StatusNotFound, "user_not_found", "user not found")
 	case errors.Is(err, auth.ErrBadInput):
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -2550,7 +2550,7 @@ func (s *Server) validateDutyShifts(ctx context.Context, shifts []model.DutyShif
 }
 
 func (s *Server) writeDutyError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	if store.IsNotFound(err) {
 		writeError(w, http.StatusNotFound, "duty_not_found", "duty group not found")
 		return
 	}
@@ -3450,7 +3450,7 @@ func (s *Server) validatePatrolBody(r *http.Request, body patrolBody, existing *
 }
 
 func (s *Server) writeCameraError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	if store.IsNotFound(err) {
 		writeError(w, http.StatusNotFound, "camera_not_found", "camera not found")
 		return
 	}
@@ -3458,7 +3458,7 @@ func (s *Server) writeCameraError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) writeEventError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	if store.IsNotFound(err) {
 		writeError(w, http.StatusNotFound, "event_not_found", "event not found")
 		return
 	}

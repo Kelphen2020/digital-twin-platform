@@ -13,8 +13,19 @@ import (
 	"digital-twin-platform/api/internal/model"
 )
 
-// ErrNotFound is returned when a camera or event id does not exist.
-var ErrNotFound = errors.New("not found")
+// ErrNotFound is the canonical not-found sentinel, aliased to model so that
+// store implementations and API handlers can compare with errors.Is.
+var ErrNotFound = model.ErrNotFound
+
+// ErrConflict is the canonical conflict sentinel shared with model.
+var ErrConflict = model.ErrConflict
+
+// IsNotFound reports whether err is a not-found error from any Store
+// implementation (memory or PostgreSQL).
+func IsNotFound(err error) bool { return errors.Is(err, model.ErrNotFound) }
+
+// IsConflict reports whether err is a uniqueness/conflict error.
+func IsConflict(err error) bool { return errors.Is(err, model.ErrConflict) }
 
 // Store is the persistence seam. Every method is safe for concurrent use.
 type Store interface {
@@ -170,7 +181,7 @@ func (m *Memory) GetCamera(_ context.Context, id string) (model.Camera, error) {
 	defer m.mu.RUnlock()
 	camera, ok := m.cameras[id]
 	if !ok {
-		return model.Camera{}, ErrNotFound
+		return model.Camera{}, model.ErrNotFound
 	}
 	return *camera, nil
 }
@@ -183,7 +194,7 @@ func (m *Memory) GetCameraByCode(_ context.Context, code string) (model.Camera, 
 			return *camera, nil
 		}
 	}
-	return model.Camera{}, ErrNotFound
+	return model.Camera{}, model.ErrNotFound
 }
 
 func (m *Memory) UpdateCamera(_ context.Context, id string, patch model.CameraPatch) (model.Camera, error) {
@@ -191,7 +202,7 @@ func (m *Memory) UpdateCamera(_ context.Context, id string, patch model.CameraPa
 	defer m.mu.Unlock()
 	camera, ok := m.cameras[id]
 	if !ok {
-		return model.Camera{}, ErrNotFound
+		return model.Camera{}, model.ErrNotFound
 	}
 	applyPatch(camera, patch)
 	camera.UpdatedAt = time.Now().UTC()
@@ -203,7 +214,7 @@ func (m *Memory) SetCameraCalibration(_ context.Context, id string, calibration 
 	defer m.mu.Unlock()
 	camera, ok := m.cameras[id]
 	if !ok {
-		return model.Camera{}, ErrNotFound
+		return model.Camera{}, model.ErrNotFound
 	}
 	if calibration != nil {
 		now := time.Now().UTC()
@@ -252,7 +263,7 @@ func (m *Memory) GetEvent(_ context.Context, id string) (model.Event, error) {
 			return m.events[i], nil
 		}
 	}
-	return model.Event{}, ErrNotFound
+	return model.Event{}, model.ErrNotFound
 }
 
 func (m *Memory) CreateEvents(_ context.Context, events []model.Event) error {
@@ -275,7 +286,7 @@ func (m *Memory) AckEvent(ctx context.Context, id string) (model.Event, error) {
 		m.events[i].Status = "acked"
 		return m.events[i], nil
 	}
-	return model.Event{}, ErrNotFound
+	return model.Event{}, model.ErrNotFound
 }
 
 func (m *Memory) CloseEvent(ctx context.Context, id string) (model.Event, error) {
@@ -290,14 +301,14 @@ func (m *Memory) CloseEvent(ctx context.Context, id string) (model.Event, error)
 		m.events[i].ClosedAt = &now
 		return m.events[i], nil
 	}
-	return model.Event{}, ErrNotFound
+	return model.Event{}, model.ErrNotFound
 }
 
 func (m *Memory) CreateEventAction(_ context.Context, action model.EventAction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.findEventLocked(action.EventID); !ok {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	m.actions[action.EventID] = append(m.actions[action.EventID], action)
 	return nil
@@ -429,7 +440,7 @@ func (m *Memory) GetCameraRules(_ context.Context, cameraID string) (model.Camer
 	defer m.mu.RUnlock()
 	rules, ok := m.rules[cameraID]
 	if !ok {
-		return model.CameraRules{}, ErrNotFound
+		return model.CameraRules{}, model.ErrNotFound
 	}
 	return rules, nil
 }
@@ -438,7 +449,7 @@ func (m *Memory) SetCameraRules(_ context.Context, rules model.CameraRules) (mod
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.cameras[rules.CameraID]; !ok {
-		return model.CameraRules{}, ErrNotFound
+		return model.CameraRules{}, model.ErrNotFound
 	}
 	now := time.Now().UTC()
 	rules.UpdatedAt = &now
@@ -506,7 +517,7 @@ func (m *Memory) GetOrder(_ context.Context, id string) (model.Order, error) {
 			return m.orders[i], nil
 		}
 	}
-	return model.Order{}, ErrNotFound
+	return model.Order{}, model.ErrNotFound
 }
 
 func (m *Memory) UpdateOrder(_ context.Context, id string, update model.OrderUpdate) (model.Order, error) {
@@ -519,7 +530,7 @@ func (m *Memory) UpdateOrder(_ context.Context, id string, update model.OrderUpd
 		applyOrderUpdate(&m.orders[i], update)
 		return m.orders[i], nil
 	}
-	return model.Order{}, ErrNotFound
+	return model.Order{}, model.ErrNotFound
 }
 
 func (m *Memory) ListOrders(_ context.Context, filter model.OrderFilter) ([]model.Order, error) {
@@ -880,7 +891,7 @@ func (m *Memory) GetDutyGroup(_ context.Context, id string) (model.DutyGroup, er
 			return m.duty[i], nil
 		}
 	}
-	return model.DutyGroup{}, ErrNotFound
+	return model.DutyGroup{}, model.ErrNotFound
 }
 
 func (m *Memory) ListDutyGroups(_ context.Context) ([]model.DutyGroup, error) {
@@ -902,7 +913,7 @@ func (m *Memory) UpdateDutyGroup(_ context.Context, id string, group model.DutyG
 		m.duty[i] = group
 		return group, nil
 	}
-	return model.DutyGroup{}, ErrNotFound
+	return model.DutyGroup{}, model.ErrNotFound
 }
 
 func (m *Memory) DeleteDutyGroup(_ context.Context, id string) error {
@@ -914,7 +925,7 @@ func (m *Memory) DeleteDutyGroup(_ context.Context, id string) error {
 			return nil
 		}
 	}
-	return ErrNotFound
+	return model.ErrNotFound
 }
 
 func (m *Memory) GetSetting(_ context.Context, key string) ([]byte, bool, error) {

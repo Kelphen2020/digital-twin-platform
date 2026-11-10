@@ -984,3 +984,38 @@ SKIP  smoke (postgres)  (--quick)
 - PostgreSQL 实现仍依赖集成测试（PG_TEST_URL 门控）与全量 smoke，未逐方法单测。
 - 覆盖率仍以语句计；分支覆盖未统计。
 - 新增门禁阈值 55% 留有约 2 个百分点缓冲，后续补测可继续提高。
+
+---
+
+# P22.0 验收记录（2026-11-10 傍晚）
+
+## 96. 错误哨兵统一
+
+| 变更 | 说明 |
+|---|---|
+| `store.ErrNotFound` / `store.ErrConflict` | 由独立 `errors.New` 改为 `model.ErrNotFound` / `model.ErrConflict` 的别名 |
+| `auth.ErrUserNotFound` / `auth.ErrUsernameTaken` | 同步别名为 `model.ErrNotFound` / `model.ErrConflict` |
+| 新增 helper | `store.IsNotFound(err)`、`store.IsConflict(err)`（`errors.Is`，支持包装错误） |
+| API 层 | 全部 `errors.Is(err, store.ErrNotFound)` → `store.IsNotFound(err)`；用户错误分支改用 `store.IsConflict` / `store.IsNotFound` |
+| 内存与 PG 实现 | 统一返回 `model.ErrNotFound` / `model.ErrConflict` |
+
+## 97. 新增测试
+
+| 用例 | 结果 |
+|---|---|
+| `TestSentinelIdentity`（别名同一性、包装错误解包、nil/无关错误为 false） | ✅ PASS |
+| `TestMemoryReturnsCanonicalSentinels`（内存实现返回可被 `IsNotFound`/`IsConflict` 识别的错误） | ✅ PASS |
+
+## 98. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（含新增 store/auth 单测） |
+| `golangci-lint run ./...` | ✅ 0 issues |
+| `make smoke`（重启新二进制后） | ✅ **PASS 263/263** |
+| 本地 CI（`--quick`，覆盖率门禁 55%） | ✅ 8 阶段全 PASS（api build/vet/test、simulator lint、lint(go+web)、web typecheck+build、smoke(memory) 263/263） |
+
+## 99. 已知限制（P22.0）
+
+- `auth.ErrInvalidCredentials` / `ErrInvalidToken` / `ErrBadInput` 仍为 auth 包私有语义，未并入 model（属于认证域概念，保持独立）。
+- 新增存储实现需自行遵守「返回 model 哨兵」约定，靠 `TestSentinelIdentity` 与代码评审保证。

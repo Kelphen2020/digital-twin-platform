@@ -122,7 +122,20 @@ kill <api-pid> && ./scripts/restore.sh backups/drill.dump
 
 说明：PostGIS 官方镜像在 arm64 上以 amd64 模拟运行（`platform` 警告），功能验证不受影响；生产建议使用原生架构镜像或托管数据库。
 
-## 9. 安全清单
+## 9. 错误语义约定（P22）
+
+所有存储与认证实现统一使用 `model` 包中的哨兵错误，避免调用方按具体实现比较失效：
+
+| 哨兵 | 含义 | 别名 |
+|---|---|---|
+| `model.ErrNotFound` | 资源不存在（相机/事件/工单/用户/路线/计划…） | `store.ErrNotFound`、`auth.ErrUserNotFound` |
+| `model.ErrConflict` | 唯一性冲突（用户名重复等） | `store.ErrConflict`、`auth.ErrUsernameTaken` |
+
+- API 层统一使用 `store.IsNotFound(err)` / `store.IsConflict(err)`（内部为 `errors.Is`，支持包装错误）。
+- 新增存储实现时：返回 `model.ErrNotFound`；可通过 `go test ./internal/store -run Sentinel` 校验契约。
+- 不要再用 `err == store.ErrNotFound` 之类的直接比较。
+
+## 10. 安全清单
 
 - 替换 `JWT_SECRET` 与种子账号口令；关闭演示账号或改密。
 - 生产启用 HTTPS（nginx/网关），限制 `/metrics` 访问。

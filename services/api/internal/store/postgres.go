@@ -513,7 +513,7 @@ func scanCamera(row rowScanner) (model.Camera, error) {
 		&calibration, &camera.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.Camera{}, ErrNotFound
+			return model.Camera{}, model.ErrNotFound
 		}
 		return model.Camera{}, err
 	}
@@ -534,7 +534,7 @@ func scanEvent(row rowScanner) (model.Event, error) {
 		&event.EscalatedAt, &event.ReEscalatedAt, &payload)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.Event{}, ErrNotFound
+			return model.Event{}, model.ErrNotFound
 		}
 		return model.Event{}, err
 	}
@@ -566,7 +566,7 @@ func (p *Postgres) GetCameraRules(ctx context.Context, cameraID string) (model.C
 		Scan(&rules.CameraID, &rules.ConfidenceThreshold, &rules.DedupeSeconds, &classes, &roi, &rules.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.CameraRules{}, ErrNotFound
+			return model.CameraRules{}, model.ErrNotFound
 		}
 		return model.CameraRules{}, err
 	}
@@ -701,7 +701,7 @@ func scanOrder(row rowScanner) (model.Order, error) {
 		&order.Assignee, &order.Note, &order.CreatedAt, &order.UpdatedAt, &order.ClosedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.Order{}, ErrNotFound
+			return model.Order{}, model.ErrNotFound
 		}
 		return model.Order{}, err
 	}
@@ -843,7 +843,7 @@ func (p *Postgres) DeleteDutyGroup(ctx context.Context, id string) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -860,7 +860,7 @@ func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 	err := row.Scan(&group.ID, &group.Name, &areas, &operators, &group.Rotation, &shifts, &group.Active, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.DutyGroup{}, ErrNotFound
+			return model.DutyGroup{}, model.ErrNotFound
 		}
 		return model.DutyGroup{}, err
 	}
@@ -881,7 +881,7 @@ func scanDutyGroup(row dutyScanner) (model.DutyGroup, error) {
 func (p *Postgres) GetUserAccountByUsername(ctx context.Context, username string) (model.UserAccount, bool, error) {
 	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE username=$1`, username))
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return model.UserAccount{}, false, nil
 		}
 		return model.UserAccount{}, false, err
@@ -892,7 +892,7 @@ func (p *Postgres) GetUserAccountByUsername(ctx context.Context, username string
 func (p *Postgres) GetUserAccountByID(ctx context.Context, id string) (model.UserAccount, bool, error) {
 	account, err := scanUserAccount(p.pool.QueryRow(ctx, userSelect+` WHERE id=$1`, id))
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return model.UserAccount{}, false, nil
 		}
 		return model.UserAccount{}, false, err
@@ -947,7 +947,7 @@ func (p *Postgres) UpdateUserAccount(ctx context.Context, account model.UserAcco
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -958,7 +958,7 @@ func (p *Postgres) DeleteUserAccount(ctx context.Context, id string) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -972,7 +972,7 @@ func scanUserAccount(row rowScanner) (model.UserAccount, error) {
 		&areas, &account.Active, &account.TokenVersion, &account.PasswordHash, &account.CreatedAt, &account.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.UserAccount{}, ErrNotFound
+			return model.UserAccount{}, model.ErrNotFound
 		}
 		return model.UserAccount{}, err
 	}
@@ -989,7 +989,7 @@ func (p *Postgres) FindOpenOrderForEvent(ctx context.Context, eventID string) (m
         WHERE event_id=$1 AND status IN ('open','assigned','processing')
         ORDER BY created_at DESC LIMIT 1`, eventID))
 	if err != nil {
-		if err == ErrNotFound {
+		if err == model.ErrNotFound {
 			return model.Order{}, false, nil
 		}
 		return model.Order{}, false, err
@@ -1034,7 +1034,7 @@ func (p *Postgres) CreateRefreshToken(ctx context.Context, token model.RefreshTo
 func (p *Postgres) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (model.RefreshToken, bool, error) {
 	token, err := scanRefreshToken(p.pool.QueryRow(ctx, refreshSelect+` WHERE token_hash=$1`, tokenHash))
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return model.RefreshToken{}, false, nil
 		}
 		return model.RefreshToken{}, false, err
@@ -1077,7 +1077,7 @@ func scanRefreshToken(row rowScanner) (model.RefreshToken, error) {
 		&token.CreatedAt, &token.Revoked, &token.IP, &token.UserAgent)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.RefreshToken{}, ErrNotFound
+			return model.RefreshToken{}, model.ErrNotFound
 		}
 		return model.RefreshToken{}, err
 	}
@@ -1100,7 +1100,7 @@ func (p *Postgres) CreatePatrolRoute(ctx context.Context, route model.PatrolRout
 func (p *Postgres) GetPatrolRoute(ctx context.Context, id string) (model.PatrolRoute, bool, error) {
 	route, err := scanPatrolRoute(p.pool.QueryRow(ctx, patrolSelect+` WHERE id=$1`, id))
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return model.PatrolRoute{}, false, nil
 		}
 		return model.PatrolRoute{}, false, err
@@ -1135,7 +1135,7 @@ func (p *Postgres) UpdatePatrolRoute(ctx context.Context, route model.PatrolRout
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -1146,7 +1146,7 @@ func (p *Postgres) DeletePatrolRoute(ctx context.Context, id string) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -1160,7 +1160,7 @@ func scanPatrolRoute(row rowScanner) (model.PatrolRoute, error) {
 		&route.CreatedBy, &route.CreatedAt, &route.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.PatrolRoute{}, ErrNotFound
+			return model.PatrolRoute{}, model.ErrNotFound
 		}
 		return model.PatrolRoute{}, err
 	}
@@ -1187,7 +1187,7 @@ func (p *Postgres) CreatePatrolSchedule(ctx context.Context, schedule model.Patr
 func (p *Postgres) GetPatrolSchedule(ctx context.Context, id string) (model.PatrolSchedule, bool, error) {
 	schedule, err := scanPatrolSchedule(p.pool.QueryRow(ctx, patrolScheduleSelect+` WHERE id=$1`, id))
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return model.PatrolSchedule{}, false, nil
 		}
 		return model.PatrolSchedule{}, false, err
@@ -1220,7 +1220,7 @@ func (p *Postgres) UpdatePatrolSchedule(ctx context.Context, schedule model.Patr
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -1231,7 +1231,7 @@ func (p *Postgres) DeletePatrolSchedule(ctx context.Context, id string) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -1249,7 +1249,7 @@ func (p *Postgres) CreatePatrolExecution(ctx context.Context, execution model.Pa
 func (p *Postgres) GetPatrolExecution(ctx context.Context, id string) (model.PatrolExecution, bool, error) {
 	execution, err := scanPatrolExecution(p.pool.QueryRow(ctx, patrolExecutionSelect+` WHERE id=$1`, id))
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return model.PatrolExecution{}, false, nil
 		}
 		return model.PatrolExecution{}, false, err
@@ -1310,7 +1310,7 @@ func (p *Postgres) UpdatePatrolExecution(ctx context.Context, execution model.Pa
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }
@@ -1323,7 +1323,7 @@ func scanPatrolSchedule(row rowScanner) (model.PatrolSchedule, error) {
 		&schedule.Enabled, &schedule.CreatedBy, &schedule.CreatedAt, &schedule.UpdatedAt, &schedule.NextRunAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.PatrolSchedule{}, ErrNotFound
+			return model.PatrolSchedule{}, model.ErrNotFound
 		}
 		return model.PatrolSchedule{}, err
 	}
@@ -1342,7 +1342,7 @@ func scanPatrolExecution(row rowScanner) (model.PatrolExecution, error) {
 		&execution.ScheduledAt, &execution.CreatedAt, &execution.StartedAt, &execution.FinishedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return model.PatrolExecution{}, ErrNotFound
+			return model.PatrolExecution{}, model.ErrNotFound
 		}
 		return model.PatrolExecution{}, err
 	}

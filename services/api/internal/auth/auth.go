@@ -49,8 +49,8 @@ type User = model.UserAccount
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrInvalidToken       = errors.New("invalid token")
-	ErrUsernameTaken      = errors.New("username already exists")
-	ErrUserNotFound       = errors.New("user not found")
+	ErrUsernameTaken      = model.ErrConflict
+	ErrUserNotFound       = model.ErrNotFound
 	ErrBadInput           = errors.New("invalid user input")
 )
 
