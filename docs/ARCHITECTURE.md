@@ -222,7 +222,18 @@
 | 备份/恢复 | backup.sh / restore.sh / make 目标 |
 | 验证 | 263 项 smoke 全绿（PG store），重启持久化 + 备份恢复演练 |
 
-## 23. P1 建议优先级
+## 23. P27.0 已落地（多租户隔离基础）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 租户表与迁移 | `013_p27_tenants.sql` | tenants + 13 张表 `tenant_id`；per-tenant 唯一/主键 |
+| 租户作用域 | `store.WithTenant` / `TenantFrom` | ctx 携带租户，默认 `default`；存储层强制过滤 |
+| 令牌绑定 | JWT `tnt` + 中间件 | 跨租户 403 `cross_tenant`；未知 400；停用 403 |
+| 租户管理 | `/api/tenants` | 仅 admin；审计与指标 |
+| 前端 | 登录租户输入 + 顶栏 + 租户页签 | 全部请求带 `X-Tenant-ID`，WS 带 `tenant_id` |
+| 兼容 | `TENANT_SHARED=1` | 单租户演示下所有租户读 default 数据 |
+
+## 24. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

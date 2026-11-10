@@ -1164,3 +1164,38 @@ SKIP  smoke (postgres)  (--quick)
 
 - 仍未覆盖：`RunStats` 周期任务、`broadcastStats`、`RunPatrolScheduler` 长驻循环、`SetSite/SetSessionTTL` 等纯装配方法（多为 1–2 行或需时间驱动）。
 - E2E 正向流程（P0–P16）由 smoke 覆盖，单测只补读路径与错误分支，避免重复。
+
+---
+
+# P27.0 验收记录（2026-11-10 深夜）
+
+## 116. 多租户隔离基座
+
+| 项 | 结果 |
+|---|---|
+| 迁移 | `013_p27_tenants.sql`：`tenants` 表 + 默认租户；13 张表新增 `tenant_id`；`users`/`cameras` 唯一约束改为 `(tenant_id, …)`；`settings`/`camera_rules` 主键改为含租户 |
+| 存储 | 内存实现重构为 per-tenant `memoryState`；PostgreSQL 每条查询/写入按 ctx 租户过滤/打标；`WithTenant`/`TenantFrom` 默认 `default`；`TENANT_SHARED=1` 兼容单租户演示 |
+| 认证 | 登录支持 `tenant_id`，JWT 增加 `tnt` 声明；中间件解析 `X-Tenant-ID`：未知 400 `unknown_tenant`、停用 403 `tenant_inactive`、令牌与请求租户不一致 403 `cross_tenant` |
+| 租户管理 | `GET/POST /api/tenants`、`PATCH /api/tenants/{id}`（仅 admin）+ 审计 `tenant.create/update`；指标 `dsh_twin_tenant_requests_total{tenant}` |
+| 后台任务 | 升级/通知 worker 按租户遍历；ingest 按租户打标；轮转键按租户隔离 |
+
+## 117. 测试与验证
+
+| 项 | 结果 |
+|---|---|
+| `go test ./...` | ✅ 全绿（新增 7 个租户用例：CRUD/隔离/跨租户令牌/未知/停用/默认兼容/共享模式） |
+| `golangci-lint` | ✅ 0 issues |
+| 覆盖率 | **63.8%**（门禁 62%） |
+| `make smoke`（:8080 内存，无租户头） | ✅ **PASS 263/263**（默认租户行为不变） |
+| smoke（:8081 PostgreSQL） | ✅ **PASS 263/263**（迁移 013 正常应用，13 张表均含 tenant_id） |
+| 前端 E2E（headless Chrome） | ✅ 登录携带租户、全量请求/刷新带 `X-Tenant-ID`、WS `?tenant_id=`、顶栏「租户：默认园区」、admin 9 页签（含租户页：新建/改名/两步停用，默认租户受保护）、三种租户错误映射、operator 无租户页签；console errors=[] |
+| PostgreSQL 租户隔离 E2E | ✅ 默认租户 6 相机/3 用户 vs 新租户 0 相机；设置/事件/巡检隔离；跨租户 403、未知 400、停用 403；指标按租户导出 |
+| 截图 | `docs/screenshots/p27-login-tenant.png`、`p27-topbar.png`、`p27-tenant-tab.png`、`p27-tenant-disabled.png`、`p27-unknown-tenant.png`、`p27-inactive-tenant.png`、`p27-cross-tenant.png`、`p27-operator.png` |
+
+## 118. 已知限制（P27.0）
+
+- `duty_groups`、`track_points` 仍为全局（下一阶段按租户迁移）；`settings` 之外的全局资源没有租户维度。
+- 新租户初始为空（无相机/用户），需要后续「租户初始化/导入」能力。
+- 无租户删除接口（默认租户不可删）；演示环境保留一个已停用演示租户。
+- 租户切换需重新登录（JWT 绑定 `tnt`）；如需免登录切换，需要「租户切换」专用接口重签令牌。
+- 管理员可管理所有租户（无「租户管理员」角色划分）。
