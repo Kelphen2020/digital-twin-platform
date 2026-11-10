@@ -35,7 +35,7 @@ jobs:
         run: |
           total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { if (t+0 < 55) { printf "coverage %s%% < 55%% gate\n", t; exit 1 } }'
+          awk -v t="$total" 'BEGIN { if (t+0 < 60) { printf "coverage %s%% < 60%% gate\n", t; exit 1 } }'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

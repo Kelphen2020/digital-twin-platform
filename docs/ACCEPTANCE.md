@@ -1053,3 +1053,38 @@ SKIP  smoke (postgres)  (--quick)
 
 - store 覆盖率 25.4%（PG 实现路径依赖集成测试/smoke）。
 - 慢客户端测试只断言丢弃与连接保持，未验证「丢弃后仍可继续收帧」（受 gorilla 客户端读取语义限制，已保留在集成 smoke 中验证）。
+
+---
+
+# P24.0 验收记录（2026-11-10 晚间）
+
+## 104. store 覆盖率攻坚
+
+| 新增用例 | 覆盖内容 |
+|---|---|
+| `TestPatrolRoutesAndSchedules` | 巡检路线创建/查询/列表/更新/删除 + 缺失 id 的 not-found；计划创建/查询/列表/更新/删除 |
+| `TestPatrolExecutionsLifecycle` | 执行创建/查询；按 status、event_id、schedule_id、时间范围、limit 过滤；更新；按 before+status 清理（done 被删、pending 保留）；缺失 id not-found |
+| `TestEventWorkflowAndEscalation` | 事件 ack/close（含缺失 id）、升级（关闭事件跳过、已升级跳过、severity 过滤、截止时间）、再升级（写入 re_escalated_at、二次跳过） |
+| `TestCameraCalibrationAndSorting` | 标定设置/清除/缺失相机、ListCameras 按 code 有序、用户列表 |
+| `store_patrol_test.go` 其余断言 | 时间范围/limit 过滤、错误哨兵一致性 |
+
+## 105. 覆盖率与门禁
+
+| 指标 | P23 | **P24** |
+|---|---|---|
+| store 包 | 25.4% | **37.9%** |
+| **总计** | 57.5% | **61.4%** |
+| CI 门禁 | 55% | **60%** |
+
+## 106. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint run ./...` | ✅ 0 issues |
+| 本地 CI（`--quick`，门禁 60%） | ✅ 8 阶段全 PASS，smoke(memory) 263/263 |
+
+## 107. 已知限制（P24.0）
+
+- store 覆盖率 37.9%：PostgreSQL 实现（postgres.go 76 个方法）仍依赖 PG 集成测试与 smoke；进一步补测需引入 testcontainers 或扩展 `PG_TEST_URL` 用例。
+- 覆盖率按语句统计；60% 门禁留有约 1.4 个百分点缓冲，后续应同步提升阈值。

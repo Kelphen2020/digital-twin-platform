@@ -284,6 +284,11 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 - `internal/realtime`（握手/问候/广播/背压丢弃）、`internal/config`（默认值与覆盖）、`internal/model`（默认值/严重级别）、`internal/store/seed`（种子一致性）新增单测。
 - 三包覆盖率从 0% 提升至 **92–100%**；总覆盖率 57.5%。
 
+## P24.0 能力（store 覆盖率攻坚）
+
+- 新增巡检路线/计划/执行、事件处置与升级/再升级、相机标定与排序、用户列表等 store 单测。
+- store 覆盖率 **25.4% → 37.9%**，总覆盖率 **57.5% → 61.4%**，CI 门禁 **55% → 60%**。
+
 ## P19.0 能力（部署与扩展）
 
 - **多副本 API**：状态集中于 PostgreSQL，副本共享；非主副本用 `INGEST_FALLBACK_URL` 把 ingest 原样转发到主副本（指标 `ingest_forwarded_total` / `ingest_fallback_failures_total`，失败 502）。

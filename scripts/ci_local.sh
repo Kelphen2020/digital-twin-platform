@@ -41,9 +41,9 @@ stage_api_test() {
   local total
   total="$(cd services/api && "$GO" tool cover -func="$profile" | tail -1 | awk '{print $3}' | tr -d '%')"
   rm -f "$profile"
-  echo "coverage: ${total:-unknown}% (gate 55%)"
+  echo "coverage: ${total:-unknown}% (gate 60%)"
   [ -n "$total" ] || return 1
-  awk -v t="$total" 'BEGIN { if (t+0 < 55) { printf "coverage %s%% < 55%% gate\n", t; exit 1 } }'
+  awk -v t="$total" 'BEGIN { if (t+0 < 60) { printf "coverage %s%% < 60%% gate\n", t; exit 1 } }'
 }
 stage_lint() {
   export PATH="$(dirname "$GO"):$HOME/go/bin:$PATH"

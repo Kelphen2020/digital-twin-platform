@@ -6,7 +6,7 @@
 
 | Job | 内容 | 触发 |
 |---|---|---|
-| `api` | `go build ./...`、`go vet ./...`、`go test ./... -count=1 -coverprofile`，**覆盖率门禁 55%** | push / PR |
+| `api` | `go build ./...`、`go vet ./...`、`go test ./... -count=1 -coverprofile`，**覆盖率门禁 60%** | push / PR |
 | `lint` | `golangci-lint`（errcheck/govet/staticcheck/unused/gocritic/bodyclose 等 15 个 linter）+ `eslint src --max-warnings 0` | push / PR |
 | `web` | `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm build` | push / PR |
 | `simulator` | `python -m py_compile services/simulator/*.py scripts/*.py`、`bash -n` 全部脚本 | push / PR |
@@ -85,9 +85,11 @@ cd services/api && golangci-lint run ./...
 
 ### 覆盖率门禁
 
-`go test ./... -coverprofile` 全包语句覆盖率 ≥ **55%**（当前约 57%），低于阈值 CI 失败；报告作为 artifact 上传。
+`go test ./... -coverprofile` 全包语句覆盖率 ≥ **60%**（当前约 61.4%），低于阈值 CI 失败；报告作为 artifact 上传。
 
-P21 补充了 `internal/auth`（登录/校验/吊销/用户 CRUD/密码策略/权限）与 `internal/store`（内存实现：相机/事件/工单/轨迹/审计/设置/值班/用户/刷新令牌）单测，覆盖率 48.8% → 56.9%。
+- P21 补充 `internal/auth`（登录/校验/吊销/用户 CRUD/密码策略/权限）与 `internal/store`（相机/事件/工单/轨迹/审计/设置/值班/用户/刷新令牌）单测：48.8% → 56.9%。
+- P23 补充 `internal/realtime`/`internal/config`/`internal/model`/`store.Seed` 单测：57.0% → 57.5%（三包 0% → 92–100%）。
+- P24 补充 store 巡检路线/计划/执行、事件处置与升级、相机标定/排序、用户列表：**57.5% → 61.4%**，门禁 55% → **60%**。
 
 ### 一键跑
 
