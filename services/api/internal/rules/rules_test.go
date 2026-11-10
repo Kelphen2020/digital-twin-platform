@@ -83,3 +83,115 @@ func TestWorldAndFallbackPosition(t *testing.T) {
 		t.Fatalf("unexpected fallback position: (%f, %f)", event.X, event.Y)
 	}
 }
+
+func TestProjectToWorldSources(t *testing.T) {
+	camera := model.Camera{ID: "cam_001", X: 10, Y: 20, Z: 6, Heading: 90}
+
+	// 1) explicit world coordinates win.
+	x, y, z, source := ProjectToWorld(camera, model.Detection{World: &model.World{X: 1, Y: 2, Z: 3}})
+	if source != "world" || x != 1 || y != 2 || z != 3 {
+		t.Fatalf("world passthrough: %v %v %v %s", x, y, z, source)
+	}
+
+	// 2) calibration matrix is applied to the bbox ground point.
+	calibrated := camera
+	calibrated.Calibration = &model.Calibration{Matrix: [3][3]float64{{2, 0, 0}, {0, 2, 0}, {0, 0, 1}}}
+	x, y, _, source = ProjectToWorld(calibrated, model.Detection{BBox: [4]float64{0.4, 0.2, 0.6, 0.5}})
+	if source != "calibration" || x != 1920 || y != 1080 {
+		t.Fatalf("calibration projection: %v %v %s", x, y, source)
+	}
+
+	// 3) degenerate matrix (w ~ 0) falls back to the optical axis.
+	degenerate := camera
+	degenerate.Calibration = &model.Calibration{Matrix: [3][3]float64{{1, 0, 0}, {0, 1, 0}, {0, 0, 0}}}
+	_, _, _, source = ProjectToWorld(degenerate, model.Detection{BBox: [4]float64{0.5, 0.5, 0.5, 0.5}})
+	if source != "fallback" {
+		t.Fatalf("degenerate calibration should fall back, got %s", source)
+	}
+
+	// 4) fallback places the event FallbackDistanceM along the heading.
+	x, y, _, source = ProjectToWorld(camera, model.Detection{BBox: [4]float64{0.5, 0.5, 0.5, 0.5}})
+	if source != "fallback" {
+		t.Fatalf("expected fallback, got %s", source)
+	}
+	if x < 10+FallbackDistanceM-0.01 || x > 10+FallbackDistanceM+0.01 {
+		t.Fatalf("east offset wrong: x=%v", x)
+	}
+	if y < 20-0.01 || y > 20+0.01 {
+		t.Fatalf("north offset wrong: y=%v", y)
+	}
+}
+
+func TestROIFiltersDetections(t *testing.T) {
+	engine := New(time.Second)
+	cfg := model.DefaultCameraRules("cam_001")
+	cfg.ROI = [][2]float64{{0.2, 0.2}, {0.8, 0.2}, {0.8, 0.8}, {0.2, 0.8}}
+
+	inside := engine.Evaluate(testCamera(), cfg, []model.Detection{
+		{Class: "person", Confidence: 0.9, BBox: [4]float64{0.4, 0.3, 0.6, 0.5}},
+	}, time.Now())
+	if len(inside.Events) != 1 {
+		t.Fatalf("detection inside ROI should pass, got %d events / %d dropped", len(inside.Events), inside.Dropped)
+	}
+	outside := engine.Evaluate(testCamera(), cfg, []model.Detection{
+		{Class: "vehicle", Confidence: 0.9, BBox: [4]float64{0.05, 0.05, 0.15, 0.15}},
+	}, time.Now().Add(time.Second))
+	if len(outside.Events) != 0 || outside.Dropped != 1 {
+		t.Fatalf("detection outside ROI should be dropped, got %d/%d", len(outside.Events), outside.Dropped)
+	}
+}
+
+func TestEnabledClassesFilter(t *testing.T) {
+	engine := New(time.Second)
+	cfg := model.DefaultCameraRules("cam_001")
+	cfg.EnabledClasses = []string{"person"}
+	result := engine.Evaluate(testCamera(), cfg, []model.Detection{
+		{Class: "vehicle", Confidence: 0.95},
+		{Class: "person", Confidence: 0.95},
+	}, time.Now())
+	if len(result.Events) != 1 || result.Events[0].Type != "person" || result.Dropped != 1 {
+		t.Fatalf("enabled classes filter: %+v", result)
+	}
+}
+
+func TestDedupeWindowDisabled(t *testing.T) {
+	engine := New(time.Minute)
+	cfg := model.DefaultCameraRules("cam_001")
+	cfg.DedupeSeconds = 0 // explicit zero disables dedupe for a configured camera
+	base := time.Now()
+	first := engine.Evaluate(testCamera(), cfg, []model.Detection{{Class: "person", Confidence: 0.9}}, base)
+	second := engine.Evaluate(testCamera(), cfg, []model.Detection{{Class: "person", Confidence: 0.9}}, base.Add(time.Millisecond))
+	if len(first.Events) != 1 || len(second.Events) != 1 {
+		t.Fatalf("dedupe should be disabled: %d/%d", len(first.Events), len(second.Events))
+	}
+}
+
+func TestPruneBoundsDedupeMap(t *testing.T) {
+	engine := New(time.Millisecond)
+	base := time.Now()
+	// Populate more than the prune threshold with distinct cameras.
+	for index := 0; index < 4200; index++ {
+		camera := testCamera()
+		camera.ID = "cam_" + string(rune('a'+index%26)) + "-" + time.Duration(index).String()
+		cfg := model.DefaultCameraRules(camera.ID)
+		cfg.DedupeSeconds = 0
+		engine.Evaluate(camera, cfg, []model.Detection{{Class: "person", Confidence: 0.9}}, base)
+	}
+	// A later evaluation far in the future must shrink the map.
+	future := base.Add(time.Hour)
+	engine.Evaluate(testCamera(), model.CameraRules{}, []model.Detection{{Class: "person", Confidence: 0.9}}, future)
+	if len(engine.last) >= 4200 {
+		t.Fatalf("dedupe map was not pruned: %d keys", len(engine.last))
+	}
+}
+
+func TestNewClampsWindow(t *testing.T) {
+	engine := New(0)
+	if engine.window != 5*time.Second {
+		t.Fatalf("zero window should default to 5s, got %v", engine.window)
+	}
+	engine = New(-time.Second)
+	if engine.window != 5*time.Second {
+		t.Fatalf("negative window should default to 5s, got %v", engine.window)
+	}
+}

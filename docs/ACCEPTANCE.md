@@ -1088,3 +1088,33 @@ SKIP  smoke (postgres)  (--quick)
 
 - store 覆盖率 37.9%：PostgreSQL 实现（postgres.go 76 个方法）仍依赖 PG 集成测试与 smoke；进一步补测需引入 testcontainers 或扩展 `PG_TEST_URL` 用例。
 - 覆盖率按语句统计；60% 门禁留有约 1.4 个百分点缓冲，后续应同步提升阈值。
+
+---
+
+# P25.0 验收记录（2026-11-10 夜间）
+
+## 108. 新增单测（rules + metrics）
+
+| 包 | 用例 | 覆盖内容 |
+|---|---|---|
+| `internal/rules` | 7 个新用例 | `ProjectToWorld` 三源优先级（显式 world / 标定矩阵 / 光学轴回落）与退化矩阵、ROI 内外过滤、EnabledClasses 过滤、去重窗口显式关闭、去重表剪枝上限、`New` 窗口钳制 | 
+| `internal/metrics` | 2 用例 | 全部指标名/HELP/TYPE 输出、severity 标签、ingest 时长 summary（微秒→秒）、空计数器全 0 |
+
+## 109. 覆盖率
+
+| 包 | P24 | **P25** |
+|---|---|---|
+| rules | 55.3% | **97.4%** |
+| metrics | 0% | **98.6%** |
+| **总计** | 61.4% | **62.2%** |
+
+## 110. 回归
+
+- `go test ./... -count=1`：全绿
+- `golangci-lint run ./...`：0 issues
+- 本地 CI（`--quick`，门禁 60%）：✅ 8 阶段全 PASS，smoke(memory) 263/263
+
+## 111. 已知限制（P25.0）
+
+- 仍以 api（71.1%）与 store（37.9%）为主；PG 实现未逐方法覆盖。
+- rules 剩余未覆盖为 `newEventID` 的 `crypto/rand` 失败分支（不可注入）。

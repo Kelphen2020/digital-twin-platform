@@ -289,6 +289,12 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 - 新增巡检路线/计划/执行、事件处置与升级/再升级、相机标定与排序、用户列表等 store 单测。
 - store 覆盖率 **25.4% → 37.9%**，总覆盖率 **57.5% → 61.4%**，CI 门禁 **55% → 60%**。
 
+## P25.0 能力（rules/metrics 单测）
+
+- `internal/rules` 覆盖率 55.3% → **97.4%**（世界坐标三源投影、ROI、类过滤、去重窗口、剪枝、窗口钳制）。
+- `internal/metrics` 覆盖率 0% → **98.6%**（指标输出格式、标签、时长 summary、空值）。
+- 总覆盖率 **61.4% → 62.2%**。
+
 ## P19.0 能力（部署与扩展）
 
 - **多副本 API**：状态集中于 PostgreSQL，副本共享；非主副本用 `INGEST_FALLBACK_URL` 把 ingest 原样转发到主副本（指标 `ingest_forwarded_total` / `ingest_fallback_failures_total`，失败 502）。
