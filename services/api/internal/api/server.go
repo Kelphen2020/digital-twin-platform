@@ -1338,7 +1338,7 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 		s.writeEventError(w, err)
 		return
 	}
-	if visible, err := s.cameraVisible(r.Context(), userOf(r), event.CameraID); err != nil || !visible {
+	if visible, visibleErr := s.cameraVisible(r.Context(), userOf(r), event.CameraID); visibleErr != nil || !visible {
 		writeError(w, http.StatusForbidden, "out_of_scope", "event camera is outside your assigned areas")
 		return
 	}
@@ -1802,8 +1802,8 @@ func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "out_of_scope", "camera is outside your assigned areas")
 		return
 	}
-	if _, err := s.store.GetCamera(r.Context(), cameraID); err != nil {
-		s.writeCameraError(w, err)
+	if _, cameraErr := s.store.GetCamera(r.Context(), cameraID); cameraErr != nil {
+		s.writeCameraError(w, cameraErr)
 		return
 	}
 	rules, err := s.store.GetCameraRules(r.Context(), cameraID)
@@ -1830,8 +1830,8 @@ func (s *Server) handlePutRules(w http.ResponseWriter, r *http.Request) {
 	if !s.allowCamera(w, r, auth.PermCameraRules, cameraID) {
 		return
 	}
-	if _, err := s.store.GetCamera(r.Context(), cameraID); err != nil {
-		s.writeCameraError(w, err)
+	if _, cameraErr := s.store.GetCamera(r.Context(), cameraID); cameraErr != nil {
+		s.writeCameraError(w, cameraErr)
 		return
 	}
 	rules.CameraID = cameraID
@@ -2396,12 +2396,12 @@ func (s *Server) handleUpdateDutyGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body dutyGroupBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if decodeErr := json.NewDecoder(r.Body).Decode(&body); decodeErr != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
-	if err := s.validateDutyGroups(r.Context(), body.Areas, body.Operators); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	if validateErr := s.validateDutyGroups(r.Context(), body.Areas, body.Operators); validateErr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", validateErr.Error())
 		return
 	}
 	if body.Name != "" {
@@ -2422,8 +2422,8 @@ func (s *Server) handleUpdateDutyGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Shifts != nil {
 		shifts := *body.Shifts
-		if err := s.validateDutyShifts(r.Context(), shifts); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		if shiftErr := s.validateDutyShifts(r.Context(), shifts); shiftErr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", shiftErr.Error())
 			return
 		}
 		for i := range shifts {
@@ -2631,7 +2631,7 @@ func (s *Server) handleUpdatePatrolSchedule(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var body patrolScheduleBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if decodeErr := json.NewDecoder(r.Body).Decode(&body); decodeErr != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
@@ -3359,7 +3359,7 @@ func (s *Server) handleUpdatePatrolRoute(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var body patrolBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if decodeErr := json.NewDecoder(r.Body).Decode(&body); decodeErr != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}

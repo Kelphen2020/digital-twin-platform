@@ -145,7 +145,7 @@ func TestUserManagementLifecycle(t *testing.T) {
 	_ = newToken
 
 	// Self protections.
-	status, body = authorized(t, http.MethodGet, ts.URL+"/api/auth/me", admin, nil)
+	_, body = authorized(t, http.MethodGet, ts.URL+"/api/auth/me", admin, nil)
 	var me struct {
 		ID string `json:"id"`
 	}

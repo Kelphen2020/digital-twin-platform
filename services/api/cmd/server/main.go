@@ -25,33 +25,41 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("api: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+
 	cfg := config.Load()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	database, closeStore, err := openStore(ctx, cfg)
 	if err != nil {
-		log.Fatalf("api: open store: %v", err)
+		return fmt.Errorf("open store: %w", err)
 	}
 	defer closeStore()
 
 	engine := rules.New(cfg.DedupeWindow)
 	hub := realtime.NewHubWithBuffer(cfg.HubClientBuffer)
 	meters := metrics.New()
-	siteConfig, err := loadSite(cfg)
-	if err != nil {
-		log.Fatalf("api: load site config: %v", err)
+	siteConfig, siteErr := loadSite(cfg)
+	if siteErr != nil {
+		return fmt.Errorf("load site config: %w", siteErr)
 	}
 
 	authService := auth.NewWithRepo(cfg.AuthMode, cfg.JWTSecret, database)
-	if err := authService.EnsureSeed(ctx); err != nil {
-		log.Fatalf("api: seed users: %v", err)
+	if seedErr := authService.EnsureSeed(ctx); seedErr != nil {
+		return fmt.Errorf("seed users: %w", seedErr)
 	}
 	server := api.New(database, engine, hub, meters, cfg.Version, authService, cfg.IngestToken)
 
 	eventBus, err := openBus(cfg)
 	if err != nil {
-		log.Fatalf("api: open event bus: %v", err)
+		return fmt.Errorf("open event bus: %w", err)
 	}
 	if eventBus != nil {
 		server.AttachBus(eventBus)
@@ -82,20 +90,26 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
+	serveErr := make(chan error, 1)
 	go func() {
 		log.Printf("api: listening on :%s (store=%s, version=%s)", cfg.Port, storeMode(cfg.DatabaseURL), cfg.Version)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("api: serve: %v", err)
+			serveErr <- err
 		}
 	}()
 
-	<-ctx.Done()
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("serve: %w", err)
+	case <-ctx.Done():
+	}
 	log.Printf("api: shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("api: shutdown: %v", err)
 	}
+	return nil
 }
 
 func openStore(ctx context.Context, cfg config.Config) (store.Store, func(), error) {

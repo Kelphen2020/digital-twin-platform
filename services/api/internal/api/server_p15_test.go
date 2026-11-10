@@ -94,7 +94,7 @@ func TestAlertLinkedPatrolCreation(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	status, body = authorized(t, http.MethodGet, ts.URL+"/api/patrol/executions?event_id="+eventID, admin, nil)
+	_, body = authorized(t, http.MethodGet, ts.URL+"/api/patrol/executions?event_id="+eventID, admin, nil)
 	var list struct {
 		Items []struct {
 			Status string `json:"status"`

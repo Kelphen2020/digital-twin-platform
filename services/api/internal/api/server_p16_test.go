@@ -63,7 +63,7 @@ func TestPatrolExecutionCancel(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(string(body), `"cancelled":2`) {
 		t.Fatalf("stats cancelled: %d %s", status, body)
 	}
-	status, body = authorized(t, http.MethodGet, ts.URL+"/api/audit?limit=200", admin, nil)
+	_, body = authorized(t, http.MethodGet, ts.URL+"/api/audit?limit=200", admin, nil)
 	for _, needle := range []string{"patrol.execution.cancel"} {
 		if !strings.Contains(string(body), needle) {
 			t.Fatalf("audit missing %q", needle)

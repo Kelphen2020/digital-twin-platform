@@ -902,3 +902,51 @@ cd services/api && go vet ./... && go test ./...
 - 回落为「非主副本 → 主副本」单向静态配置，无健康探测/自动选主。
 - compose 多副本编排（scale + upstream）未提供完整模板，仅说明 env 用法。
 - 本机 Docker Desktop 在内存压力下频繁退出，PG 相关多副本验证改以内存双实例完成；CI/生产环境无此问题。
+
+---
+
+# P20.0 验收记录（2026-11-10 傍晚）
+
+## 87. golangci-lint
+
+```bash
+cd services/api && golangci-lint run ./...   # v1.62.2
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ 0 issues | 启用 15 个 linter；修复生产代码告警：`main.go` 的 exitAfterDefer + defer 失效（改为 `run() error` 模式）、未使用字段 `jsonlDriver.oldest`、postgres 统计查询 shadow、server.go 6 处 shadow + 1 处 nilness（`err.Error()` 误用）、3 处测试 ineffassign、未使用测试辅助函数 |
+| 排除项 | `_test.go` 的 errcheck/govet/ineffassign/unused；`server.go` 的 contextcheck（响应后后台任务用 `context.Background()` 属设计） |
+
+## 88. ESLint（Web）
+
+| 项 | 结果 |
+|---|---|
+| 配置 | `apps/web/eslint.config.js`（flat config，eslint 9 + plugin-vue + @typescript-eslint） |
+| 结果 | `pnpm lint`（`eslint src --max-warnings 0`）**0 error / 0 warning**（修复 TwinScene 模板变量遮蔽 1 处） |
+| typecheck | `vue-tsc --noEmit` 通过 |
+
+## 89. 覆盖率门禁
+
+- `go test ./... -coverprofile` 全包语句覆盖率 **48.8%**（门禁 45%），CI 与 `ci_local.sh` 均强制校验，低于阈值失败。
+- 分模块：api 71.1%、bus 82.2%、calib 92.4%、rules 55.3%；auth/store/model 无直接单测（由 api 层间接覆盖）。
+
+## 90. 本地 CI 全绿（含 lint + 覆盖率）
+
+```
+PASS  api build
+PASS  api vet
+PASS  api test          (coverage 48.8% >= 45%)
+PASS  simulator lint
+PASS  lint (go+web)
+PASS  web typecheck+build
+PASS  smoke (memory)    263/263
+SKIP  smoke (postgres)  (--quick)
+```
+
+## 91. 已知限制（P20.0）
+
+- auth/store 包无独立单测，覆盖率靠 api 集成测试间接覆盖；提升空间明确。
+- 覆盖率按语句统计，未含分支覆盖；门禁阈值 45% 偏保守，可随补测提升。
+- `server.go` 的 contextcheck 以文件级排除处理，未重构为显式后台 ctx。
+- CI 中 golangci-lint 版本固定 v1.62.2，升级需同步更新 `.golangci.yml`（新版本 linter 集合变化）。

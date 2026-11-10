@@ -276,6 +276,16 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 详见 [`docs/P19.md`](docs/P19.md)。
 
+## P20.0 能力（代码质量门禁）
+
+- **golangci-lint**：`services/api/.golangci.yml` 启用 15 个 linter；清理了全部生产代码告警（shadow/nilness/ineffectual/unused/exitAfterDefer 等）。
+- **ESLint**：`apps/web/eslint.config.js`（flat config）+ `pnpm lint`，当前 0 error / 0 warning。
+- **覆盖率门禁**：CI 强制 Go 语句覆盖率 ≥ 45%（当前 ~49%），报告上传 artifact。
+- **一键检查**：`./scripts/lint.sh`。
+- CI 新增 `lint` job，`ci_local.sh` 同步加入 lint 与覆盖率阶段。
+
+详见 [`docs/CI.md`](docs/CI.md)。
+
 ## 目录
 
 ```

@@ -244,11 +244,10 @@ func (d *memoryDriver) Status() (published, oldest, next int64, path string) {
 // ---- jsonl driver -------------------------------------------------------
 
 type jsonlDriver struct {
-	mu     sync.Mutex
-	path   string
-	file   *os.File
-	next   int64
-	oldest int64
+	mu   sync.Mutex
+	path string
+	file *os.File
+	next int64
 }
 
 func newJSONLDriver(dir string) (*jsonlDriver, error) {

@@ -414,44 +414,44 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 	if len(cameraIDs) > 0 {
 		filterArg = cameraIDs
 	}
-	rows, err := p.pool.Query(ctx,
+	severityRows, err := p.pool.Query(ctx,
 		`SELECT severity, count(*) FROM events
 		 WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
 		 GROUP BY severity`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
-	for rows.Next() {
+	for severityRows.Next() {
 		var severity string
 		var count int64
-		if err := rows.Scan(&severity, &count); err != nil {
-			rows.Close()
-			return summary, err
+		if scanErr := severityRows.Scan(&severity, &count); scanErr != nil {
+			severityRows.Close()
+			return summary, scanErr
 		}
 		summary.Totals.BySeverity[severity] = count
 		summary.Totals.Events += count
 	}
-	rows.Close()
+	severityRows.Close()
 
-	rows, err = p.pool.Query(ctx,
+	typeRows, err := p.pool.Query(ctx,
 		`SELECT type, count(*) FROM events
 		 WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
 		 GROUP BY type`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
-	for rows.Next() {
+	for typeRows.Next() {
 		var eventType string
 		var count int64
-		if err := rows.Scan(&eventType, &count); err != nil {
-			rows.Close()
-			return summary, err
+		if scanErr := typeRows.Scan(&eventType, &count); scanErr != nil {
+			typeRows.Close()
+			return summary, scanErr
 		}
 		summary.Totals.ByType[eventType] = count
 	}
-	rows.Close()
+	typeRows.Close()
 
-	rows, err = p.pool.Query(ctx, `
+	cameraRows, err := p.pool.Query(ctx, `
         SELECT e.camera_id, c.code, c.name, count(*) AS count
         FROM events e JOIN cameras c ON c.id = e.camera_id
         WHERE e.occurred_at >= $1 AND e.occurred_at <= $2 AND ($3::text[] IS NULL OR e.camera_id = ANY($3))
@@ -459,32 +459,32 @@ func (p *Postgres) Stats(ctx context.Context, from, to time.Time, cameraIDs []st
 	if err != nil {
 		return summary, err
 	}
-	for rows.Next() {
+	for cameraRows.Next() {
 		var stat model.CameraStat
-		if err := rows.Scan(&stat.CameraID, &stat.Code, &stat.Name, &stat.Count); err != nil {
-			rows.Close()
-			return summary, err
+		if scanErr := cameraRows.Scan(&stat.CameraID, &stat.Code, &stat.Name, &stat.Count); scanErr != nil {
+			cameraRows.Close()
+			return summary, scanErr
 		}
 		summary.ByCamera = append(summary.ByCamera, stat)
 	}
-	rows.Close()
+	cameraRows.Close()
 
-	rows, err = p.pool.Query(ctx, `
+	hourRows, err := p.pool.Query(ctx, `
         SELECT date_trunc('hour', occurred_at) AS hour, count(*)
         FROM events WHERE occurred_at >= $1 AND occurred_at <= $2 AND ($3::text[] IS NULL OR camera_id = ANY($3))
         GROUP BY hour ORDER BY hour`, from, to, filterArg)
 	if err != nil {
 		return summary, err
 	}
-	for rows.Next() {
+	for hourRows.Next() {
 		var stat model.HourStat
-		if err := rows.Scan(&stat.Hour, &stat.Count); err != nil {
-			rows.Close()
-			return summary, err
+		if scanErr := hourRows.Scan(&stat.Hour, &stat.Count); scanErr != nil {
+			hourRows.Close()
+			return summary, scanErr
 		}
 		summary.ByHour = append(summary.ByHour, stat)
 	}
-	rows.Close()
+	hourRows.Close()
 	return summary, nil
 }
 

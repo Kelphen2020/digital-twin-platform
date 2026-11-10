@@ -5,28 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"digital-twin-platform/api/internal/api"
-	"digital-twin-platform/api/internal/auth"
-	"digital-twin-platform/api/internal/metrics"
-	"digital-twin-platform/api/internal/realtime"
-	"digital-twin-platform/api/internal/rules"
-	"digital-twin-platform/api/internal/store"
 )
-
-func newTestServerWithToken(t *testing.T, token string) *httptest.Server {
-	t.Helper()
-	memory := store.NewMemory(1000)
-	memory.Seed(store.SeedCameras(), store.SeedAreas())
-	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", auth.New("off", ""), "")
-	ts := httptest.NewServer(server.Handler())
-	t.Cleanup(ts.Close)
-	return ts
-}
 
 func doJSONWithHeaders(t *testing.T, method, url string, body any, headers map[string]string) (int, []byte) {
 	t.Helper()

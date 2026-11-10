@@ -1,0 +1,67 @@
+# golangci-lint configuration for the digital-twin API (P20).
+# Run: golangci-lint run ./...   (installed by scripts/lint.sh or CI)
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+    - gocritic
+    - bodyclose
+    - contextcheck
+    - nilerr
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - wastedassign
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+      - name: package-comments
+        disabled: true
+      - name: var-naming
+      - name: error-return
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+
+issues:
+  exclude-rules:
+    # Tests intentionally ignore some errors, shadow locals in helpers and
+    # start background goroutines with their own contexts.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
+        - bodyclose
+        - contextcheck
+        - govet
+        - ineffassign
+        - unused
+    # Request handlers deliberately spawn background work with context.Background()
+    # after the response is sent (notifications, WS fan-out); the server owns
+    # long-lived contexts for its workers.
+    - linters:
+        - contextcheck
+      path: internal/api/server\.go
+    # Generated-style seed data and model structs are data-only.
+    - path: internal/store/seed\.go
+      linters:
+        - revive
+  max-issues-per-linter: 50
+  max-same-issues: 20

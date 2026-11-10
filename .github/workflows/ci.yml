@@ -29,7 +29,45 @@ jobs:
           cache-dependency-path: services/api/go.sum
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./... -count=1
+      - name: Test with coverage gate
+        run: go test ./... -count=1 -coverprofile=cover.out
+      - name: Enforce coverage >= 45%
+        run: |
+          total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t+0 < 45) { printf "coverage %s%% < 45%% gate\n", t; exit 1 } }'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-coverage
+          path: services/api/cover.out
+          if-no-files-found: ignore
+
+  lint:
+    name: lint (golangci-lint + eslint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+          working-directory: services/api
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      - working-directory: apps/web
+        run: pnpm lint
 
   web:
     name: web (typecheck + build)

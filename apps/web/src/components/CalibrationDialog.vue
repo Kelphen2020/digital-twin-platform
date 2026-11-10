@@ -148,7 +148,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             class="mono"
             rows="8"
             spellcheck="false"
-            placeholder='[{"px": 640, "py": 540, "x": -85, "y": -55}, ...]'
+            placeholder="[{&quot;px&quot;: 640, &quot;py&quot;: 540, &quot;x&quot;: -85, &quot;y&quot;: -55}, ...]"
           />
         </label>
         <p v-if="parseError" class="form-error">{{ parseError }}</p>

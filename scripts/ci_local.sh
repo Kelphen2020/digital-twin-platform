@@ -34,7 +34,22 @@ run_stage() {
 
 stage_api_build()     { (cd services/api && "$GO" build ./...); }
 stage_api_vet()       { (cd services/api && "$GO" vet ./...); }
-stage_api_test()      { (cd services/api && "$GO" test ./... -count=1); }
+stage_api_test() {
+  local profile
+  profile="$(mktemp)"
+  (cd services/api && "$GO" test ./... -count=1 -coverprofile="$profile") || { rm -f "$profile"; return 1; }
+  local total
+  total="$(cd services/api && "$GO" tool cover -func="$profile" | tail -1 | awk '{print $3}' | tr -d '%')"
+  rm -f "$profile"
+  echo "coverage: ${total:-unknown}% (gate 45%)"
+  [ -n "$total" ] || return 1
+  awk -v t="$total" 'BEGIN { if (t+0 < 45) { printf "coverage %s%% < 45%% gate\n", t; exit 1 } }'
+}
+stage_lint() {
+  export PATH="$(dirname "$GO"):$HOME/go/bin:$PATH"
+  (cd services/api && golangci-lint run ./...) || return 1
+  (cd apps/web && pnpm lint)
+}
 stage_simulator_lint() {
   python3 -m py_compile services/simulator/*.py scripts/*.py
   bash -n scripts/smoke.sh scripts/backup.sh scripts/restore.sh scripts/ci_local.sh
@@ -118,6 +133,7 @@ run_stage "api build"        stage_api_build
 run_stage "api vet"          stage_api_vet
 run_stage "api test"         stage_api_test
 run_stage "simulator lint"   stage_simulator_lint
+run_stage "lint (go+web)"    stage_lint
 run_stage "web typecheck+build" stage_web
 run_stage "smoke (memory)"   stage_memory_smoke
 if [ "$QUICK" -eq 0 ]; then

@@ -1066,13 +1066,13 @@ onBeforeUnmount(disposeScene)
       </div>
       <div class="box-select-chips">
         <button
-          v-for="camera in boxSelectedCameras"
-          :key="camera.id"
+          v-for="chip in boxSelectedCameras"
+          :key="chip.id"
           class="box-select-chip"
-          :title="`选中 ${camera.code}`"
-          @click="emit('select-camera', camera.id)"
+          :title="`选中 ${chip.code}`"
+          @click="emit('select-camera', chip.id)"
         >
-          {{ camera.code }}
+          {{ chip.code }}
         </button>
       </div>
     </div>

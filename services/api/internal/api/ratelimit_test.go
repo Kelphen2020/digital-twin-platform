@@ -7,7 +7,9 @@ import (
 
 func TestRateLimiterBurstAndRefill(t *testing.T) {
 	limiter := NewRateLimiter(2, 2)
-	if !limiter.Allow() || !limiter.Allow() {
+	first := limiter.Allow()
+	second := limiter.Allow()
+	if !first || !second {
 		t.Fatal("burst requests should be allowed")
 	}
 	if limiter.Allow() {

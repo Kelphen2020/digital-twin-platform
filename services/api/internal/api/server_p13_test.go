@@ -175,7 +175,7 @@ func TestPatrolExecutionLifecycleAndOrderLink(t *testing.T) {
 		t.Fatalf("order for patrol issue: %d %s", status, body)
 	}
 	admin := login(t, ts, "admin", "Admin@123456")
-	status, body = authorized(t, http.MethodGet, ts.URL+"/api/audit?limit=200", admin, nil)
+	_, body = authorized(t, http.MethodGet, ts.URL+"/api/audit?limit=200", admin, nil)
 	for _, needle := range []string{"patrol.schedule.create", "patrol.schedule.run", "patrol.execution.claim", "patrol.execution.complete", "order.created"} {
 		if !strings.Contains(string(body), needle) {
 			t.Fatalf("audit missing %q", needle)

@@ -152,7 +152,7 @@ func TestPatrolExecutionPurge(t *testing.T) {
 	if !strings.Contains(string(body), `"deleted"`) && !strings.Contains(string(body), `"executions_total"`) {
 		t.Fatalf("stats payload: %s", body)
 	}
-	status, body = authorized(t, http.MethodGet, ts.URL+"/api/audit?limit=100", admin, nil)
+	_, body = authorized(t, http.MethodGet, ts.URL+"/api/audit?limit=100", admin, nil)
 	if !strings.Contains(string(body), "patrol.executions.purge") {
 		t.Fatalf("purge audit missing: %s", body)
 	}

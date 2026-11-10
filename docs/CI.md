@@ -6,7 +6,8 @@
 
 | Job | 内容 | 触发 |
 |---|---|---|
-| `api` | `go build ./...`、`go vet ./...`、`go test ./... -count=1` | push / PR |
+| `api` | `go build ./...`、`go vet ./...`、`go test ./... -count=1 -coverprofile`，**覆盖率门禁 45%** | push / PR |
+| `lint` | `golangci-lint`（errcheck/govet/staticcheck/unused/gocritic/bodyclose 等 15 个 linter）+ `eslint src --max-warnings 0` | push / PR |
 | `web` | `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm build` | push / PR |
 | `simulator` | `python -m py_compile services/simulator/*.py scripts/*.py`、`bash -n` 全部脚本 | push / PR |
 | `smoke-memory` | 内存 store 起 API → 全量 `scripts/smoke.sh`（263 项） | push / PR |
@@ -62,3 +63,35 @@ PASS  smoke (postgres)
 - 开发时 `make smoke` 针对 8080 上的常驻实例；CI 用临时实例 + 随机/固定测试端口，互不影响。
 - CI 中 `BUS_DRIVER=memory`（smoke-memory）与默认 jsonl（smoke-postgres 未显式设置时用默认内存 bus）均可运行；本地默认 jsonl 便于回放调试。
 - 新增 smoke 检查后无需改 CI：脚本自检，检查数随 `scripts/smoke.sh` 自动变化。
+
+## 5. 代码质量门禁（P20.0）
+
+### Go：golangci-lint
+
+配置 `services/api/.golangci.yml`，启用 15 个 linter（errcheck、govet、ineffassign、staticcheck、unused、misspell、revive、gocritic、bodyclose、contextcheck、nilerr、rowserrcheck、sqlclosecheck、unconvert、wastedassign）。
+
+```bash
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+cd services/api && golangci-lint run ./...
+```
+
+排除规则（有意为之，非降级）：
+- `_test.go`：允许忽略错误、shadow、未使用变量（测试辅助代码）。
+- `internal/api/server.go` 的 `contextcheck`：请求返回后派生的通知/WS 后台任务使用 `context.Background()` 属预期设计；服务级 worker 由 `main` 注入长期 ctx。
+
+### Web：ESLint flat config
+
+`apps/web/eslint.config.js`（eslint 9 + eslint-plugin-vue + @typescript-eslint），`pnpm lint` = `eslint src --max-warnings 0`。
+
+### 覆盖率门禁
+
+`go test ./... -coverprofile` 全包语句覆盖率 ≥ **45%**（当前约 49%），低于阈值 CI 失败；报告作为 artifact 上传。提升建议：为 `internal/store` 增加内存实现单测、为 `auth` 增加 PBKDF2/JWT 边界测试。
+
+### 一键跑
+
+```bash
+./scripts/lint.sh          # 全部（Go + Web）
+./scripts/lint.sh api
+./scripts/lint.sh web
+./scripts/ci_local.sh --quick   # 含 lint + 覆盖率门禁的完整本地流水线
+```
