@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P15.0）
+# 数字孪生安防平台 · Web 前端（P16.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16，均为固定契约）。
 
 ## 快速开始
 
@@ -133,6 +133,14 @@ pnpm dev          # http://127.0.0.1:5173
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
 
+### 巡检任务取消 / 超时治理（P16）
+
+- **状态扩展**：巡检执行新增 `cancelled`（已取消/超时关闭）；执行 tab 状态 chip/筛选新增「已取消」，卡片展示取消备注与 `finished_at`。
+- **人工取消**：pending 卡片（operator/admin）与 running 卡片（仅认领人或 admin）显示「取消任务」；点击后弹出取消弹窗（可选备注，默认「人工取消」），确认后调用 `POST /api/patrol/executions/{id}/cancel`，成功 Toast 并刷新执行列表与统计。
+- **超时治理**：后端调度器按 `PATROL_PENDING_TIMEOUT_MINUTES`（默认 60）与 `PATROL_RUNNING_TIMEOUT_MINUTES`（默认 120）自动把超时 pending/running 置为 cancelled（note「超时未认领/未完成，自动关闭」），前端通过 WS `patrol_execution` 刷新。
+- **统计**：`GET /api/patrol/stats` 新增 `cancelled`，统计卡片新增「已取消」（完成率/异常率分母仍为总数）。
+- 已完成/已取消任务再次取消 → 后端 `409 invalid_state`（前端不显示取消按钮）；viewer 无取消权限。
+
 ### 告警联动巡检（P15）
 
 - **升级设置**：「告警联动巡检（auto_patrol）」开关（`GET/PUT /api/settings/escalation`，保留其他字段）；开启后告警首次升级/再升级时服务端按事件相机匹配巡检路线，自动生成待执行巡检任务（无匹配路线或同事件已有 pending/running 任务时跳过）。
@@ -258,6 +266,7 @@ pnpm dev          # http://127.0.0.1:5173
 | PATCH/DELETE | `/api/patrol/schedules/{id}` | 创建者/admin | 修改 / 删除计划 |
 | POST | `/api/patrol/schedules/{id}/run` | operator/admin | 立即生成执行任务 |
 | GET | `/api/patrol/executions` | 登录 | 执行列表（status/event_id/limit 过滤） |
+| POST | `/api/patrol/executions/{id}/cancel` | operator/admin（running 仅认领人/admin） | 取消任务（pending/running→cancelled） |
 | POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
 | POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
 | GET | `/api/patrol/stats` | 登录 | 巡检统计（from/to 可选） |
@@ -340,6 +349,7 @@ apps/web/
 | 巡检计划 / 执行 | **实时**：schedules CRUD/run、executions claim/complete（issue 自动建工单）、WS `patrol_execution` 刷新 |
 | 巡检统计 / 导出 / 归档 | **实时**：`/api/patrol/stats`、`/api/patrol/executions/export` CSV、admin `DELETE /api/patrol/executions` |
 | 告警联动巡检 | **实时**：升级设置 `auto_patrol`；执行 `event_id` 关联/筛选；服务端按路线匹配生成任务 |
+| 巡检取消 / 超时 | **实时**：`POST .../cancel`、stats.cancelled、后端 pending/running 超时自动关闭 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -387,6 +397,13 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P16：巡检取消（operator/admin；running 仅认领人/admin）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"note":"现场无需巡检"}' http://localhost:8080/api/patrol/executions/<execution_id>/cancel
+# 已完成/已取消再次取消 → 409 invalid_state
+curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/patrol/executions/<done_execution_id>/cancel
 
 # P15：告警联动巡检
 curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -537,3 +554,6 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - 导出文件上限 10000 行（后端），前端不做额外截断；空结果仍下载表头 CSV。
 - P15 事件关联仅从当前前端事件 store（最近 200 条）查找类型/相机；更早的告警仍展示 `event_id` 但「定位」禁用。筛选输入按 `event_id` 精确查询（后端过滤）。
 - `auto_patrol` 默认关闭；开启后由后端升级 worker 在首次升级/再升级时生成任务，前端通过 WS `patrol_execution` 刷新执行列表与角标。
+- P16 取消：pending 由 operator/admin 取消，running 仅认领人或 admin；前端二次确认 + 可选备注，成功后刷新列表与统计；已完成/已取消不显示取消按钮。
+- 超时自动关闭由后端调度器执行（pending 60 分钟 / running 120 分钟，环境变量可关）；前端通过 WS `patrol_execution` 感知，不做本地计时。
+- 历史归档默认仍清理 done/issue；`cancelled` 已纳入后端允许的归档状态，但当前 UI 默认不勾选 cancelled（保持 P14 行为）。

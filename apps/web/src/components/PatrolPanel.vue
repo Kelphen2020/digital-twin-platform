@@ -42,6 +42,7 @@ const {
   setExecutionEventFilter,
   claimExecution,
   completeExecution,
+  cancelExecution,
   loadStats,
   exportExecutions,
   purgeHistory,
@@ -57,6 +58,7 @@ const EXECUTION_STATUS_LABELS: Record<PatrolExecutionStatus, string> = {
   running: '进行中',
   done: '已完成',
   issue: '异常',
+  cancelled: '已取消',
 }
 const EXECUTION_STATUS_OPTIONS: { value: PatrolExecutionStatus | ''; label: string }[] = [
   { value: '', label: '全部状态' },
@@ -64,6 +66,7 @@ const EXECUTION_STATUS_OPTIONS: { value: PatrolExecutionStatus | ''; label: stri
   { value: 'running', label: '进行中' },
   { value: 'done', label: '已完成' },
   { value: 'issue', label: '异常' },
+  { value: 'cancelled', label: '已取消' },
 ]
 
 const tab = ref<PatrolTab>('routes')
@@ -96,6 +99,9 @@ const completeDialog = ref<PatrolExecution | null>(null)
 const completeNote = ref('')
 const completeResult = ref<CompleteResult>('done')
 const completeError = ref('')
+const cancelDialog = ref<PatrolExecution | null>(null)
+const cancelNote = ref('')
+const cancelError = ref('')
 
 // ---- P15：事件关联筛选 ----
 const eventFilterInput = ref(state.executionEventFilter)
@@ -128,6 +134,7 @@ const statsCards = computed(() => {
     { key: 'running', label: '进行中', value: stats?.running ?? '—', tone: 'running' },
     { key: 'done', label: '已完成', value: stats?.done ?? '—', tone: 'done' },
     { key: 'issue', label: '异常', value: stats?.issue ?? '—', tone: 'issue' },
+    { key: 'cancelled', label: '已取消', value: stats?.cancelled ?? '—', tone: 'cancelled' },
     { key: 'completion', label: '完成率', value: stats ? `${(stats.completion_rate * 100).toFixed(1)}%` : '—' },
     { key: 'issueRate', label: '异常率', value: stats ? `${(stats.issue_rate * 100).toFixed(1)}%` : '—' },
     { key: 'duration', label: '平均时长', value: stats ? formatDuration(stats.avg_duration_seconds) : '—' },
@@ -388,6 +395,34 @@ function closeComplete(): void {
   completeDialog.value = null
   completeNote.value = ''
   completeError.value = ''
+}
+
+function canCancel(execution: PatrolExecution): boolean {
+  if (!canWrite.value) return false
+  if (execution.status === 'pending') return true
+  if (execution.status !== 'running') return false
+  return isAdmin.value || execution.assignee === authState.user?.username
+}
+
+function openCancel(execution: PatrolExecution): void {
+  if (!canCancel(execution)) return
+  cancelDialog.value = execution
+  cancelNote.value = ''
+  cancelError.value = ''
+}
+
+function closeCancel(): void {
+  cancelDialog.value = null
+  cancelNote.value = ''
+  cancelError.value = ''
+}
+
+async function submitCancel(): Promise<void> {
+  const execution = cancelDialog.value
+  if (!execution) return
+  cancelError.value = ''
+  const result = await cancelExecution(execution.id, cancelNote.value.trim())
+  if (result) closeCancel()
 }
 
 async function submitComplete(): Promise<void> {
@@ -691,6 +726,14 @@ onMounted(() => {
               >
                 完成巡检
               </button>
+              <button
+                v-if="canCancel(execution)"
+                class="danger-btn compact-btn"
+                :disabled="state.executionActionId !== null"
+                @click="openCancel(execution)"
+              >
+                取消任务
+              </button>
             </div>
           </article>
         </template>
@@ -757,6 +800,26 @@ onMounted(() => {
       <div class="duty-form-actions">
         <button class="primary-btn" type="submit" :disabled="state.scheduleSaving">{{ state.scheduleSaving ? '保存中…' : editingSchedule ? '保存修改' : '创建计划' }}</button>
         <button class="ghost-btn" type="button" @click="resetScheduleForm">取消</button>
+      </div>
+    </form>
+
+    <!-- 取消任务表单 -->
+    <form v-if="cancelDialog" class="patrol-form" @submit.prevent="submitCancel">
+      <header class="settings-head"><h3>取消巡检任务 · {{ cancelDialog.route_name }}</h3></header>
+      <p class="patrol-meta">
+        任务 {{ cancelDialog.id }} · 状态
+        {{ EXECUTION_STATUS_LABELS[cancelDialog.status] }} · 认领人 {{ cancelDialog.assignee || '—' }}
+      </p>
+      <label class="settings-field">
+        <span>取消备注（可选；默认「人工取消」）</span>
+        <textarea v-model="cancelNote" rows="2" placeholder="例如：现场无需巡检 / 已由其他人员处理" />
+      </label>
+      <p v-if="cancelError" class="form-error">{{ cancelError }}</p>
+      <div class="duty-form-actions">
+        <button class="danger-btn" type="submit" :disabled="state.executionActionId !== null">
+          {{ state.executionActionId !== null ? '取消中…' : '确认取消任务' }}
+        </button>
+        <button class="ghost-btn" type="button" @click="closeCancel">放弃</button>
       </div>
     </form>
 

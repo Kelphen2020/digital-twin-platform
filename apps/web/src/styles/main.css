@@ -4131,3 +4131,18 @@ dd {
 .exec-event-link .patrol-meta {
   color: var(--text-muted);
 }
+
+
+/* ============================================================
+   P16.0 扩展：巡检任务取消
+   ============================================================ */
+
+.exec-cancelled {
+  border-color: rgba(148, 163, 184, 0.5);
+  background: rgba(148, 163, 184, 0.1);
+  color: #cbd5e1;
+}
+
+.patrol-stat-card.stat-cancelled .patrol-stat-value {
+  color: #cbd5e1;
+}

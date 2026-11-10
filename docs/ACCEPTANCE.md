@@ -749,3 +749,41 @@ P15 覆盖：auto_patrol 设置读写；stale CAM-001/intrusion → 1 条 pendin
 - 去重仅针对同事件 pending/running；已完成任务不阻止后续再次升级生成新任务（按设计）。
 - pending 任务无法清理（契约限制），演示环境可能累积；生产应加超时自动关闭/过期归档。
 - 任务生成依赖升级 worker 周期（15s），最坏延迟约 15s。
+
+---
+
+# P16.0 验收记录（2026-11-10 上午）
+
+## 72. 后端测试
+
+```bash
+cd services/api && go vet ./... && go test ./...
+```
+
+| 结果 | 说明 |
+|---|---|
+| ✅ PASS | 新增：pending/running 取消（认领人/admin 权限）、重复取消 409、超时自动关闭（pending/running 变 cancelled + 审计 expired）、stats cancelled、purge 允许 cancelled |
+
+## 73. smoke.sh（P0–P15 246 项 + P16 17 项 = 263 项 / 61 步）
+
+```
+smoke: PASS (263 checks passed)
+```
+
+P16 覆盖：pending 取消（200 cancelled/finished_at/note）、重复取消 409、viewer 取消 403、running 认领后自身取消 200、stats cancelled、admin purge cancelled（deleted、stats 下降）、非法 status 400、审计 cancel/purge、清理。
+
+## 74. 前端 P16 E2E（headless Chrome 156 via CDP）
+
+| 项 | 结果 |
+|---|---|
+| 状态/筛选 | ✅「已取消」chip + 筛选；卡片显示取消备注与 finished_at |
+| 取消操作 | ✅ pending（operator/admin）与 running（认领人/admin）取消按钮；二次确认 + 可选备注 → Toast「巡检任务已取消」，列表/统计即时刷新 |
+| 统计 | ✅「已取消」卡片计数随取消递增（0→1→2） |
+| 权限/回归 | ✅ viewer 无取消按钮；admin 8 tabs、P0–P15（场景/计划/执行/统计/导出/清理）正常；console errors=[] |
+| 截图 | `docs/screenshots/p16-executions.png`、`p16-cancel-form.png`、`p16-cancelled-card.png`、`p16-cancelled-filter.png`、`p16-admin-cancel.png`、`p16-viewer.png` |
+
+## 75. 已知限制（P16.0）
+
+- 超时治理依赖调度器 tick（默认 15s），阈值按分钟粒度；已关闭任务可被 purge 但 pending 不可（契约）。
+- 取消为终态，不支持恢复/重新派发；running 取消无二次确认以外的流程审计表单。
+- 取消/超时仅推送 WS `patrol_execution`，未接入通知 webhook（可后续扩展）。

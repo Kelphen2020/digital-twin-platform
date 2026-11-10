@@ -470,7 +470,7 @@ export interface DutyCurrent {
 
 // ---------------- P13：巡检计划与执行 ----------------
 
-export type PatrolExecutionStatus = 'pending' | 'running' | 'done' | 'issue'
+export type PatrolExecutionStatus = 'pending' | 'running' | 'done' | 'issue' | 'cancelled'
 
 export interface PatrolSchedule {
   id: string
@@ -542,6 +542,8 @@ export interface PatrolStats {
   running: number
   done: number
   issue: number
+  /** P16：已取消/超时关闭任务数。 */
+  cancelled: number
   completion_rate: number
   issue_rate: number
   avg_duration_seconds: number

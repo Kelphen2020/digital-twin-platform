@@ -45,24 +45,26 @@ type Server struct {
 	ingestToken string
 	started     time.Time
 
-	settingsMu    sync.RWMutex
-	notify        model.NotificationSettings
-	escalation    model.EscalationSettings
-	notifyMu      sync.Mutex
-	notifySilence map[string]time.Time
-	rotationMu    sync.Mutex
-	rotation      map[string]int
-	bus           *bus.Bus
-	site          model.Site
-	trackSample   int
-	loginMu       sync.Mutex
-	loginFailures map[string]loginFailure
-	loginMax      int
-	loginLockout  time.Duration
-	refreshTTL    time.Duration
-	trackSequence atomic.Uint64
-	ingestLimiter *RateLimiter
-	maxBodyBytes  int64
+	settingsMu           sync.RWMutex
+	notify               model.NotificationSettings
+	escalation           model.EscalationSettings
+	notifyMu             sync.Mutex
+	notifySilence        map[string]time.Time
+	rotationMu           sync.Mutex
+	rotation             map[string]int
+	bus                  *bus.Bus
+	site                 model.Site
+	trackSample          int
+	loginMu              sync.Mutex
+	loginFailures        map[string]loginFailure
+	loginMax             int
+	loginLockout         time.Duration
+	refreshTTL           time.Duration
+	patrolPendingTimeout time.Duration
+	patrolRunningTimeout time.Duration
+	trackSequence        atomic.Uint64
+	ingestLimiter        *RateLimiter
+	maxBodyBytes         int64
 }
 
 type userContextKey struct{}
@@ -73,24 +75,26 @@ func New(database store.Store, engine *rules.Engine, hub *realtime.Hub, meters *
 		authService = auth.New("off", "")
 	}
 	return &Server{
-		store:         database,
-		rules:         engine,
-		hub:           hub,
-		metrics:       meters,
-		version:       version,
-		auth:          authService,
-		ingestToken:   ingestToken,
-		started:       time.Now().UTC(),
-		notify:        model.DefaultNotificationSettings(),
-		escalation:    model.DefaultEscalationSettings(),
-		notifySilence: make(map[string]time.Time),
-		rotation:      make(map[string]int),
-		site:          model.DefaultSite(),
-		trackSample:   1,
-		loginFailures: make(map[string]loginFailure),
-		loginMax:      5,
-		loginLockout:  60 * time.Second,
-		refreshTTL:    7 * 24 * time.Hour,
+		store:                database,
+		rules:                engine,
+		hub:                  hub,
+		metrics:              meters,
+		version:              version,
+		auth:                 authService,
+		ingestToken:          ingestToken,
+		started:              time.Now().UTC(),
+		notify:               model.DefaultNotificationSettings(),
+		escalation:           model.DefaultEscalationSettings(),
+		notifySilence:        make(map[string]time.Time),
+		rotation:             make(map[string]int),
+		site:                 model.DefaultSite(),
+		trackSample:          1,
+		loginFailures:        make(map[string]loginFailure),
+		loginMax:             5,
+		loginLockout:         60 * time.Second,
+		refreshTTL:           7 * 24 * time.Hour,
+		patrolPendingTimeout: 60 * time.Minute,
+		patrolRunningTimeout: 120 * time.Minute,
 	}
 }
 
@@ -146,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/patrol/executions", s.handleListPatrolExecutions)
 	mux.HandleFunc("POST /api/patrol/executions/{id}/claim", s.handleClaimPatrolExecution)
 	mux.HandleFunc("POST /api/patrol/executions/{id}/complete", s.handleCompletePatrolExecution)
+	mux.HandleFunc("POST /api/patrol/executions/{id}/cancel", s.handleCancelPatrolExecution)
 	mux.HandleFunc("GET /api/patrol/stats", s.handlePatrolStats)
 	mux.HandleFunc("GET /api/patrol/executions/export", s.handlePatrolExecutionsExport)
 	mux.HandleFunc("DELETE /api/patrol/executions", s.handlePurgePatrolExecutions)
@@ -1121,6 +1126,12 @@ func (s *Server) SetSessionTTL(ttl time.Duration) {
 	if ttl > 0 {
 		s.refreshTTL = ttl
 	}
+}
+
+// SetPatrolTimeouts configures how long pending/running executions may stay open.
+func (s *Server) SetPatrolTimeouts(pending, running time.Duration) {
+	s.patrolPendingTimeout = pending
+	s.patrolRunningTimeout = running
 }
 
 // SetIngestGuard configures the ingest rate limiter and body size cap.
@@ -2817,6 +2828,7 @@ func (s *Server) RunPatrolScheduler(ctx context.Context, interval time.Duration)
 
 // RunPatrolOnce materializes executions for every due schedule.
 func (s *Server) RunPatrolOnce(ctx context.Context) {
+	s.expirePatrolExecutions(ctx)
 	schedules, err := s.store.ListPatrolSchedules(ctx)
 	if err != nil {
 		log.Printf("api: patrol schedule scan: %v", err)
@@ -2835,6 +2847,95 @@ func (s *Server) RunPatrolOnce(ctx context.Context) {
 		schedule.UpdatedAt = now
 		if err := s.store.UpdatePatrolSchedule(ctx, schedule); err != nil {
 			log.Printf("api: patrol schedule advance: %v", err)
+		}
+	}
+}
+
+func (s *Server) handleCancelPatrolExecution(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.allow(w, r, auth.PermPatrolWrite)
+	if !ok {
+		return
+	}
+	execution, found, err := s.store.GetPatrolExecution(r.Context(), r.PathValue("id"))
+	if err != nil || !found {
+		writeError(w, http.StatusNotFound, "patrol_execution_not_found", "patrol execution not found")
+		return
+	}
+	if execution.Status != "pending" && execution.Status != "running" {
+		writeError(w, http.StatusConflict, "invalid_state", "only pending or running executions can be cancelled")
+		return
+	}
+	if execution.Status == "running" && user.Role != auth.RoleAdmin && execution.Assignee != user.Username {
+		writeError(w, http.StatusForbidden, "forbidden", "only the assignee or an admin can cancel a running execution")
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	note := strings.TrimSpace(body.Note)
+	if note == "" {
+		note = "人工取消"
+	}
+	if err := s.closePatrolExecution(r.Context(), execution, "cancelled", note, "patrol.execution.cancel", user.Username); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if updated, ok, err := s.store.GetPatrolExecution(r.Context(), execution.ID); err == nil && ok {
+		execution = updated
+	}
+	writeJSON(w, http.StatusOK, execution)
+}
+
+// closePatrolExecution moves an open execution to cancelled and emits audit/WS.
+func (s *Server) closePatrolExecution(ctx context.Context, execution model.PatrolExecution, status, note, action, actor string) error {
+	now := time.Now().UTC()
+	execution.Status = status
+	execution.Result = status
+	execution.Note = note
+	execution.FinishedAt = &now
+	if err := s.store.UpdatePatrolExecution(ctx, execution); err != nil {
+		return err
+	}
+	_ = s.store.AddAudit(ctx, model.AuditEntry{
+		ID: newID("aud"), At: now, Actor: actor, Action: action, Resource: execution.ID,
+		Detail: map[string]any{"status": status, "note": note},
+	})
+	s.hub.Broadcast(realtime.Frame{Type: "patrol_execution", Data: execution})
+	return nil
+}
+
+// expirePatrolExecutions closes stale pending/running tasks.
+func (s *Server) expirePatrolExecutions(ctx context.Context) {
+	now := time.Now().UTC()
+	if s.patrolPendingTimeout > 0 {
+		executions, err := s.store.ListPatrolExecutions(ctx, model.PatrolExecutionFilter{Status: "pending", Limit: 10000})
+		if err == nil {
+			for _, execution := range executions {
+				if now.Sub(execution.CreatedAt) < s.patrolPendingTimeout {
+					continue
+				}
+				note := "超时未认领，自动关闭"
+				if err := s.closePatrolExecution(ctx, execution, "cancelled", note, "patrol.execution.expired", "system"); err != nil {
+					log.Printf("api: expire patrol execution: %v", err)
+					continue
+				}
+			}
+		}
+	}
+	if s.patrolRunningTimeout > 0 {
+		executions, err := s.store.ListPatrolExecutions(ctx, model.PatrolExecutionFilter{Status: "running", Limit: 10000})
+		if err == nil {
+			for _, execution := range executions {
+				if execution.StartedAt == nil || now.Sub(*execution.StartedAt) < s.patrolRunningTimeout {
+					continue
+				}
+				note := "超时未完成，自动关闭"
+				if err := s.closePatrolExecution(ctx, execution, "cancelled", note, "patrol.execution.expired", "system"); err != nil {
+					log.Printf("api: expire patrol execution: %v", err)
+					continue
+				}
+			}
 		}
 	}
 }
@@ -2960,6 +3061,7 @@ func (s *Server) handlePatrolStats(w http.ResponseWriter, r *http.Request) {
 		"running":              counts["running"],
 		"done":                 counts["done"],
 		"issue":                counts["issue"],
+		"cancelled":            counts["cancelled"],
 		"completion_rate":      rate(counts["done"]),
 		"issue_rate":           rate(counts["issue"]),
 		"avg_duration_seconds": average,
@@ -3030,8 +3132,8 @@ func (s *Server) handlePurgePatrolExecutions(w http.ResponseWriter, r *http.Requ
 		statuses = []string{}
 		for _, part := range strings.Split(raw, ",") {
 			status := strings.TrimSpace(part)
-			if status != "done" && status != "issue" {
-				writeError(w, http.StatusBadRequest, "bad_request", "status may only contain done and issue")
+			if status != "done" && status != "issue" && status != "cancelled" {
+				writeError(w, http.StatusBadRequest, "bad_request", "status may only contain done, issue or cancelled")
 				return
 			}
 			statuses = append(statuses, status)

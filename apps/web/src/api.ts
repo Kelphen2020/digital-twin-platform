@@ -721,6 +721,14 @@ export async function claimPatrolExecution(executionId: string): Promise<PatrolE
   return postJson<PatrolExecution>(`/api/patrol/executions/${encodeURIComponent(executionId)}/claim`)
 }
 
+/** POST /api/patrol/executions/{id}/cancel（operator/admin）→ pending/running → cancelled。 */
+export async function cancelPatrolExecution(executionId: string, note?: string): Promise<PatrolExecution> {
+  return postJson<PatrolExecution>(
+    `/api/patrol/executions/${encodeURIComponent(executionId)}/cancel`,
+    note?.trim() ? { note: note.trim() } : {},
+  )
+}
+
 /** POST /api/patrol/executions/{id}/complete（认领人/admin）→ done/issue；issue 时响应带 order_id。 */
 export async function completePatrolExecution(
   executionId: string,

@@ -203,7 +203,16 @@
 | 审计 | `patrol.execution.created/skipped` | source=event；reason=duplicate/no_route |
 | 前端 | 设置开关、执行卡片关联告警、事件筛选 | 与 P13/P14 执行流程共用认领/完成/异常建单 |
 
-## 21. P1 建议优先级
+## 21. P16.0 已落地（巡检任务超时治理与取消）
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| 取消 | `handleCancelPatrolExecution` | pending（operator/admin）/ running（认领人或 admin）→ cancelled，审计/WS |
+| 超时治理 | `expirePatrolExecutions`（调度器每 tick） | pending/running 超阈值自动 cancelled，审计 `patrol.execution.expired` |
+| 统计/归档 | stats `cancelled`、purge 扩展 | 统计已取消数量；归档可清理 cancelled |
+| 前端 | 已取消 chip/筛选、取消按钮、统计卡片 | 二次确认 + 即时刷新 |
+
+## 22. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

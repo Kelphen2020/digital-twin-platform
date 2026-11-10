@@ -1,6 +1,7 @@
 import { computed, reactive } from 'vue'
 import {
   apiErrorMessage,
+  cancelPatrolExecution,
   claimPatrolExecution,
   completePatrolExecution,
   createPatrolRoute,
@@ -334,6 +335,23 @@ async function claimExecution(executionId: string): Promise<PatrolExecution | nu
 }
 
 /** 完成巡检：done 完成 / issue 异常（后端自动建工单，返回 order_id）。 */
+async function cancelExecution(executionId: string, note: string): Promise<PatrolExecution | null> {
+  if (state.executionActionId) return null
+  state.executionActionId = executionId
+  try {
+    const execution = await cancelPatrolExecution(executionId, note)
+    state.executions = state.executions.map((item) => (item.id === execution.id ? execution : item))
+    pushToast('巡检任务已取消', 'success')
+    await Promise.all([loadExecutions(), loadStats()])
+    return execution
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.executionActionId = null
+  }
+}
+
 async function completeExecution(
   executionId: string,
   payload: PatrolExecutionCompletePayload,
@@ -463,6 +481,7 @@ export function usePatrolStore() {
     setExecutionEventFilter,
     claimExecution,
     completeExecution,
+    cancelExecution,
     loadStats,
     exportExecutions,
     purgeHistory,

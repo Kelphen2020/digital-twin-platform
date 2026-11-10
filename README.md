@@ -239,6 +239,17 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P15.md`](docs/API_P15.md)。
 
+![P16.0 巡检任务取消](docs/screenshots/p16-cancelled-card.png)
+
+## P16.0 能力（巡检任务超时治理与取消）
+
+- **人工取消**：`POST /api/patrol/executions/{id}/cancel`：pending 由 operator/admin 取消；running 仅认领人或 admin；写 finished_at/note，审计 `patrol.execution.cancel`。
+- **超时自动关闭**：调度器扫描将超过 `PATROL_PENDING_TIMEOUT_MINUTES`（默认 60）的待认领、超过 `PATROL_RUNNING_TIMEOUT_MINUTES`（默认 120）的进行中任务置为 `cancelled`（note「超时未认领/未完成，自动关闭」），审计 `patrol.execution.expired`，0=关闭。
+- **统计/归档**：stats 新增 `cancelled`；归档 purge 允许 `cancelled`。
+- 前端：执行列表「已取消」状态/筛选、取消按钮（二次确认）、统计卡片「已取消」。
+
+契约见 [`docs/API_P16.md`](docs/API_P16.md)。
+
 ## 目录
 
 ```

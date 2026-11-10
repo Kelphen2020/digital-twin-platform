@@ -63,6 +63,10 @@ func main() {
 	server.SetLoginGuard(cfg.LoginMaxFailures, time.Duration(cfg.LoginLockoutSeconds)*time.Second)
 	authService.SetAccessTTL(time.Duration(cfg.AccessTokenTTLSeconds) * time.Second)
 	server.SetSessionTTL(time.Duration(cfg.RefreshTokenTTLSeconds) * time.Second)
+	server.SetPatrolTimeouts(
+		time.Duration(cfg.PatrolPendingTimeoutMinutes)*time.Minute,
+		time.Duration(cfg.PatrolRunningTimeoutMinutes)*time.Minute,
+	)
 
 	server.LoadSettings(ctx)
 	go server.RunStats(ctx, 5*time.Second)
