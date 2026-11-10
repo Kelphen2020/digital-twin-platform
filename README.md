@@ -250,6 +250,15 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 契约见 [`docs/API_P16.md`](docs/API_P16.md)。
 
+## P17.0 能力（PostgreSQL 生产持久化验证与运维脚本）
+
+- **PostgreSQL 全链路验证**：镜像 `postgis/postgis:16-3.4`（镜像源可配），迁移 001–012 自动应用；263 项 smoke 全量跑通（详见 `docs/ACCEPTANCE.md`）。
+- **修复 4 个 PG-only 缺陷**：escalation RETURNING 列缺失、巡检工单 event_id 外键、用户 token_version 未持久化、通知 attempts 未落库；并新增 `internal/store/postgres_integration_test.go`（`PG_TEST_URL` 环境变量启用）做存储契约回归。
+- **备份/恢复**：`scripts/backup.sh`、`scripts/restore.sh` 与 `make db-backup` / `make db-restore`（pg_dump -Fc / pg_restore --clean --if-exists）。
+- **运维手册**更新：备份恢复流程、迁移幂等说明、Postgres 连接与验证步骤。
+
+契约参见 `docs/OPERATIONS.md`。
+
 ## 目录
 
 ```

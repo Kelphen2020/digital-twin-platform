@@ -212,7 +212,17 @@
 | 统计/归档 | stats `cancelled`、purge 扩展 | 统计已取消数量；归档可清理 cancelled |
 | 前端 | 已取消 chip/筛选、取消按钮、统计卡片 | 二次确认 + 即时刷新 |
 
-## 22. P1 建议优先级
+## 22. P17.0 已落地（生产持久化验证）
+
+| 能力 | 说明 |
+|---|---|
+| PG store 修复 | escalation RETURNING/scan 对齐、orders.event_id 可空（巡检工单无事件）、users.token_version 持久化、notification_log.attempts |
+| 集成测试 | `PG_TEST_URL` 门控的 `TestPostgresContract` 覆盖 4 类 PG-only 路径 |
+| 迁移 | 012 幂等补列；启动自动重放全部迁移 |
+| 备份/恢复 | backup.sh / restore.sh / make 目标 |
+| 验证 | 263 项 smoke 全绿（PG store），重启持久化 + 备份恢复演练 |
+
+## 23. P1 建议优先级
 
 1. 真实 RTSP 接入（1–2 路）→ ZLMediaKit → WebRTC 播放器（验证时延 ≤500ms）。
 2. 单目标定工具（地面点采集 + 单应矩阵）→ 事件定位精度验收。

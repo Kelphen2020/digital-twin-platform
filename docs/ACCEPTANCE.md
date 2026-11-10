@@ -787,3 +787,45 @@ P16 覆盖：pending 取消（200 cancelled/finished_at/note）、重复取消 4
 - 超时治理依赖调度器 tick（默认 15s），阈值按分钟粒度；已关闭任务可被 purge 但 pending 不可（契约）。
 - 取消为终态，不支持恢复/重新派发；running 取消无二次确认以外的流程审计表单。
 - 取消/超时仅推送 WS `patrol_execution`，未接入通知 webhook（可后续扩展）。
+
+---
+
+# P17.0 验收记录（2026-11-10 上午）
+
+## 76. PostgreSQL 全量验证
+
+| 项 | 结果 |
+|---|---|
+| 环境 | PostGIS `postgis/postgis:16-3.4`（daocloud 镜像，本机 55432），API `store=postgres`，迁移 001–012 自动应用 |
+| 首次全量 smoke | ❌ 237/263（发现 4 个 PG-only 缺陷，详见下） |
+| 修复后 Run 1 | ✅ **PASS 263/263**（109s） |
+| 修复后 Run 2（同库、不重置） | ✅ **PASS 263/263**（101s） |
+| 存储契约集成测试 | ✅ `TestPostgresContract`（PG_TEST_URL 门控）：EscalateStale 扫描、无事件巡检工单、token_version 持久化、通知 attempts 持久化 |
+
+### 修复的 PG-only 缺陷
+
+| 缺陷 | 现象 | 修复 |
+|---|---|---|
+| Escalation RETURNING 缺 `re_escalated_at` | scan 列数不匹配 → 升级 tick 报错，派单/通知/联动巡检静默丢失 | RETURNING 补齐列 |
+| 巡检异常工单 `event_id=""` 违反 FK | complete(issue) 500，执行卡 running | 迁移 012：`orders.event_id` 可空；插入空值转 NULL；scan 兼容 NULL |
+| 用户 `token_version` 未持久化 | logout-all/强制下线/改密后旧 token 仍 200 | userSelect/插入/更新补充 token_version |
+| 通知 `attempts` 未落库 | 重试 3 次但 API 显示 attempts=0 | 迁移 012 加列；插入/查询/扫描补充 |
+
+## 77. 持久化与备份恢复演练
+
+- **重启持久化**：创建用户 `pg_persist_u`、路线「pg 持久化路线」、升级设置 after_seconds=123 → 重启 API → 三者均仍在。
+- **备份**：`./scripts/backup.sh backups/p17-drill.dump`（pg_dump -Fc，61K）。
+- **变更后恢复**：删除用户/路线、设置改为 999 → 停 API → `./scripts/restore.sh` → 启动 API → 用户/路线恢复、设置回到 123。
+- **迁移幂等**：恢复后再重启 API，迁移重放无错误，数据一致。
+
+## 78. 内存 store 回归
+
+- `make smoke` 全量 263 项（见下方执行记录）。
+- `go test ./...` 全绿（含 PG 集成测试在无 PG_TEST_URL 时跳过）。
+
+## 79. 已知限制（P17.0）
+
+- PostGIS 官方镜像在 arm64 上以 amd64 模拟运行（性能可用，生产建议原生镜像/托管库）；本机 5432 被其他容器占用，验证使用 55432。
+- 备份脚本依赖 docker exec（容器名可配）；非容器部署需改用 pg_dump 直连。
+- PG 集成测试需手动创建 `twin_test` 库（未自动化建库），适合 CI 中由 job 初始化。
+- 恢复演练为单机验证，未覆盖跨版本升级/大库耗时场景。

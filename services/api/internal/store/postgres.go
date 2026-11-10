@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,14 @@ var migrationFiles embed.FS
 // Postgres is the durable Store backed by PostgreSQL/PostGIS.
 type Postgres struct {
 	pool *pgxpool.Pool
+}
+
+// nullableString maps empty text to SQL NULL so optional foreign keys work.
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // NewPostgres connects, verifies the database and applies pending migrations.
@@ -602,7 +611,7 @@ func (p *Postgres) CreateOrder(ctx context.Context, order model.Order) error {
 	_, err := p.pool.Exec(ctx, `
         INSERT INTO orders (id, event_id, camera_id, title, status, priority, assignee, note, created_at, updated_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		order.ID, order.EventID, order.CameraID, order.Title, order.Status, order.Priority,
+		order.ID, nullableString(order.EventID), order.CameraID, order.Title, order.Status, order.Priority,
 		order.Assignee, order.Note, order.CreatedAt, order.UpdatedAt)
 	return err
 }
@@ -687,7 +696,8 @@ const orderSelect = `SELECT id, event_id, camera_id, title, status, priority, as
 
 func scanOrder(row rowScanner) (model.Order, error) {
 	var order model.Order
-	err := row.Scan(&order.ID, &order.EventID, &order.CameraID, &order.Title, &order.Status, &order.Priority,
+	var eventID sql.NullString
+	err := row.Scan(&order.ID, &eventID, &order.CameraID, &order.Title, &order.Status, &order.Priority,
 		&order.Assignee, &order.Note, &order.CreatedAt, &order.UpdatedAt, &order.ClosedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -695,6 +705,7 @@ func scanOrder(row rowScanner) (model.Order, error) {
 		}
 		return model.Order{}, err
 	}
+	order.EventID = eventID.String
 	order.CreatedAt = order.CreatedAt.UTC()
 	order.UpdatedAt = order.UpdatedAt.UTC()
 	if order.ClosedAt != nil {
@@ -725,10 +736,10 @@ func (p *Postgres) SetSetting(ctx context.Context, key string, value []byte) err
 
 func (p *Postgres) CreateNotificationLog(ctx context.Context, entry model.NotificationLog) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO notification_log (id, at, kind, event_id, url, format, ok, status_code, error)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        INSERT INTO notification_log (id, at, kind, event_id, url, format, ok, status_code, error, attempts)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		entry.ID, entry.At, entry.Kind, entry.EventID, entry.URL, entry.Format,
-		entry.OK, entry.StatusCode, entry.Error)
+		entry.OK, entry.StatusCode, entry.Error, entry.Attempts)
 	return err
 }
 
@@ -737,7 +748,7 @@ func (p *Postgres) ListNotificationLog(ctx context.Context, limit int) ([]model.
 		limit = 50
 	}
 	rows, err := p.pool.Query(ctx, `
-        SELECT id, at, kind, event_id, url, format, ok, status_code, error
+        SELECT id, at, kind, event_id, url, format, ok, status_code, error, attempts
         FROM notification_log ORDER BY at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -747,7 +758,7 @@ func (p *Postgres) ListNotificationLog(ctx context.Context, limit int) ([]model.
 	for rows.Next() {
 		var entry model.NotificationLog
 		if err := rows.Scan(&entry.ID, &entry.At, &entry.Kind, &entry.EventID, &entry.URL,
-			&entry.Format, &entry.OK, &entry.StatusCode, &entry.Error); err != nil {
+			&entry.Format, &entry.OK, &entry.StatusCode, &entry.Error, &entry.Attempts); err != nil {
 			return nil, err
 		}
 		entry.At = entry.At.UTC()
@@ -765,7 +776,7 @@ func (p *Postgres) EscalateStale(ctx context.Context, before time.Time, severiti
         WHERE status <> 'closed' AND escalated_at IS NULL
           AND occurred_at < $1 AND severity = ANY($2)
         RETURNING id, camera_id, camera_code, camera_name, type, severity, confidence,
-                  x, y, z, occurred_at, status, closed_at, escalated_at, payload`, before, severities)
+                  x, y, z, occurred_at, status, closed_at, escalated_at, re_escalated_at, payload`, before, severities)
 	if err != nil {
 		return nil, err
 	}
@@ -909,10 +920,10 @@ func (p *Postgres) ListUserAccounts(ctx context.Context) ([]model.UserAccount, e
 func (p *Postgres) CreateUserAccount(ctx context.Context, account model.UserAccount) error {
 	areas, _ := json.Marshal(account.Areas)
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO users (id, username, display_name, role, areas, active, password_hash, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        INSERT INTO users (id, username, display_name, role, areas, active, token_version, password_hash, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		account.ID, account.Username, account.DisplayName, account.Role, areas, account.Active,
-		account.PasswordHash, account.CreatedAt, account.UpdatedAt)
+		account.TokenVersion, account.PasswordHash, account.CreatedAt, account.UpdatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return model.ErrConflict
@@ -924,10 +935,10 @@ func (p *Postgres) UpdateUserAccount(ctx context.Context, account model.UserAcco
 	areas, _ := json.Marshal(account.Areas)
 	tag, err := p.pool.Exec(ctx, `
         UPDATE users SET username=$2, display_name=$3, role=$4, areas=$5, active=$6,
-                         password_hash=$7, updated_at=now()
+                         token_version=$7, password_hash=$8, updated_at=now()
         WHERE id=$1`,
 		account.ID, account.Username, account.DisplayName, account.Role, areas,
-		account.Active, account.PasswordHash)
+		account.Active, account.TokenVersion, account.PasswordHash)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -952,13 +963,13 @@ func (p *Postgres) DeleteUserAccount(ctx context.Context, id string) error {
 	return nil
 }
 
-const userSelect = `SELECT id, username, display_name, role, areas, active, password_hash, created_at, updated_at FROM users`
+const userSelect = `SELECT id, username, display_name, role, areas, active, token_version, password_hash, created_at, updated_at FROM users`
 
 func scanUserAccount(row rowScanner) (model.UserAccount, error) {
 	var account model.UserAccount
 	var areas []byte
 	err := row.Scan(&account.ID, &account.Username, &account.DisplayName, &account.Role,
-		&areas, &account.Active, &account.PasswordHash, &account.CreatedAt, &account.UpdatedAt)
+		&areas, &account.Active, &account.TokenVersion, &account.PasswordHash, &account.CreatedAt, &account.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return model.UserAccount{}, ErrNotFound

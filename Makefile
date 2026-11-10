@@ -84,6 +84,12 @@ sim:
 sim-status:
 	python3 services/simulator/run_camera_status.py --api-base $(API_URL) $(ARGS)
 
+db-backup:
+	./scripts/backup.sh $(DUMP)
+
+db-restore:
+	./scripts/restore.sh $(DUMP)
+
 smoke:
 	API_BASE=$(API_URL) bash scripts/smoke.sh
 

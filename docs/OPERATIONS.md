@@ -45,13 +45,20 @@ WS 健康：浏览器 DevTools Network → `ws://…/ws`（101）。
 ## 4. 备份与恢复（PostgreSQL）
 
 ```bash
-# 备份
-docker exec dtp-postgres pg_dump -U twin -d twin -Fc > backup-$(date +%F).dump
-# 恢复（先停 API）
-docker compose -f deploy/docker-compose.yml stop api
-docker exec -i dtp-postgres pg_restore -U twin -d twin --clean --if-exists < backup-2026-11-08.dump
+# 备份（默认写入 backups/twin-<时间>.dump）
+make db-backup
+# 或指定路径
+./scripts/backup.sh backups/manual.dump
+
+# 恢复（破坏性，先停 API）
+docker compose -f deploy/docker-compose.yml stop api   # 或 kill 本地 API 进程
+make db-restore DUMP=backups/twin-20261110-093000.dump
 docker compose -f deploy/docker-compose.yml start api
 ```
+
+- 容器名/用户/库可用 `PG_CONTAINER`/`PG_USER`/`PG_DB` 覆盖（compose 与本机容器一致默认 `dtp-postgres`）。
+- 备份为 `pg_dump -Fc` 自定义格式；恢复使用 `pg_restore --clean --if-exists`。
+- 迁移在 API 启动时自动幂等重放（`migrations/*.sql` 全部 `IF NOT EXISTS`），恢复旧备份后启动 API 会补齐新列/表。
 
 内存模式不持久化业务数据（重启回到种子），仅用于演示/联调。
 
@@ -84,7 +91,38 @@ docker compose -f deploy/docker-compose.yml start api
 - 反代后客户端 IP 通过 `X-Forwarded-For` 传递（登录防爆破按该 IP 计数）。
 - 生产建议：只暴露 443；`/metrics` 与 `/api/audit*` 限制到运维网段；开启 WAF/限流。
 
-## 8. 安全清单
+## 8. PostgreSQL 验证清单（P17）
+
+```bash
+# 1) 启动 PostGIS（本机 5432 被占用时换端口即可；镜像源可配）
+docker run -d --name dtp-postgres \
+  -e POSTGRES_USER=twin -e POSTGRES_PASSWORD=twin -e POSTGRES_DB=twin \
+  -p 127.0.0.1:55432:5432 -v dtp-pgdata:/var/lib/postgresql/data \
+  docker.m.daocloud.io/postgis/postgis:16-3.4
+
+# 2) 以 Postgres 存储启动 API（迁移自动应用）
+cd services/api && go build -o bin/api ./cmd/server
+PORT=8081 AUTH_MODE=on JWT_SECRET=dev-secret-change-me \
+  DATABASE_URL='postgres://twin:twin@127.0.0.1:55432/twin?sslmode=disable' ./bin/api
+
+# 3) 全量验证（幂等，可重复跑）
+API_BASE=http://127.0.0.1:8081 bash scripts/smoke.sh
+
+# 4) 存储契约集成测试（需独立测试库，避免污染）
+docker exec dtp-postgres psql -U twin -d twin -c 'CREATE DATABASE twin_test;'
+PG_TEST_URL='postgres://twin:twin@127.0.0.1:55432/twin_test?sslmode=disable' \
+  go test ./internal/store/ -run TestPostgresContract -v
+
+# 5) 重启持久化 + 备份恢复演练
+./scripts/backup.sh backups/drill.dump
+# 修改数据后：
+kill <api-pid> && ./scripts/restore.sh backups/drill.dump
+# 再启动 API 应恢复备份时数据
+```
+
+说明：PostGIS 官方镜像在 arm64 上以 amd64 模拟运行（`platform` 警告），功能验证不受影响；生产建议使用原生架构镜像或托管数据库。
+
+## 9. 安全清单
 
 - 替换 `JWT_SECRET` 与种子账号口令；关闭演示账号或改密。
 - 生产启用 HTTPS（nginx/网关），限制 `/metrics` 访问。

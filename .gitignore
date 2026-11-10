@@ -13,3 +13,4 @@ apps/web/public/hls/
 data/
 __pycache__/
 *.pyc
+backups/
