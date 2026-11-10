@@ -267,6 +267,11 @@ make load QPS=100 DURATION=5   # 压测并输出 p50/p95/p99
 
 详见 [`docs/CI.md`](docs/CI.md)。
 
+## P21.0 能力（补测与门禁提升）
+
+- 新增 `internal/auth`、`internal/store` 单元测试（登录/JWT/吊销/用户 CRUD/密码策略/权限矩阵；相机/事件/工单/轨迹/审计/设置/值班/用户/刷新令牌）。
+- 覆盖率 **48.8% → 56.9%**，CI 门禁由 45% 提升至 **55%**。
+
 ## P19.0 能力（部署与扩展）
 
 - **多副本 API**：状态集中于 PostgreSQL，副本共享；非主副本用 `INGEST_FALLBACK_URL` 把 ingest 原样转发到主副本（指标 `ingest_forwarded_total` / `ingest_fallback_failures_total`，失败 502）。

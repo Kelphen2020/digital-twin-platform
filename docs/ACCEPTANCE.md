@@ -954,3 +954,33 @@ SKIP  smoke (postgres)  (--quick)
 - 覆盖率按语句统计，未含分支覆盖；门禁阈值 45% 偏保守，可随补测提升。
 - `server.go` 的 contextcheck 以文件级排除处理，未重构为显式后台 ctx。
 - CI 中 golangci-lint 版本固定 v1.62.2，升级需同步更新 `.golangci.yml`（新版本 linter 集合变化）。
+
+---
+
+# P21.0 验收记录（2026-11-10 傍晚）
+
+## 92. 新增单元测试
+
+| 包 | 文件 | 覆盖内容 |
+|---|---|---|
+| `internal/auth` | `auth_test.go`（5 个用例） | 登录成功/失败/未知用户、JWT 校验与篡改/畸形 token、TTL 过期、会话吊销（token_version 递增）、用户列表/创建/重复/非法输入（空用户名、短密码、无数字、非法角色）、改密/停用、删除、UserExists、`auth.Can` 角色权限矩阵、auth-off 全网放行、store-backed repo 种子幂等 |
+| `internal/store` | `store_test.go`（3 个用例） | 相机/区域查询、按 code 查询、PATCH 相机（含 no-op/缺失）、计数、默认规则/设置规则；事件创建/过滤/详情、动作、轨迹（相机/多相机过滤）、工单生命周期（含按状态查询、FindOpenOrderForEvent）、审计（actor/时间范围）、统计；设置读写、值班组 CRUD、用户 CRUD + 冲突、通知日志裁剪、刷新令牌创建/查询/吊销 |
+
+## 93. 覆盖率
+
+| 版本 | 总计 | 说明 |
+|---|---|---|
+| P20 | 48.8% | store/auth 无单测 |
+| **P21** | **56.9%** | store 25.2%、auth 由集成+单测覆盖；门禁由 45% 提升到 **55%** |
+
+## 94. 质量门禁
+
+- `go test ./...`：全绿（新增 8 个用例）
+- `golangci-lint run ./...`：0 issues（新测试文件同样通过）
+- 本地 CI（`--quick`）：api build/vet/test（覆盖率 56.9% ≥ 55%）、simulator lint、lint(go+web)、web typecheck+build、smoke(memory) 263 项 全部 PASS
+
+## 95. 已知限制（P21.0）
+
+- PostgreSQL 实现仍依赖集成测试（PG_TEST_URL 门控）与全量 smoke，未逐方法单测。
+- 覆盖率仍以语句计；分支覆盖未统计。
+- 新增门禁阈值 55% 留有约 2 个百分点缓冲，后续补测可继续提高。
