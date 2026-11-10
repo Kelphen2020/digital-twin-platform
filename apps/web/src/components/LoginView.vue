@@ -83,7 +83,7 @@ async function submit(): Promise<void> {
         <span class="brand-mark login-mark">DT</span>
         <div>
           <h1>数字孪生安防平台</h1>
-          <p>P17.0 · 巡检取消 / 超时治理</p>
+          <p>P17.0 · PostgreSQL 持久化验证</p>
         </div>
       </header>
 
