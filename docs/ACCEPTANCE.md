@@ -1305,6 +1305,8 @@ SKIP  smoke (postgres)  (--quick)
 | `golangci-lint` | ✅ 0 issues |
 | `make smoke`（默认租户） | ✅ **PASS 263/263** |
 | 前端 | ✅ `pnpm typecheck` + `pnpm lint` + `pnpm build` |
+| 本地 CI（`--quick`） | ✅ 8 阶段全 PASS |
+| 本地 CI（含 PostgreSQL 阶段） | ✅ **8 阶段全 PASS**（smoke(memory) 与 smoke(postgres) 均 263/263） |
 
 ## 127. 已知限制（P30.0）
 
