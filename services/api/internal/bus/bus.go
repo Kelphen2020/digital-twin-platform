@@ -30,12 +30,13 @@ var ErrRangeUnavailable = errors.New("requested offsets are not retained by this
 
 // Envelope is one bus record.
 type Envelope struct {
-	Offset int64        `json:"offset"`
-	Kind   string       `json:"kind"`
-	At     time.Time    `json:"at"`
-	Event  model.Event  `json:"event"`
-	Order  *model.Order `json:"order,omitempty"`
-	Source string       `json:"source"`
+	Offset   int64        `json:"offset"`
+	Kind     string       `json:"kind"`
+	At       time.Time    `json:"at"`
+	TenantID string       `json:"tenant_id"`
+	Event    model.Event  `json:"event"`
+	Order    *model.Order `json:"order,omitempty"`
+	Source   string       `json:"source"`
 }
 
 // Status is the admin-visible bus snapshot.
@@ -46,8 +47,9 @@ type Status struct {
 	Replayed      int64      `json:"replayed"`
 	OldestOffset  int64      `json:"oldest_offset"`
 	NextOffset    int64      `json:"next_offset"`
-	LastPublishAt *time.Time `json:"last_publish_at,omitempty"`
-	Subscribers   int        `json:"subscribers"`
+	LastPublishAt *time.Time        `json:"last_publish_at,omitempty"`
+	Subscribers   int               `json:"subscribers"`
+	Tenants       map[string]int64  `json:"tenants,omitempty"`
 }
 
 // Driver persists and reads envelopes.
@@ -62,13 +64,14 @@ type Handler func(Envelope)
 
 // Bus coordinates a driver and its subscribers.
 type Bus struct {
-	mu        sync.RWMutex
-	driver    Driver
-	handlers  []Handler
-	published atomic.Int64
-	replayed  atomic.Int64
-	errors    atomic.Int64
-	lastAt    atomic.Value // time.Time
+	mu           sync.RWMutex
+	driver       Driver
+	handlers     []Handler
+	published    atomic.Int64
+	replayed     atomic.Int64
+	errors       atomic.Int64
+	lastAt       atomic.Value // time.Time
+	tenantCounts map[string]int64
 }
 
 // NewMemory builds a bus over an in-memory ring buffer.
@@ -92,9 +95,14 @@ func (b *Bus) Subscribe(handler Handler) {
 	b.handlers = append(b.handlers, handler)
 }
 
-// Publish persists an envelope and fans it out.
+// Publish persists an envelope and fans it out. The envelope is stamped with
+// the publisher's tenant (taken from the event, defaulting to "default").
 func (b *Bus) Publish(kind string, event model.Event, order *model.Order, source string) (Envelope, error) {
-	envelope := Envelope{Kind: kind, At: time.Now().UTC(), Event: event, Order: order, Source: source}
+	tenantID := event.TenantID
+	if tenantID == "" {
+		tenantID = model.DefaultTenantID
+	}
+	envelope := Envelope{Kind: kind, At: time.Now().UTC(), TenantID: tenantID, Event: event, Order: order, Source: source}
 	stored, err := b.driver.Publish(envelope)
 	if err != nil {
 		b.errors.Add(1)
@@ -102,6 +110,12 @@ func (b *Bus) Publish(kind string, event model.Event, order *model.Order, source
 	}
 	b.published.Add(1)
 	b.lastAt.Store(stored.At)
+	b.mu.Lock()
+	if b.tenantCounts == nil {
+		b.tenantCounts = make(map[string]int64)
+	}
+	b.tenantCounts[tenantID]++
+	b.mu.Unlock()
 	b.mu.RLock()
 	handlers := append([]Handler(nil), b.handlers...)
 	b.mu.RUnlock()
@@ -118,9 +132,35 @@ func (b *Bus) Publish(kind string, event model.Event, order *model.Order, source
 	return stored, nil
 }
 
-// ReadRange reads a stored offset range for replay.
+// ReadRange reads a stored offset range for replay (all tenants).
 func (b *Bus) ReadRange(from, to int64, limit int) ([]Envelope, error) {
 	return b.driver.ReadRange(from, to, limit)
+}
+
+// ReadRangeForTenant reads an offset range and filters by tenant. When
+// allTenants is true every envelope is returned (admin-only callers); otherwise
+// only envelopes stamped with tenantID are returned. Legacy jsonl lines without
+// a tenant field are treated as the default tenant.
+func (b *Bus) ReadRangeForTenant(from, to int64, limit int, tenantID string, allTenants bool) ([]Envelope, error) {
+	envelopes, err := b.driver.ReadRange(from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	if allTenants {
+		return envelopes, nil
+	}
+	out := make([]Envelope, 0, len(envelopes))
+	for _, envelope := range envelopes {
+		envelopeTenant := envelope.TenantID
+		if envelopeTenant == "" {
+			envelopeTenant = model.DefaultTenantID
+		}
+		if envelopeTenant == tenantID {
+			envelope.TenantID = envelopeTenant
+			out = append(out, envelope)
+		}
+	}
+	return out, nil
 }
 
 // MarkReplayed records one replayed envelope for metrics.
@@ -139,6 +179,10 @@ func (b *Bus) Status() Status {
 	_, oldest, next, path := b.driver.Status()
 	b.mu.RLock()
 	subscribers := len(b.handlers)
+	tenants := make(map[string]int64, len(b.tenantCounts))
+	for tenant, count := range b.tenantCounts {
+		tenants[tenant] = count
+	}
 	b.mu.RUnlock()
 	status := Status{
 		Driver:       driverName(b.driver),
@@ -148,6 +192,7 @@ func (b *Bus) Status() Status {
 		OldestOffset: oldest,
 		NextOffset:   next,
 		Subscribers:  subscribers,
+		Tenants:      tenants,
 	}
 	if value, ok := b.lastAt.Load().(time.Time); ok {
 		last := value
@@ -324,6 +369,9 @@ func (d *jsonlDriver) ReadRange(from, to int64, limit int) ([]Envelope, error) {
 		}
 		if envelope.Offset == 0 {
 			envelope.Offset = current
+		}
+		if envelope.TenantID == "" {
+			envelope.TenantID = model.DefaultTenantID
 		}
 		out = append(out, envelope)
 		if len(out) >= limit {

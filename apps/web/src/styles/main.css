@@ -4249,3 +4249,20 @@ dd {
 .tenant-modal {
   width: min(460px, 100%);
 }
+
+
+/* P29：租户模板 / 初始管理员 */
+.tenant-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(8, 20, 38, 0.4);
+}
+
+.tenant-form-title {
+  font-size: 10.5px;
+  color: #7dd3fc;
+}

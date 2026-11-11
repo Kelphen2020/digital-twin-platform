@@ -5,7 +5,7 @@ import {
   fetchTenants,
   updateTenant as requestUpdateTenant,
 } from '../api'
-import type { Tenant, TenantUpdatePayload } from '../types'
+import type { Tenant, TenantCreatePayload, TenantSeeded, TenantUpdatePayload } from '../types'
 import { pushToast } from './ui'
 
 interface TenantState {
@@ -36,13 +36,24 @@ async function loadTenants(): Promise<void> {
   }
 }
 
-async function createTenant(name: string): Promise<Tenant | null> {
+function seededSummary(seeded: TenantSeeded | undefined): string {
+  if (!seeded) return '租户已创建'
+  const parts: string[] = []
+  if (seeded.cameras > 0) parts.push(`已复制 ${seeded.cameras} 台相机`)
+  if (seeded.areas > 0) parts.push(`${seeded.areas} 个区域`)
+  if (seeded.rules > 0) parts.push(`${seeded.rules} 条规则`)
+  if (seeded.settings > 0) parts.push(`${seeded.settings} 项设置`)
+  if (seeded.admin) parts.push(`管理员 ${seeded.admin}`)
+  return parts.length > 0 ? `租户已创建：${parts.join(' / ')}` : '租户已创建'
+}
+
+async function createTenant(payload: TenantCreatePayload): Promise<Tenant | null> {
   if (state.saving) return null
   state.saving = true
   try {
-    const tenant = await requestCreateTenant({ name })
+    const tenant = await requestCreateTenant(payload)
     state.tenants = [...state.tenants, tenant]
-    pushToast('租户已创建', 'success')
+    pushToast(seededSummary(tenant.seeded), 'success')
     return tenant
   } catch (error) {
     pushToast(apiErrorMessage(error), 'error')

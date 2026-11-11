@@ -509,7 +509,7 @@ func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserSessions(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}
 	tokens, err := s.store.ListUserRefreshTokens(r.Context(), r.PathValue("id"))
@@ -529,7 +529,7 @@ func (s *Server) handleUserSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleForceLogout(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -1130,6 +1130,7 @@ func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
 		ToOffset   *int64 `json:"to_offset"`
 		Notify     bool   `json:"notify"`
 		Limit      int    `json:"limit"`
+		AllTenants bool   `json:"all_tenants"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
@@ -1151,7 +1152,8 @@ func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	envelopes, err := s.bus.ReadRange(body.FromOffset, to, limit)
+	replayTenant := store.TenantFrom(r.Context())
+	envelopes, err := s.bus.ReadRangeForTenant(body.FromOffset, to, limit, replayTenant, body.AllTenants)
 	if err != nil {
 		if errors.Is(err, bus.ErrRangeUnavailable) {
 			writeError(w, http.StatusConflict, "bus_driver_unsupported", err.Error())
@@ -1164,26 +1166,36 @@ func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
 		switch envelope.Kind {
 		case bus.KindEventCreated:
 			s.hub.Broadcast(realtime.Frame{Type: "event_replay", Data: map[string]any{
-				"event": envelope.Event, "offset": envelope.Offset, "replay": true,
+				"event": envelope.Event, "offset": envelope.Offset, "tenant_id": envelope.TenantID, "replay": true,
 			}})
 		case bus.KindEventEscalated:
 			s.hub.Broadcast(realtime.Frame{Type: "event_updated", Data: envelope.Event})
 		}
 		if body.Notify {
-			go s.deliverNotification(context.Background(), "event", envelope.Event, nil)
+			notifyCtx := store.WithTenant(context.Background(), envelope.TenantID)
+			go s.deliverNotification(notifyCtx, "event", envelope.Event, nil)
 		}
 	}
 	s.bus.MarkReplayed(int64(len(envelopes)))
+	items := make([]map[string]any, 0, len(envelopes))
+	for _, envelope := range envelopes {
+		items = append(items, map[string]any{
+			"offset": envelope.Offset, "kind": envelope.Kind, "tenant_id": envelope.TenantID,
+			"at": envelope.At, "event_id": envelope.Event.ID,
+		})
+	}
 	s.audit(r, "bus.replay", "bus", map[string]any{
-		"from_offset": body.FromOffset, "to_offset": to, "count": len(envelopes), "notify": body.Notify,
+		"from_offset": body.FromOffset, "to_offset": to, "count": len(envelopes),
+		"notify": body.Notify, "tenant": replayTenant, "all_tenants": body.AllTenants,
 	})
 	lastOffset := int64(-1)
 	if len(envelopes) > 0 {
 		lastOffset = envelopes[len(envelopes)-1].Offset
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "replayed": len(envelopes),
+		"ok": true, "replayed": len(envelopes), "items": items,
 		"from_offset": body.FromOffset, "to_offset": lastOffset,
+		"tenant_id": replayTenant, "all_tenants": body.AllTenants,
 	})
 }
 
@@ -1525,7 +1537,7 @@ func (s *Server) handleTracks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermAuditRead); !ok {
 		return
 	}
 	filter := model.AuditFilter{
@@ -1566,7 +1578,7 @@ func (s *Server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermAuditRead); !ok {
 		return
 	}
 	filter := model.AuditFilter{
@@ -2235,7 +2247,7 @@ func validSeverity(severity string) bool {
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}
 	users, err := s.auth.Users(r.Context())
@@ -2250,7 +2262,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}
 	var body struct {
@@ -2286,7 +2298,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}
 	current := userOf(r)
@@ -2332,7 +2344,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.allow(w, r, auth.PermAdmin); !ok {
+	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}
 	id := r.PathValue("id")

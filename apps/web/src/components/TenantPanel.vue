@@ -1,12 +1,25 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useTenantStore } from '../store/tenant'
 import type { Tenant } from '../types'
 
 const { state, loadTenants, createTenant, updateTenant } = useTenantStore()
 
-const newName = ref('')
-const formError = ref('')
+// ---- 新建租户（P29：模板复制 + 初始管理员） ----
+const createOpen = ref(false)
+const createName = ref('')
+const createTemplate = ref('')
+const adminUsername = ref('')
+const adminPassword = ref('')
+const createError = ref('')
+const adminPasswordLongEnough = computed(() => adminPassword.value.length >= 10)
+const adminPasswordHasLetter = computed(() => /[A-Za-z]/.test(adminPassword.value))
+const adminPasswordHasDigit = computed(() => /\d/.test(adminPassword.value))
+const templateName = computed(
+  () => state.tenants.find((tenant) => tenant.id === createTemplate.value)?.name ?? '',
+)
+
+// ---- 编辑 / 启停 ----
 const confirmingDisableId = ref<string | null>(null)
 const editingTenant = ref<Tenant | null>(null)
 const editName = ref('')
@@ -24,17 +37,58 @@ function validateName(name: string): string | null {
   return null
 }
 
-async function submitCreate(): Promise<void> {
-  formError.value = ''
-  const error = validateName(newName.value)
-  if (error) {
-    formError.value = error
-    return
-  }
-  const tenant = await createTenant(newName.value.trim())
-  if (tenant) newName.value = ''
+function resetCreate(): void {
+  createName.value = ''
+  createTemplate.value = ''
+  adminUsername.value = ''
+  adminPassword.value = ''
+  createError.value = ''
 }
 
+function openCreate(): void {
+  resetCreate()
+  createOpen.value = true
+}
+
+function closeCreate(): void {
+  createOpen.value = false
+  createError.value = ''
+}
+
+function validateCreate(): string | null {
+  const nameError = validateName(createName.value)
+  if (nameError) return nameError
+  const username = adminUsername.value.trim()
+  if (username) {
+    if (username.length < 3 || username.length > 32) return '初始管理员用户名需为 3–32 个字符'
+    if (!adminPassword.value) return '填写初始管理员用户名时必须设置密码'
+    if (adminPassword.value.length < 10) return '初始管理员密码至少 10 个字符'
+    if (!adminPasswordHasLetter.value || !adminPasswordHasDigit.value) {
+      return '初始管理员密码需同时包含字母与数字'
+    }
+  } else if (adminPassword.value) {
+    return '填写密码时请同时填写初始管理员用户名'
+  }
+  return null
+}
+
+async function submitCreate(): Promise<void> {
+  createError.value = ''
+  const error = validateCreate()
+  if (error) {
+    createError.value = error
+    return
+  }
+  const username = adminUsername.value.trim()
+  const tenant = await createTenant({
+    name: createName.value.trim(),
+    ...(createTemplate.value ? { template: createTemplate.value } : {}),
+    ...(username ? { admin: { username, password: adminPassword.value } } : {}),
+  })
+  if (tenant) closeCreate()
+}
+
+// ---- 编辑 ----
 function openEdit(tenant: Tenant): void {
   editingTenant.value = tenant
   editName.value = tenant.name
@@ -91,24 +145,11 @@ onMounted(() => {
       <div class="panel-head-actions">
         <span class="feed-count">{{ state.tenants.length }}</span>
         <button class="ghost-btn" :disabled="state.loading" @click="loadTenants">刷新</button>
+        <button class="secondary-btn" @click="openCreate">新建租户</button>
       </div>
     </header>
 
     <div class="admin-scroll">
-      <form class="tenant-create" @submit.prevent="submitCreate">
-        <input
-          v-model="newName"
-          type="text"
-          maxlength="64"
-          placeholder="新租户名称（≤64 字符）"
-          :disabled="state.saving"
-        />
-        <button class="secondary-btn" type="submit" :disabled="state.saving">
-          {{ state.saving ? '创建中…' : '新建租户' }}
-        </button>
-      </form>
-      <p v-if="formError" class="form-error">{{ formError }}</p>
-
       <p v-if="state.loading && state.tenants.length === 0" class="detail-loading">正在加载租户…</p>
       <p v-else-if="state.error" class="form-error">
         租户加载失败：{{ state.error }}
@@ -166,6 +207,67 @@ onMounted(() => {
           </div>
         </article>
       </template>
+    </div>
+
+    <!-- 新建租户对话框：模板复制 + 初始管理员 -->
+    <div v-if="createOpen" class="modal-backdrop" @click.self="closeCreate">
+      <section class="modal-card tenant-modal" role="dialog" aria-modal="true" aria-label="新建租户">
+        <header class="modal-head">
+          <h2>新建租户</h2>
+          <button class="ghost-btn" @click="closeCreate">关闭</button>
+        </header>
+        <div class="modal-body">
+          <label class="settings-field">
+            <span>租户名称 *（≤64 字符）</span>
+            <input v-model="createName" type="text" maxlength="64" placeholder="XX园区" />
+          </label>
+
+          <label class="settings-field">
+            <span>复制模板（可选）</span>
+            <select v-model="createTemplate">
+              <option value="">不复制（空租户）</option>
+              <option v-for="tenant in state.tenants" :key="tenant.id" :value="tenant.id">
+                {{ tenant.name }}（{{ tenant.id }}）
+              </option>
+            </select>
+          </label>
+          <p class="form-hint">
+            {{ createTemplate
+              ? `将复制「${templateName}」的相机、区域、相机规则与设置（不含事件/工单/审计/用户/巡检）`
+              : '不复制模板：新租户为空；可通过初始管理员开始配置。' }}
+          </p>
+
+          <div class="tenant-form-section">
+            <span class="tenant-form-title">初始管理员（可选）</span>
+            <div class="settings-grid">
+              <label class="settings-field">
+                <span>用户名</span>
+                <input v-model="adminUsername" type="text" autocomplete="off" placeholder="admin" />
+              </label>
+              <label class="settings-field">
+                <span>密码</span>
+                <input v-model="adminPassword" type="password" autocomplete="new-password" placeholder="••••••••" />
+              </label>
+            </div>
+            <p class="form-hint">
+              密码策略：至少 10 个字符，且同时包含字母与数字；用户名在同一租户内唯一。
+            </p>
+            <div v-if="adminUsername.trim()" class="password-policy">
+              <span class="password-rule" :class="{ met: adminPasswordLongEnough }">≥ 10 字符</span>
+              <span class="password-rule" :class="{ met: adminPasswordHasLetter }">含字母</span>
+              <span class="password-rule" :class="{ met: adminPasswordHasDigit }">含数字</span>
+            </div>
+          </div>
+
+          <p v-if="createError" class="form-error">{{ createError }}</p>
+          <div class="modal-buttons">
+            <button class="primary-btn" :disabled="state.saving" @click="submitCreate">
+              {{ state.saving ? '创建中…' : '创建租户' }}
+            </button>
+            <button class="ghost-btn" @click="closeCreate">取消</button>
+          </div>
+        </div>
+      </section>
     </div>
 
     <div v-if="editingTenant" class="modal-backdrop" @click.self="closeEdit">

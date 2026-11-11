@@ -164,7 +164,7 @@ export type StatsRange = '1h' | '24h'
 
 // ---------------- P2：身份与 RBAC ----------------
 
-export type Role = 'viewer' | 'operator' | 'admin'
+export type Role = 'viewer' | 'operator' | 'admin' | 'tenant_admin'
 
 export interface AuthUser {
   id: string
@@ -561,10 +561,21 @@ export interface WsPatrolExecutionMessage {
 
 // ---------------- P27：多租户 ----------------
 
+export interface TenantSeeded {
+  cameras: number
+  areas: number
+  rules: number
+  settings: number
+  /** 初始管理员用户名；未创建为空字符串。 */
+  admin: string
+}
+
 export interface Tenant {
   id: string
   name: string
   active: boolean
+  /** P29：创建响应中的模板复制/初始管理员结果。 */
+  seeded?: TenantSeeded
 }
 
 export interface TenantListResponse {
@@ -573,6 +584,10 @@ export interface TenantListResponse {
 
 export interface TenantCreatePayload {
   name: string
+  /** P29：复制模板的租户 id（缺省不复制）。 */
+  template?: string
+  /** P29：可选初始管理员（密码走 P10 策略）。 */
+  admin?: { username: string; password: string }
 }
 
 export interface TenantUpdatePayload {

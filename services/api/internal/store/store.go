@@ -39,7 +39,9 @@ type Store interface {
 	UpdateTenant(ctx context.Context, tenant model.Tenant) error
 
 	ListAreas(ctx context.Context) ([]model.Area, error)
+	CreateArea(ctx context.Context, area model.Area) error
 	ListCameras(ctx context.Context) ([]model.Camera, error)
+	CreateCamera(ctx context.Context, camera model.Camera) error
 	GetCamera(ctx context.Context, id string) (model.Camera, error)
 	GetCameraByCode(ctx context.Context, code string) (model.Camera, error)
 	UpdateCamera(ctx context.Context, id string, patch model.CameraPatch) (model.Camera, error)
@@ -262,6 +264,32 @@ func (m *Memory) ListAreas(ctx context.Context) ([]model.Area, error) {
 		return []model.Area{}, nil
 	}
 	return append([]model.Area(nil), state.areas...), nil
+}
+
+func (m *Memory) CreateArea(ctx context.Context, area model.Area) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.state(ctx, true)
+	area.TenantID = tenantOf(ctx)
+	state.areas = append(state.areas, area)
+	return nil
+}
+
+func (m *Memory) CreateCamera(ctx context.Context, camera model.Camera) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.state(ctx, true)
+	tenant := tenantOf(ctx)
+	for _, existing := range state.cameras {
+		if existing.Code == camera.Code && existing.TenantID == tenant {
+			return model.ErrConflict
+		}
+	}
+	camera.TenantID = tenant
+	clone := camera
+	state.cameras[clone.ID] = &clone
+	state.order = append(state.order, clone.ID)
+	return nil
 }
 
 func (m *Memory) ListCameras(ctx context.Context) ([]model.Camera, error) {

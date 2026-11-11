@@ -21,6 +21,7 @@ const duty = useDutyStore()
 const roleOptions: { value: Role; label: string }[] = [
   { value: 'viewer', label: ROLE_LABELS.viewer },
   { value: 'operator', label: ROLE_LABELS.operator },
+  { value: 'tenant_admin', label: ROLE_LABELS.tenant_admin },
   { value: 'admin', label: ROLE_LABELS.admin },
 ]
 
@@ -338,6 +339,10 @@ onMounted(() => {
               <span>启用账号</span>
             </label>
           </div>
+
+          <p v-if="form.role === 'tenant_admin'" class="form-hint">
+            租户管理员仅能管理本租户用户与配置（含用户 CRUD、审计、用户会话/强制下线），不可跨租户管理租户。
+          </p>
 
           <p v-if="isSelf" class="role-notice">
             当前登录账号受保护：不能停用或降级自己（保存时触发 self_protected）。可修改显示名/密码/区域。

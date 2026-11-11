@@ -135,12 +135,14 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
 export const ROLE_LABELS: Record<Role, string> = {
   viewer: '观察员',
   operator: '值班员',
+  tenant_admin: '租户管理员',
   admin: '管理员',
 }
 
 export const ROLE_COLORS: Record<Role, string> = {
   viewer: '#94a3b8',
   operator: '#38bdf8',
+  tenant_admin: '#a78bfa',
   admin: '#f59e0b',
 }
 

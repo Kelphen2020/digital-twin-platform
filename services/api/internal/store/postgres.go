@@ -168,6 +168,47 @@ func (p *Postgres) ListAreas(ctx context.Context) ([]model.Area, error) {
 	return areas, rows.Err()
 }
 
+func (p *Postgres) CreateArea(ctx context.Context, area model.Area) error {
+	polygon, err := json.Marshal(area.Polygon)
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(ctx, `
+        INSERT INTO areas (id, name, type, polygon, tenant_id)
+        VALUES ($1,$2,$3,$4,$5)`,
+		area.ID, area.Name, area.Type, polygon, tenantOf(ctx))
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return model.ErrConflict
+		}
+	}
+	return err
+}
+
+func (p *Postgres) CreateCamera(ctx context.Context, camera model.Camera) error {
+	var calibration []byte
+	if camera.Calibration != nil {
+		raw, err := json.Marshal(camera.Calibration)
+		if err != nil {
+			return err
+		}
+		calibration = raw
+	}
+	_, err := p.pool.Exec(ctx, `
+        INSERT INTO cameras (id, code, name, area_id, x, y, z, heading, fov_h, fov_v, range_m, status, stream_url, calibration, updated_at, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		camera.ID, camera.Code, camera.Name, camera.AreaID, camera.X, camera.Y, camera.Z, camera.Heading,
+		camera.FovH, camera.FovV, camera.RangeM, camera.Status, camera.StreamURL, calibration, camera.UpdatedAt, tenantOf(ctx))
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return model.ErrConflict
+		}
+	}
+	return err
+}
+
 func (p *Postgres) ListCameras(ctx context.Context) ([]model.Camera, error) {
 	rows, err := p.pool.Query(ctx, cameraSelect+` WHERE tenant_id=$1 ORDER BY code`, tenantOf(ctx))
 	if err != nil {

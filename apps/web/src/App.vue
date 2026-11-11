@@ -48,6 +48,13 @@ function handleBoxSelect(cameraIds: string[]): void {
 }
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
+/** P29：租户管理员可管理本租户用户/查看审计，但不能管理租户本体。 */
+const canManageUsers = computed(
+  () => authState.user?.role === 'admin' || authState.user?.role === 'tenant_admin',
+)
+const canReadAudit = computed(
+  () => authState.user?.role === 'admin' || authState.user?.role === 'tenant_admin',
+)
 
 const openOrders = computed(
   () => state.orders.filter((order) => order.status !== 'done' && order.status !== 'cancelled').length,
@@ -190,7 +197,7 @@ watch(isAuthenticated, (authenticated) => {
             设置
           </button>
           <button
-            v-if="isAdmin"
+            v-if="canReadAudit"
             class="sidebar-tab"
             :class="{ active: state.sidebarTab === 'audit' }"
             role="tab"
@@ -210,7 +217,7 @@ watch(isAuthenticated, (authenticated) => {
             总线
           </button>
           <button
-            v-if="isAdmin"
+            v-if="canManageUsers"
             class="sidebar-tab"
             :class="{ active: state.sidebarTab === 'users' }"
             role="tab"
@@ -235,9 +242,9 @@ watch(isAuthenticated, (authenticated) => {
         <OrdersPanel v-else-if="state.sidebarTab === 'orders'" />
         <DutyPanel v-else-if="state.sidebarTab === 'duty'" />
         <SettingsPanel v-else-if="state.sidebarTab === 'settings' && isAdmin" />
-        <AuditPanel v-else-if="state.sidebarTab === 'audit' && isAdmin" />
+        <AuditPanel v-else-if="state.sidebarTab === 'audit' && canReadAudit" />
         <BusPanel v-else-if="state.sidebarTab === 'bus' && isAdmin" />
-        <UserPanel v-else-if="state.sidebarTab === 'users' && isAdmin" />
+        <UserPanel v-else-if="state.sidebarTab === 'users' && canManageUsers" />
         <TenantPanel v-else-if="state.sidebarTab === 'tenant' && isAdmin" />
         <EventFeed v-else />
       </aside>

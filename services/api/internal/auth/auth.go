@@ -25,9 +25,10 @@ import (
 
 // Roles.
 const (
-	RoleAdmin    = "admin"
-	RoleOperator = "operator"
-	RoleViewer   = "viewer"
+	RoleAdmin       = "admin"
+	RoleTenantAdmin = "tenant_admin"
+	RoleOperator    = "operator"
+	RoleViewer      = "viewer"
 )
 
 // Permissions.
@@ -40,6 +41,9 @@ const (
 	PermCameraRules       = "camera.rules"
 	PermPatrolWrite       = "patrol.write"
 	PermAdmin             = "admin"
+	PermTenantAdmin       = "tenant.admin"
+	PermUserAdmin         = "user.admin"
+	PermAuditRead         = "audit.read"
 )
 
 // User is the authenticated principal (password hash never serialized).
@@ -452,18 +456,20 @@ func validatePassword(password string) error {
 
 // ValidRole reports whether a role string is known.
 func ValidRole(role string) bool {
-	return role == RoleAdmin || role == RoleOperator || role == RoleViewer
+	return role == RoleAdmin || role == RoleTenantAdmin || role == RoleOperator || role == RoleViewer
 }
 
 // Can reports whether a role holds a permission.
 func Can(role, permission string) bool {
 	switch permission {
 	case PermRead:
-		return role == RoleViewer || role == RoleOperator || role == RoleAdmin
+		return role == RoleViewer || role == RoleOperator || role == RoleTenantAdmin || role == RoleAdmin
 	case PermEventAction, PermOrderWrite, PermCameraWrite, PermPatrolWrite:
-		return role == RoleOperator || role == RoleAdmin
-	case PermCameraCalibration, PermCameraRules, PermAdmin:
+		return role == RoleOperator || role == RoleTenantAdmin || role == RoleAdmin
+	case PermCameraCalibration, PermCameraRules, PermAdmin, PermTenantAdmin:
 		return role == RoleAdmin
+	case PermUserAdmin, PermAuditRead:
+		return role == RoleAdmin || role == RoleTenantAdmin
 	default:
 		return false
 	}

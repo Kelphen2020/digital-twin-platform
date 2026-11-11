@@ -225,3 +225,42 @@ func TestTenantSharedMode(t *testing.T) {
 		t.Fatalf("shared setting visibility: %v %v %s", err, ok, value)
 	}
 }
+
+func TestTenantCreateCameraAndArea(t *testing.T) {
+	memory := newMemory(t)
+	seedTenant(t, memory, "tenant_b")
+	ctxA := tenantCtx(model.DefaultTenantID)
+	ctxB := tenantCtx("tenant_b")
+
+	area := model.Area{ID: "area_b_1", Name: "B 区域", Type: "zone", Polygon: [][2]float64{{0, 0}, {10, 0}, {10, 10}}}
+	if err := memory.CreateArea(ctxB, area); err != nil {
+		t.Fatalf("create area in tenant_b: %v", err)
+	}
+	camera := model.Camera{ID: "cam_b_1", Code: "CAM-001", Name: "B 相机", AreaID: area.ID, Status: "online"}
+	if err := memory.CreateCamera(ctxB, camera); err != nil {
+		t.Fatalf("create camera in tenant_b: %v", err)
+	}
+	camerasB, _ := memory.ListCameras(ctxB)
+	if len(camerasB) != 1 || camerasB[0].TenantID != "tenant_b" {
+		t.Fatalf("tenant_b cameras: %+v", camerasB)
+	}
+	camerasA, _ := memory.ListCameras(ctxA)
+	if len(camerasA) != 6 {
+		t.Fatalf("default cameras must stay unchanged: %d", len(camerasA))
+	}
+	areasA, _ := memory.ListAreas(ctxA)
+	for _, candidate := range areasA {
+		if candidate.ID == "area_b_1" {
+			t.Fatal("tenant_b area leaked into default tenant")
+		}
+	}
+	// Same code is allowed per-tenant but unique within a tenant.
+	duplicate := model.Camera{ID: "cam_b_2", Code: "CAM-001", Name: "dup"}
+	if err := memory.CreateCamera(ctxB, duplicate); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate camera code within tenant should conflict, got %v", err)
+	}
+	// A different tenant may reuse the same camera code.
+	if err := memory.CreateCamera(ctxA, model.Camera{ID: "cam_a_test", Code: "CAM-B-001", Name: "A 相机"}); err != nil {
+		t.Fatalf("same code in another tenant: %v", err)
+	}
+}

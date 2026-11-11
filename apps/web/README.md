@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P27.0）
+# 数字孪生安防平台 · Web 前端（P29.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16）、`docs/API_P17.md`–`API_P26.md`（P17–P26 后端/测试阶段，前端沿用）、`docs/API_P27.md`（P27，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16）、`docs/API_P17.md`–`API_P26.md`（P17–P26 后端/测试阶段，前端沿用）、`docs/API_P27.md`（P27）、`docs/API_P28.md`（P28）、`docs/API_P29.md`（P29，均为固定契约）。
 
 ## 快速开始
 
@@ -132,6 +132,17 @@ pnpm dev          # http://127.0.0.1:5173
 - **当前值班**：`GET /api/duty/current?area_id=` 响应新增 `shift`；卡片显示当前班次与当班人员，非值班时间/无班次给出明确提示。
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
+
+### 租户模板 / 租户管理员（P29）
+
+- **新建租户对话框**（admin「租户」tab）：
+  - 租户名称（≤64 字符）；
+  - 「复制模板」下拉：不复制（空租户）或任一现有租户（`GET /api/tenants`）；选择后提示将复制该租户的相机、区域、相机规则与设置（不含事件/工单/审计/用户/巡检）；
+  - 「初始管理员」可选 username/password：填写用户名时密码必填并实时提示 P10 策略（≥10 字符、含字母与数字），用户名需 3–32 字符；
+  - 创建成功后由 `POST /api/tenants` 返回的 `seeded` 生成 Toast，例如「租户已创建：已复制 6 台相机 / 2 个区域 / 6 条规则 / 2 项设置 / 管理员 admin」。
+- **租户管理员角色**：用户新建/编辑角色下拉新增「租户管理员（tenant_admin）」，并提示「仅能管理本租户用户与配置」；后端权限为该租户内用户 CRUD、审计、用户会话/强制下线，不可访问跨租户租户管理接口。
+- **页签可见性**：`tenant_admin` 登录显示「用户」「审计」（以及基础 4 个页签），不显示「租户」「设置」「总线」；`admin` 仍显示 9 个页签；operator/viewer 保持 4 个。
+- README/元数据同步 P29；与后端 P29 对接前先完成静态与部分 UI 验证。
 
 ### 多租户隔离基础（P27）
 
@@ -276,7 +287,7 @@ pnpm dev          # http://127.0.0.1:5173
 | POST | `/api/patrol/schedules/{id}/run` | operator/admin | 立即生成执行任务 |
 | GET | `/api/patrol/executions` | 登录 | 执行列表（status/event_id/limit 过滤） |
 | POST | `/api/patrol/executions/{id}/cancel` | operator/admin（running 仅认领人/admin） | 取消任务（pending/running→cancelled） |
-| GET/POST | `/api/tenants` | admin | 租户列表 / 新建租户 |
+| GET/POST | `/api/tenants` | admin | 租户列表 / 新建租户（P29 支持 template/admin/seeded） |
 | PATCH | `/api/tenants/{id}` | admin | 修改租户名称 / 启用状态 |
 | POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
 | POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
@@ -362,6 +373,7 @@ apps/web/
 | 告警联动巡检 | **实时**：升级设置 `auto_patrol`；执行 `event_id` 关联/筛选；服务端按路线匹配生成任务 |
 | 巡检取消 / 超时 | **实时**：`POST .../cancel`、stats.cancelled、后端 pending/running 超时自动关闭 |
 | 多租户 | **实时**：登录 `tenant_id`、`X-Tenant-ID` 头、WS `tenant_id` 查询参数、admin `/api/tenants` CRUD |
+| 租户模板 / tenant_admin | **实时（后端 P29 待重启）**：`POST /api/tenants {template,admin}`、`seeded` 结果、角色 tenant_admin 页签权限 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -409,6 +421,12 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P29：租户模板 + 初始管理员（admin）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"XX园区","template":"default","admin":{"username":"admin","password":"Admin@123456"}}' \
+  http://localhost:8080/api/tenants
+# 响应含 seeded（cameras/areas/rules/settings/admin）；tenant_admin 角色仅可访问本租户用户/审计接口
 
 # P27：多租户（admin 管理；登录可指定 tenant_id）
 # 登录时 body 可带 tenant_id（缺省 default）；之后所有请求带 X-Tenant-ID: <tenant>
@@ -577,5 +595,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P16 取消：pending 由 operator/admin 取消，running 仅认领人或 admin；前端二次确认 + 可选备注，成功后刷新列表与统计；已完成/已取消不显示取消按钮。
 - P27 租户：登录后租户 id 持久化，切租户需重新登录；非 admin 顶栏回退显示 tenant id（`GET /api/tenants` 为 admin 接口）；内置 `default` 页签内不可停用。
 - P27 数据隔离由后端执行（严格模式 `TENANT_SHARED=0`；无 `X-Tenant-ID` 的旧客户端仍按 default）；前端只负责携带与展示租户上下文。
+- P29 模板/初始管理员由后端复制与创建；前端只在创建响应 `seeded` 可用时展示复制数量，兼容旧后端（无 seeded 时仅提示「租户已创建」）。
+- tenant_admin 不显示「租户」页签（`GET/POST/PATCH /api/tenants` 仅 admin）；其用户/审计接口由后端按 JWT/租户头做本租户隔离。
+- tenant_admin 不可使用设置/总线（仍 admin-only）；当前端为旧后端时后端可能拒绝 tenant_admin 创建，待 P29 API 重启后进行完整 live 验证。
 - 超时自动关闭由后端调度器执行（pending 60 分钟 / running 120 分钟，环境变量可关）；前端通过 WS `patrol_execution` 感知，不做本地计时。
 - 历史归档默认仍清理 done/issue；`cancelled` 已纳入后端允许的归档状态，但当前 UI 默认不勾选 cancelled（保持 P14 行为）。
