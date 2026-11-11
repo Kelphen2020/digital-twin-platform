@@ -692,6 +692,41 @@ export async function exportAuditCsv(params: AuditExportParams = {}): Promise<Bl
   return response.blob()
 }
 
+// ---------------- P31 租户数据导出（admin） ----------------
+
+export async function exportTenant(
+  tenantId: string,
+  options: { includeTracks?: boolean; includeAudit?: boolean } = {},
+): Promise<{ blob: Blob; counts: import('./types').TenantExportCounts }> {
+  const query = new URLSearchParams()
+  if (options.includeTracks) query.set('include_tracks', '1')
+  if (options.includeAudit) query.set('include_audit', '1')
+  const suffix = query.toString()
+  const response = await fetchWithAuth(`/api/tenants/${encodeURIComponent(tenantId)}/export${suffix ? `?${suffix}` : ''}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json', ...authHeaders() },
+  })
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized(`/api/tenants/${tenantId}/export`)
+    throw error
+  }
+  const blob = await response.blob()
+  let counts: import('./types').TenantExportCounts = {
+    areas: 0, cameras: 0, camera_rules: 0, settings: 0, users: 0, events: 0, orders: 0,
+    notification_log: 0, patrol_routes: 0, patrol_schedules: 0, patrol_executions: 0,
+    tracks: 0, audit: 0,
+  }
+  try {
+    const text = await blob.text()
+    const parsed = JSON.parse(text)
+    if (parsed && parsed.counts) counts = { ...counts, ...parsed.counts }
+  } catch {
+    // Keep the blob; a malformed payload still downloads for inspection.
+  }
+  return { blob, counts }
+}
+
 // ---------------- P12 巡检路线 ----------------
 
 /** GET /api/patrol/routes（登录用户）→ 巡检路线列表。 */

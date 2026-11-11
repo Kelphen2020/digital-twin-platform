@@ -1314,3 +1314,32 @@ SKIP  smoke (postgres)  (--quick)
 - 相机创建接口不存在（相机由模板/种子产生），`max_cameras` 仅在模板复制时生效。
 - 删除为物理删除、不可撤销；审计仅保留默认租户内的一条 `tenant.delete` 摘要（含各表计数）。
 - 配额从内存态 token bucket 计算 ingest QPS，多副本部署需改共享限流。
+
+---
+
+# P31.0 验收记录（2026-11-11 傍晚）
+
+## 128. 租户数据导出与共享限流
+
+| 能力 | 说明 | 证据 |
+|---|---|---|
+| 数据包导出 | `GET /api/tenants/{id}/export`（admin）：JSON 附件 `tenant-<id>.json`，含 tenant/exported_at/counts/data（区域/相机/规则/设置/用户/事件/工单/通知/巡检）；**不含** password_hash、token_hash；`include_tracks=1`、`include_audit=1` 可选；审计 `tenant.export` | 实测：默认租户导出 200，`Content-Disposition: attachment; filename="tenant-default.json"`，counts `{areas:4,cameras:6,users:3}`，payload 无 `token_hash`，用户无 `password_hash` |
+| 共享限流 | `RATE_STORE=postgres`：迁移 015 `tenant_rate_buckets` + `Take`（SELECT ... FOR UPDATE，按 elapsed 补偿令牌，burst=qps）；无数据库时回退内存并告警一次 | 单测 `TestPostgresRateStore`（PG_TEST_URL 门控）：2 QPS 桶第 3 次拒绝、无限制放行 |
+| 前端 | 租户卡片「导出」按钮 + 「包含轨迹/包含审计」勾选 + 「归档前建议先导出数据」提示；成功 Toast 汇总计数 | `pnpm typecheck` / `lint` / `build` 全绿，dev server :5173 标题 P31.0 |
+| 测试 | `TestTenantExport`（结构/计数/无敏感字段/flags/404/403）、`TestTenantExportOfSecondaryTenant`（模板租户导出） | 全 PASS |
+
+## 129. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| 覆盖率 | **63.4%**（门禁 62%） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke`（默认租户） | ✅ **PASS 263/263** |
+
+## 130. 已知限制（P31.0）
+
+- 导出为同步 JSON（事件/工单上限 1 万条，轨迹/审计各 1000 条），超大租户需异步导出任务。
+- 导出内容不含处置动作明细（actions）与轨迹默认关闭，仅按需包含轨迹/审计。
+- 共享限流仅在 `RATE_STORE=postgres` 且使用 PostgreSQL 存储时生效；内存模式仍是进程内桶。
+- 本轮两名队友再次连续中断，P31 后端与前端导出 UI 均由我完成并验证。

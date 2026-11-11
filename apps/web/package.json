@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "P30.0 数字孪生安防平台 Web 端（Vue 3 + Three.js + 租户生命周期 / 配额管理）",
+  "description": "P31.0 数字孪生安防平台 Web 端（Vue 3 + Three.js + 租户生命周期 / 配额 / 数据导出）",
   "scripts": {
     "dev": "vite --port 5173 --strictPort",
     "build": "vue-tsc --noEmit && vite build",

@@ -4,6 +4,7 @@ import {
   archiveTenant as requestArchiveTenant,
   createTenant as requestCreateTenant,
   deleteTenant as requestDeleteTenant,
+  exportTenant as requestExportTenant,
   fetchTenants,
   restoreTenant as requestRestoreTenant,
   updateTenant as requestUpdateTenant,
@@ -85,6 +86,49 @@ async function updateTenant(tenantId: string, payload: TenantUpdatePayload): Pro
     return null
   } finally {
     state.updatingId = null
+  }
+}
+
+const EXPORT_LABELS: Record<string, string> = {
+  cameras: '相机',
+  areas: '区域',
+  camera_rules: '规则',
+  settings: '设置',
+  users: '用户',
+  events: '事件',
+  orders: '工单',
+  notification_log: '通知',
+  patrol_routes: '巡检路线',
+  patrol_schedules: '巡检计划',
+  patrol_executions: '巡检执行',
+  tracks: '轨迹点',
+  audit: '审计',
+}
+
+// exportTenant downloads the tenant data package and summarises its counts.
+async function exportTenant(
+  tenantId: string,
+  options: { includeTracks?: boolean; includeAudit?: boolean } = {},
+): Promise<boolean> {
+  try {
+    const { blob, counts } = await requestExportTenant(tenantId, options)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `tenant-${tenantId}.json`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    const summary = Object.entries(counts)
+      .filter(([key, value]) => value > 0 && key in EXPORT_LABELS)
+      .map(([key, value]) => `${EXPORT_LABELS[key]} ${value}`)
+      .join(' / ')
+    pushToast(`租户数据已导出${summary ? `：${summary}` : '（空数据包）'}`, 'success')
+    return true
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return false
   }
 }
 
@@ -193,6 +237,7 @@ export function useTenantStore() {
     createTenant,
     updateTenant,
     archiveTenant,
+    exportTenant,
     restoreTenant,
     deleteTenant,
     updateTenantLimits,

@@ -4290,3 +4290,19 @@ dd {
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
+
+/* P31: tenant export options */
+.tenant-export-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 0 4px 10px;
+  font-size: 12px;
+  color: var(--text-dim, #9aa7b4);
+}
+.tenant-export-options .checkbox-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

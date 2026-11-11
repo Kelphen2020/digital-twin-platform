@@ -570,6 +570,22 @@ export interface TenantSeeded {
   admin: string
 }
 
+export interface TenantExportCounts {
+  areas: number
+  cameras: number
+  camera_rules: number
+  settings: number
+  users: number
+  events: number
+  orders: number
+  notification_log: number
+  patrol_routes: number
+  patrol_schedules: number
+  patrol_executions: number
+  tracks: number
+  audit: number
+}
+
 export interface TenantLimits {
   max_cameras: number
   max_users: number

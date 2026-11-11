@@ -12,6 +12,7 @@ const {
   restoreTenant,
   deleteTenant,
   updateTenantLimits,
+  exportTenant,
 } = useTenantStore()
 
 // ---- 新建租户（P29：模板复制 + 初始管理员） ----
@@ -27,6 +28,14 @@ const adminPasswordHasDigit = computed(() => /\d/.test(adminPassword.value))
 const templateName = computed(
   () => state.tenants.find((tenant) => tenant.id === createTemplate.value)?.name ?? '',
 )
+
+// ---- 导出（P31） ----
+const includeTracks = ref(false)
+const includeAudit = ref(false)
+
+function requestExport(tenant: Tenant) {
+  void exportTenant(tenant.id, { includeTracks: includeTracks.value, includeAudit: includeAudit.value })
+}
 
 // ---- 归档 / 恢复 / 删除 / 配额（P30） ----
 const confirmingArchiveId = ref<string | null>(null)
@@ -252,6 +261,17 @@ onMounted(() => {
     </header>
 
     <div class="admin-scroll">
+      <div class="tenant-export-options">
+        <label class="checkbox-line">
+          <input v-model="includeTracks" type="checkbox" />
+          导出包含轨迹（最近 1000 点）
+        </label>
+        <label class="checkbox-line">
+          <input v-model="includeAudit" type="checkbox" />
+          导出包含审计（最近 1000 条）
+        </label>
+        <span class="panel-hint">归档前建议先导出数据留存。</span>
+      </div>
       <p v-if="state.loading && state.tenants.length === 0" class="detail-loading">正在加载租户…</p>
       <p v-else-if="state.error" class="form-error">
         租户加载失败：{{ state.error }}
@@ -276,6 +296,7 @@ onMounted(() => {
           <p class="tenant-meta">配额：{{ limitsSummary(tenant) }}</p>
           <p v-if="tenant.archived && tenant.archived_at" class="tenant-meta">归档时间：{{ tenant.archived_at }}</p>
           <div class="tenant-actions">
+            <button class="ghost-btn" @click="requestExport(tenant)">导出</button>
             <button class="ghost-btn" @click="openEdit(tenant)">编辑</button>
             <button class="ghost-btn" @click="openQuota(tenant)">配额</button>
             <template v-if="tenant.archived">
