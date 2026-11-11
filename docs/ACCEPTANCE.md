@@ -1239,3 +1239,35 @@ SKIP  smoke (postgres)  (--quick)
 - 租户无初始化模板（新租户无相机/用户），需要「复制默认租户骨架」能力。
 - PG 侧 `track_points` 无历史数据迁移校验（新增列默认 default，旧数据归默认租户，符合预期）。
 - PostgreSQL 运行在 amd64 模拟环境下，长轮询类检查（升级/调度）偶发一次超时；重跑即绿，非功能缺陷。
+
+---
+
+# P29.0 验收记录（2026-11-11 上午）
+
+## 122. 后端能力
+
+| 能力 | 说明 |
+|---|---|
+| 租户初始化模板 | `POST /api/tenants {template, admin}`：复制模板租户的相机/区域/相机规则/设置（ID 重新生成、相机→区域重映射），创建初始 `tenant_admin`（P10 密码策略，冲突 409），响应 `seeded {cameras,areas,rules,settings,admin}`；未知模板 400；审计含 template/seeded |
+| 租户管理员角色 | `tenant_admin`：operator 级读写 + 用户 CRUD/会话/强制下线（`PermUserAdmin`）+ 审计读取/导出（`PermAuditRead`）；租户 CRUD、设置、值班、总线、通知、巡检清理仍仅 admin（403） |
+| 总线租户隔离 | `Envelope.tenant_id` 打标；`ReadRangeForTenant` 按租户过滤；jsonl 旧行（无字段）视为 default；`/api/bus/status` 暴露 `tenants` 计数；`/api/bus/replay` 默认只回放调用者租户，`all_tenants:true`（admin）回放全部，响应 `items[]` 带 tenant_id |
+
+## 123. 测试与验证
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（新增 bus 2、store 1、api 3 个测试套件） |
+| `golangci-lint` | ✅ 0 issues |
+| 覆盖率 | **64.3%**（门禁 62%） |
+| `make smoke`（:8080 无租户头） | ✅ **PASS 263/263**（默认租户行为不变） |
+| smoke（PostgreSQL :8081） | ✅ **263/263**（后端自测，jsonl 总线含租户字段） |
+| 前端 E2E（headless Chrome） | ✅ 模板+初始管理员创建租户 → Toast「已复制 6 台相机 / 4 个区域 / 6 条规则 / 2 项设置 / 管理员 admin2」；新租户初始管理员登录即 `tenant_admin`（6 页签，无租户/设置/总线）；tenant_admin 可访问用户与审计（200），`/api/tenants` 403；未知模板 400、弱密码 400；P0–P28 回归正常；console errors=[] |
+| 截图 | `docs/screenshots/p29-live-create.png`、`p29-live-tenant.png`、`p29-live-tenant-admin.png`、`p29-live-audit.png`、`p29-tenant-create.png`、`p29-role.png` |
+
+## 124. 已知限制（P29.0）
+
+- 模板复制会重新生成相机/区域 ID（PG 主键全局唯一），外部若有硬编码 ID 的集成需注意。
+- 模板不复制事件/工单/审计/用户/巡检历史（按设计）。
+- `seeded.settings` 为 0 属正常：默认设置是隐式的，只有显式保存过才计 1 项。
+- 租户管理员不能管理设置/值班/总线（保留 admin 专属）。
+- 演示环境残留若干验证租户（无删除接口），后续可加归档/删除能力。
