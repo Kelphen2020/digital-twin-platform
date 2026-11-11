@@ -64,6 +64,13 @@ PASS  smoke (postgres)
 - CI 中 `BUS_DRIVER=memory`（smoke-memory）与默认 jsonl（smoke-postgres 未显式设置时用默认内存 bus）均可运行；本地默认 jsonl 便于回放调试。
 - 新增 smoke 检查后无需改 CI：脚本自检，检查数随 `scripts/smoke.sh` 自动变化。
 
+## 4.1 端口与探测策略（P29 加固）
+
+- 本地 CI 使用**随机高位端口**（`MEMORY_PORT`/`PG_PORT` 可覆盖），避免与本机其他服务冲突。
+- 健康探测同时校验 `"status":"ok"` 载荷，并自动回退 IPv6 `[::1]`（API 监听 `*` 时，docker-proxy 可能占用 IPv4 回环端口）。
+- PostgreSQL 阶段在 `psql` 就绪后还会等待宿主机端口真实连通，再启动 API。
+- 失败时打印 API 日志与端口监听进程，便于定位。
+
 ## 5. 代码质量门禁（P20.0）
 
 ### Go：golangci-lint

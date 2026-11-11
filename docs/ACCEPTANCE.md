@@ -1264,6 +1264,15 @@ SKIP  smoke (postgres)  (--quick)
 | 前端 E2E（headless Chrome） | ✅ 模板+初始管理员创建租户 → Toast「已复制 6 台相机 / 4 个区域 / 6 条规则 / 2 项设置 / 管理员 admin2」；新租户初始管理员登录即 `tenant_admin`（6 页签，无租户/设置/总线）；tenant_admin 可访问用户与审计（200），`/api/tenants` 403；未知模板 400、弱密码 400；P0–P28 回归正常；console errors=[] |
 | 截图 | `docs/screenshots/p29-live-create.png`、`p29-live-tenant.png`、`p29-live-tenant-admin.png`、`p29-live-audit.png`、`p29-tenant-create.png`、`p29-role.png` |
 
+## 123.1 本地 CI 全流程（含 PostgreSQL）
+
+| 项 | 结果 |
+|---|---|
+| `./scripts/ci_local.sh`（8 阶段，含 PG） | ✅ **全 PASS**（smoke(memory) 与 smoke(postgres) 均 263/263） |
+| CI 脚本加固 | ① 实例端口改为随机高位端口并支持 `MEMORY_PORT`/`PG_PORT` 覆盖；② 健康探测校验 `"status":"ok"` 载荷而非任意 200；③ IPv6 感知：当 `127.0.0.1:<port>` 被 docker-proxy 等进程占用时自动改用 `[::1]`；④ PG 阶段等待宿主机真实连通后再启动 API；⑤ 失败时输出完整 API 日志与端口监听方 |
+
+> 本轮排障发现：把容器端口与 API 端口设为相同时，docker-proxy 抢占 `127.0.0.1`，导致 CI 探测到错误服务（曾误命中本机 Higress Console）。已通过随机端口 + IPv6 回退彻底规避。
+
 ## 124. 已知限制（P29.0）
 
 - 模板复制会重新生成相机/区域 ID（PG 主键全局唯一），外部若有硬编码 ID 的集成需注意。
