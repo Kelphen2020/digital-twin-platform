@@ -1324,7 +1324,7 @@ SKIP  smoke (postgres)  (--quick)
 | 能力 | 说明 | 证据 |
 |---|---|---|
 | 数据包导出 | `GET /api/tenants/{id}/export`（admin）：JSON 附件 `tenant-<id>.json`，含 tenant/exported_at/counts/data（区域/相机/规则/设置/用户/事件/工单/通知/巡检）；**不含** password_hash、token_hash；`include_tracks=1`、`include_audit=1` 可选；审计 `tenant.export` | 实测：默认租户导出 200，`Content-Disposition: attachment; filename="tenant-default.json"`，counts `{areas:4,cameras:6,users:3}`，payload 无 `token_hash`，用户无 `password_hash` |
-| 共享限流 | `RATE_STORE=postgres`：迁移 015 `tenant_rate_buckets` + `Take`（SELECT ... FOR UPDATE，按 elapsed 补偿令牌，burst=qps）；无数据库时回退内存并告警一次 | 单测 `TestPostgresRateStore`（PG_TEST_URL 门控）：2 QPS 桶第 3 次拒绝、无限制放行 |
+| 共享限流 | `RATE_STORE=postgres`：迁移 015 `tenant_rate_buckets` + `Take`（SELECT ... FOR UPDATE，按 elapsed 补偿令牌，burst=qps）；无数据库时回退内存并告警一次 | 单测 `TestPostgresRateStore`（PG_TEST_URL 门控，实测 PASS）：2 QPS 桶第 3 次拒绝、无限制放行；迁移 015 在 PG 上正常应用（`tenant_rate_buckets` 建表） |
 | 前端 | 租户卡片「导出」按钮 + 「包含轨迹/包含审计」勾选 + 「归档前建议先导出数据」提示；成功 Toast 汇总计数 | `pnpm typecheck` / `lint` / `build` 全绿，dev server :5173 标题 P31.0 |
 | 测试 | `TestTenantExport`（结构/计数/无敏感字段/flags/404/403）、`TestTenantExportOfSecondaryTenant`（模板租户导出） | 全 PASS |
 
@@ -1336,6 +1336,8 @@ SKIP  smoke (postgres)  (--quick)
 | 覆盖率 | **63.4%**（门禁 62%） |
 | `golangci-lint` | ✅ 0 issues |
 | `make smoke`（默认租户） | ✅ **PASS 263/263** |
+| 本地 CI（`--quick`） | ✅ 8 阶段全 PASS |
+| PG 契约与限流测试（真实 PostGIS） | ✅ `TestPostgresContract` + `TestPostgresRateStore` PASS |
 
 ## 130. 已知限制（P31.0）
 
