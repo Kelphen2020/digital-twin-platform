@@ -7,14 +7,14 @@
 | 文档 | 说明 |
 |---|---|
 | [`README.md`](../README.md) | 项目总览、快速开始、里程碑速览 |
-| [`docs/MILESTONES.md`](MILESTONES.md) | P0→P29 契约文档导航表 |
+| [`docs/MILESTONES.md`](MILESTONES.md) | P0→P30 契约文档导航表 |
 
 ## 2. 契约（按阶段）
 
 | 阶段 | 文档 |
 |---|---|
 | P0 | [`API.md`](API.md) |
-| P1+ | 见 `docs/API_P1.md` … `docs/API_P16.md`、`docs/API_P27.md`（多租户）、`docs/API_P29.md`（租户模板/角色/总线）与 `docs/P19.md`（部署与扩展） |
+| P1+ | 见 `docs/API_P1.md` … `docs/API_P16.md`、`docs/API_P27.md`（多租户）、`docs/API_P29.md`（租户模板/角色/总线）、`docs/API_P30.md`（租户归档/配额）与 `docs/P19.md`（部署与扩展） |
 
 ## 3. 验收与质量
 
@@ -34,4 +34,4 @@
 
 ## 5. 截图
 
-`docs/screenshots/` 按阶段前缀命名（`p0-*.png` … `p29-*.png`），与 ACCEPTANCE 记录一一对应。
+`docs/screenshots/` 按阶段前缀命名（`p0-*.png` … `p30-*.png`），与 ACCEPTANCE 记录一一对应。
