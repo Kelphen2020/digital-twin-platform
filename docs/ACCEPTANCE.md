@@ -1280,3 +1280,35 @@ SKIP  smoke (postgres)  (--quick)
 - `seeded.settings` 为 0 属正常：默认设置是隐式的，只有显式保存过才计 1 项。
 - 租户管理员不能管理设置/值班/总线（保留 admin 专属）。
 - 演示环境残留若干验证租户（无删除接口），后续可加归档/删除能力。
+
+---
+
+# P30.0 验收记录（2026-11-11 中午）
+
+## 125. 租户生命周期与配额
+
+| 能力 | 说明 | 证据 |
+|---|---|---|
+| 归档 | `POST /api/tenants/{id}/archive`：`archived=true, active=false, archived_at`；默认租户受保护（400） | 实测 200 + archived:true；default 400 |
+| 归档后访问 | 中间件返回 `403 tenant_archived`（区别于 inactive） | 归档租户登录实测 403 |
+| 恢复 | `POST /api/tenants/{id}/restore` → active=true、清空 archived_at | 实测 200 |
+| 彻底删除 | `DELETE /api/tenants/{id}?confirm=<id>`：confirm 不一致 400、未归档 409、默认租户 400；清理 16 类数据并返回计数；审计写入默认租户 | 实测 409 → 归档 → `{"deleted":{"cameras":6,"areas":4,"rules":6,"settings":2,"users":1,...}}` |
+| 配额 | `limits{max_cameras,max_users,max_events,ingest_qps}`：用户/事件/ingest QPS 超限 → 429 `quota_exceeded`；模板复制受 max_cameras 限制；指标 `dsh_twin_tenant_quota_exceeded_total{tenant,dimension}` | 单测：用户配额 429、事件配额第二次 ingest 429、指标有值、负值 400 |
+| 前端 | 租户卡片：已归档徽标/归档时间/配额摘要；配额编辑对话框；归档/恢复两步确认；删除需先归档并输入完整租户 ID（否则禁止），成功后展示删除计数 | 构建通过（typecheck/lint/build 绿），dev server 运行于 :5173（标题 P30.0） |
+
+## 126. 测试与回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（新增 `TestTenantArchiveRestoreAndDelete`、`TestTenantQuotas`） |
+| 覆盖率 | **63.4%**（api 包 73.0%，门禁 62%） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke`（默认租户） | ✅ **PASS 263/263** |
+| 前端 | ✅ `pnpm typecheck` + `pnpm lint` + `pnpm build` |
+
+## 127. 已知限制（P30.0）
+
+- 走查中两名队友（后端/前端）连续异常中断，本轮 P30 后端由我接手完成，前端在队友已完成的改动基础上由我复核构建（typecheck/lint/build 通过）。
+- 相机创建接口不存在（相机由模板/种子产生），`max_cameras` 仅在模板复制时生效。
+- 删除为物理删除、不可撤销；审计仅保留默认租户内的一条 `tenant.delete` 摘要（含各表计数）。
+- 配额从内存态 token bucket 计算 ingest QPS，多副本部署需改共享限流。
