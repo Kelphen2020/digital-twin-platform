@@ -49,6 +49,7 @@ import type {
   TrackListResponse,
   Tenant,
   TenantCreatePayload,
+  TenantDeleteResult,
   TenantListResponse,
   TenantUpdatePayload,
   TrackPoint,
@@ -253,6 +254,9 @@ export function apiErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401) return '登录已过期，请重新登录'
     if (error.status === 403) {
+      if (error.code === 'tenant_archived' || error.message.includes('tenant_archived')) {
+        return '租户已归档'
+      }
       if (error.code === 'tenant_inactive' || error.message.includes('tenant_inactive')) {
         return '租户已停用'
       }
@@ -265,6 +269,17 @@ export function apiErrorMessage(error: unknown): string {
       return `当前角色无此操作权限（403）：${error.message}`
     }
     if (error.status === 429) {
+      // P30 租户配额：error=quota_exceeded（message 含维度）
+      if (error.code === 'quota_exceeded' || error.message.includes('quota_exceeded')) {
+        const dimensions: [string, string][] = [
+          ['cameras', '相机'],
+          ['users', '用户'],
+          ['events', '事件'],
+          ['ingest_qps', 'ingest QPS'],
+        ]
+        const matched = dimensions.find(([key]) => error.message.includes(key))
+        return matched ? `超出配额：${matched[1]}（${error.message}）` : `超出配额：${error.message}`
+      }
       // P10 登录防爆破：error=too_many_attempts + Retry-After 秒
       if (error.code === 'too_many_attempts' || error.message.includes('too_many_attempts')) {
         return '登录失败次数过多，请稍后重试'
@@ -813,9 +828,29 @@ export async function createTenant(payload: TenantCreatePayload): Promise<Tenant
   return postJson<Tenant>('/api/tenants', payload)
 }
 
-/** PATCH /api/tenants/{id}（admin）→ 修改名称/启用状态。 */
+/** PATCH /api/tenants/{id}（admin）→ 修改名称/启用状态/配额。 */
 export async function updateTenant(tenantId: string, payload: TenantUpdatePayload): Promise<Tenant> {
   return patchJson<Tenant>(`/api/tenants/${encodeURIComponent(tenantId)}`, payload)
+}
+
+/** POST /api/tenants/{id}/archive（admin）→ 归档（可恢复只读冻结）。 */
+export async function archiveTenant(tenantId: string): Promise<Tenant> {
+  return postJson<Tenant>(`/api/tenants/${encodeURIComponent(tenantId)}/archive`)
+}
+
+/** POST /api/tenants/{id}/restore（admin）→ 恢复归档租户。 */
+export async function restoreTenant(tenantId: string): Promise<Tenant> {
+  return postJson<Tenant>(`/api/tenants/${encodeURIComponent(tenantId)}/restore`)
+}
+
+/** DELETE /api/tenants/{id}?confirm=<id>（admin，仅归档后）→ 清理计数。 */
+export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult> {
+  const response = await fetchWithAuth(
+    `/api/tenants/${encodeURIComponent(tenantId)}?confirm=${encodeURIComponent(tenantId)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw await parseError(response)
+  return (await response.json()) as TenantDeleteResult
 }
 
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */

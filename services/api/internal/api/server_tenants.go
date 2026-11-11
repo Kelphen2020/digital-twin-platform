@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,6 +30,10 @@ func (s *Server) resolveTenant(w http.ResponseWriter, r *http.Request, requested
 	}
 	if !ok {
 		writeError(w, http.StatusBadRequest, "unknown_tenant", "unknown tenant "+tenantID)
+		return nil, "", false
+	}
+	if tenant.Archived {
+		writeError(w, http.StatusForbidden, "tenant_archived", "tenant "+tenantID+" is archived")
 		return nil, "", false
 	}
 	if !tenant.Active {
@@ -202,6 +207,11 @@ func (s *Server) seedTenantTemplate(ctx context.Context, templateID, newTenantID
 	if err != nil {
 		return seeded, err
 	}
+	// Respect the new tenant's max_cameras quota (P30.0): copy at most the limit.
+	if tenant, ok, getErr := s.store.GetTenant(ctx, newTenantID); getErr == nil && ok && tenant.Limits.MaxCameras > 0 && len(cameras) > tenant.Limits.MaxCameras {
+		cameras = cameras[:tenant.Limits.MaxCameras]
+		s.metrics.RecordTenantQuotaExceeded(newTenantID, "cameras")
+	}
 	cameraIDs := make(map[string]string, len(cameras))
 	for _, camera := range cameras {
 		clone := camera
@@ -266,12 +276,20 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name   *string `json:"name"`
-		Active *bool   `json:"active"`
+		Name   *string             `json:"name"`
+		Active *bool               `json:"active"`
+		Limits *model.TenantLimits `json:"limits"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
+	}
+	if body.Limits != nil {
+		if err := validateTenantLimits(*body.Limits); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		current.Limits = *body.Limits
 	}
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
@@ -293,8 +311,174 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	s.audit(r, "tenant.update", current.ID, map[string]any{"name": current.Name, "active": current.Active})
+	s.audit(r, "tenant.update", current.ID, map[string]any{
+		"name": current.Name, "active": current.Active, "limits": current.Limits,
+	})
 	writeJSON(w, http.StatusOK, current)
+}
+
+// validateTenantLimits rejects negative quota values.
+func validateTenantLimits(limits model.TenantLimits) error {
+	for name, value := range map[string]int{
+		"max_cameras": limits.MaxCameras,
+		"max_users":   limits.MaxUsers,
+		"max_events":  limits.MaxEvents,
+		"ingest_qps":  limits.IngestQPS,
+	} {
+		if value < 0 {
+			return fmt.Errorf("%s must be >= 0", name)
+		}
+	}
+	return nil
+}
+
+// loadTenant returns the tenant for the request path (admin routes).
+func (s *Server) loadTenant(w http.ResponseWriter, r *http.Request) (model.Tenant, bool) {
+	tenant, ok, err := s.store.GetTenant(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return model.Tenant{}, false
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "tenant not found")
+		return model.Tenant{}, false
+	}
+	return tenant, true
+}
+
+// handleArchiveTenant is POST /api/tenants/{id}/archive (admin).
+func (s *Server) handleArchiveTenant(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermTenantAdmin); !ok {
+		return
+	}
+	tenant, ok := s.loadTenant(w, r)
+	if !ok {
+		return
+	}
+	if tenant.ID == model.DefaultTenantID {
+		writeError(w, http.StatusBadRequest, "bad_request", "the default tenant cannot be archived")
+		return
+	}
+	now := time.Now().UTC()
+	tenant.Archived = true
+	tenant.ArchivedAt = &now
+	tenant.Active = false
+	tenant.UpdatedAt = now
+	if err := s.store.UpdateTenant(r.Context(), tenant); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "tenant.archive", tenant.ID, map[string]any{"name": tenant.Name})
+	writeJSON(w, http.StatusOK, tenant)
+}
+
+// handleRestoreTenant is POST /api/tenants/{id}/restore (admin).
+func (s *Server) handleRestoreTenant(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermTenantAdmin); !ok {
+		return
+	}
+	tenant, ok := s.loadTenant(w, r)
+	if !ok {
+		return
+	}
+	tenant.Archived = false
+	tenant.ArchivedAt = nil
+	tenant.Active = true
+	tenant.UpdatedAt = time.Now().UTC()
+	if err := s.store.UpdateTenant(r.Context(), tenant); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "tenant.restore", tenant.ID, map[string]any{"name": tenant.Name})
+	writeJSON(w, http.StatusOK, tenant)
+}
+
+// handleDeleteTenant is DELETE /api/tenants/{id}?confirm=<id> (admin).
+func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermTenantAdmin); !ok {
+		return
+	}
+	tenant, ok := s.loadTenant(w, r)
+	if !ok {
+		return
+	}
+	if tenant.ID == model.DefaultTenantID {
+		writeError(w, http.StatusBadRequest, "bad_request", "the default tenant cannot be deleted")
+		return
+	}
+	if confirm := strings.TrimSpace(r.URL.Query().Get("confirm")); confirm != tenant.ID {
+		writeError(w, http.StatusBadRequest, "bad_request", "confirm must equal the tenant id")
+		return
+	}
+	if !tenant.Archived {
+		writeError(w, http.StatusConflict, "invalid_state", "archive the tenant before deleting it")
+		return
+	}
+	counts, err := s.store.DeleteTenant(r.Context(), tenant.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrProtectedTenant) {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		if store.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not_found", "tenant not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	// Record the deletion in the default tenant so the audit trail survives.
+	_ = s.store.AddAudit(store.WithTenant(r.Context(), model.DefaultTenantID), model.AuditEntry{
+		ID: newID("aud"), At: time.Now().UTC(), Actor: userOf(r).Username,
+		Action: "tenant.delete", Resource: tenant.ID,
+		Detail: map[string]any{"name": tenant.Name, "deleted": counts},
+	})
+	s.metrics.RecordTenantRequest(model.DefaultTenantID)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": counts, "tenant_id": tenant.ID})
+}
+
+// tenantQuotaExceeded rejects a request with 429 and records the metric.
+func (s *Server) tenantQuotaExceeded(w http.ResponseWriter, r *http.Request, dimension string) {
+	tenantID := store.TenantFrom(r.Context())
+	s.metrics.RecordTenantQuotaExceeded(tenantID, dimension)
+	writeError(w, http.StatusTooManyRequests, "quota_exceeded",
+		"tenant quota exceeded: "+dimension)
+}
+
+// tenantLimits returns the current tenant's quotas when a tenant exists.
+func (s *Server) tenantLimits(ctx context.Context) (model.TenantLimits, bool) {
+	tenant, ok, err := s.store.GetTenant(ctx, store.TenantFrom(ctx))
+	if err != nil || !ok {
+		return model.TenantLimits{}, false
+	}
+	return tenant.Limits, true
+}
+
+// allowIngestQPS enforces the per-tenant ingest token bucket (0 = unlimited).
+func (s *Server) allowIngestQPS(tenantID string, qps int) bool {
+	if qps <= 0 {
+		return true
+	}
+	s.ingestRateMu.Lock()
+	if s.ingestRates == nil {
+		s.ingestRates = make(map[string]*RateLimiter)
+	}
+	limiter, ok := s.ingestRates[tenantID]
+	if !ok || limiter.rate != float64(qps) {
+		limiter = NewRateLimiter(qps, qps)
+		s.ingestRates[tenantID] = limiter
+	}
+	s.ingestRateMu.Unlock()
+	return limiter.Allow()
+}
+
+// checkCountQuota enforces a count-based limit (cameras, users, events).
+func (s *Server) checkCountQuota(w http.ResponseWriter, r *http.Request, dimension string, limit, current int) bool {
+	if limit <= 0 || current < limit {
+		return true
+	}
+	s.tenantQuotaExceeded(w, r, dimension)
+	return false
 }
 
 // loadNotificationSettings reads the caller tenant's notification settings.

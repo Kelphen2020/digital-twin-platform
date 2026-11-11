@@ -570,10 +570,22 @@ export interface TenantSeeded {
   admin: string
 }
 
+export interface TenantLimits {
+  max_cameras: number
+  max_users: number
+  max_events: number
+  ingest_qps: number
+}
+
 export interface Tenant {
   id: string
   name: string
   active: boolean
+  /** P30：归档状态（可恢复的只读冻结）。 */
+  archived?: boolean
+  archived_at?: string | null
+  /** P30：租户配额；0 或缺失表示不限制。 */
+  limits?: Partial<TenantLimits> | null
   /** P29：创建响应中的模板复制/初始管理员结果。 */
   seeded?: TenantSeeded
 }
@@ -593,6 +605,12 @@ export interface TenantCreatePayload {
 export interface TenantUpdatePayload {
   name?: string
   active?: boolean
+  limits?: Partial<TenantLimits>
+}
+
+/** DELETE /api/tenants/{id}?confirm= 的删除计数。 */
+export interface TenantDeleteResult {
+  deleted: Record<string, number>
 }
 
 // ---------------- P12：巡检路线 ----------------

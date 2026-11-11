@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useTenantStore } from '../store/tenant'
-import type { Tenant } from '../types'
+import type { Tenant, TenantLimits } from '../types'
 
-const { state, loadTenants, createTenant, updateTenant } = useTenantStore()
+const {
+  state,
+  loadTenants,
+  createTenant,
+  updateTenant,
+  archiveTenant,
+  restoreTenant,
+  deleteTenant,
+  updateTenantLimits,
+} = useTenantStore()
 
 // ---- 新建租户（P29：模板复制 + 初始管理员） ----
 const createOpen = ref(false)
@@ -18,6 +27,99 @@ const adminPasswordHasDigit = computed(() => /\d/.test(adminPassword.value))
 const templateName = computed(
   () => state.tenants.find((tenant) => tenant.id === createTemplate.value)?.name ?? '',
 )
+
+// ---- 归档 / 恢复 / 删除 / 配额（P30） ----
+const confirmingArchiveId = ref<string | null>(null)
+const confirmingRestoreId = ref<string | null>(null)
+const deleteDialog = ref<Tenant | null>(null)
+const deleteConfirmId = ref('')
+const deleteError = ref('')
+const quotaDialog = ref<Tenant | null>(null)
+const quotaError = ref('')
+const quotaForm = reactive<TenantLimits>({ max_cameras: 0, max_users: 0, max_events: 0, ingest_qps: 0 })
+
+function limitsSummary(tenant: Tenant): string {
+  const limits = tenant.limits
+  if (!limits) return '未限制'
+  const parts: string[] = []
+  if (limits.max_cameras) parts.push(`相机 ${limits.max_cameras}`)
+  if (limits.max_users) parts.push(`用户 ${limits.max_users}`)
+  if (limits.max_events) parts.push(`事件 ${limits.max_events}`)
+  if (limits.ingest_qps) parts.push(`ingest ${limits.ingest_qps} QPS`)
+  return parts.length > 0 ? parts.join(' / ') : '未限制'
+}
+
+function requestArchive(tenant: Tenant): void {
+  if (isDefaultTenant(tenant) || tenant.archived) return
+  confirmingArchiveId.value = tenant.id
+}
+
+async function confirmArchive(tenant: Tenant): Promise<void> {
+  confirmingArchiveId.value = null
+  await archiveTenant(tenant.id)
+}
+
+function requestRestore(tenant: Tenant): void {
+  if (!tenant.archived) return
+  confirmingRestoreId.value = tenant.id
+}
+
+async function confirmRestore(tenant: Tenant): Promise<void> {
+  confirmingRestoreId.value = null
+  await restoreTenant(tenant.id)
+}
+
+function openDelete(tenant: Tenant): void {
+  if (!tenant.archived || isDefaultTenant(tenant)) return
+  deleteDialog.value = tenant
+  deleteConfirmId.value = ''
+  deleteError.value = ''
+}
+
+function closeDelete(): void {
+  deleteDialog.value = null
+  deleteConfirmId.value = ''
+  deleteError.value = ''
+}
+
+async function confirmDelete(): Promise<void> {
+  const tenant = deleteDialog.value
+  if (!tenant) return
+  if (deleteConfirmId.value !== tenant.id) {
+    deleteError.value = '请输入完整租户 ID 以确认删除'
+    return
+  }
+  deleteError.value = ''
+  const ok = await deleteTenant(tenant.id)
+  if (ok) closeDelete()
+}
+
+function openQuota(tenant: Tenant): void {
+  quotaDialog.value = tenant
+  quotaError.value = ''
+  const limits = tenant.limits ?? {}
+  quotaForm.max_cameras = limits.max_cameras ?? 0
+  quotaForm.max_users = limits.max_users ?? 0
+  quotaForm.max_events = limits.max_events ?? 0
+  quotaForm.ingest_qps = limits.ingest_qps ?? 0
+}
+
+function closeQuota(): void {
+  quotaDialog.value = null
+  quotaError.value = ''
+}
+
+async function submitQuota(): Promise<void> {
+  const tenant = quotaDialog.value
+  if (!tenant) return
+  const values = [quotaForm.max_cameras, quotaForm.max_users, quotaForm.max_events, quotaForm.ingest_qps]
+  if (values.some((value) => !Number.isFinite(value) || value < 0 || !Number.isInteger(value))) {
+    quotaError.value = '配额需为 ≥0 的整数（0 = 不限制）'
+    return
+  }
+  const updated = await updateTenantLimits(tenant.id, { ...quotaForm })
+  if (updated) closeQuota()
+}
 
 // ---- 编辑 / 启停 ----
 const confirmingDisableId = ref<string | null>(null)
@@ -165,45 +267,91 @@ onMounted(() => {
           <div class="tenant-card-head">
             <span class="tenant-name">{{ tenant.name }}</span>
             <span v-if="isDefaultTenant(tenant)" class="tenant-badge tenant-builtin">内置</span>
-            <span class="tenant-badge" :class="tenant.active ? 'tenant-active' : 'tenant-inactive'">
+            <span v-if="tenant.archived" class="tenant-badge tenant-archived">已归档</span>
+            <span v-else class="tenant-badge" :class="tenant.active ? 'tenant-active' : 'tenant-inactive'">
               {{ tenant.active ? '启用' : '已停用' }}
             </span>
           </div>
           <p class="tenant-meta mono">ID：{{ tenant.id }}</p>
+          <p class="tenant-meta">配额：{{ limitsSummary(tenant) }}</p>
+          <p v-if="tenant.archived && tenant.archived_at" class="tenant-meta">归档时间：{{ tenant.archived_at }}</p>
           <div class="tenant-actions">
             <button class="ghost-btn" @click="openEdit(tenant)">编辑</button>
-            <template v-if="tenant.active && !isDefaultTenant(tenant)">
+            <button class="ghost-btn" @click="openQuota(tenant)">配额</button>
+            <template v-if="tenant.archived">
               <button
-                v-if="confirmingDisableId !== tenant.id"
+                v-if="confirmingRestoreId !== tenant.id"
                 class="ghost-btn"
                 :disabled="state.updatingId !== null"
-                @click="requestDisable(tenant)"
+                @click="requestRestore(tenant)"
               >
-                停用
+                恢复
               </button>
               <template v-else>
-                <button class="danger-btn compact-btn" :disabled="state.updatingId !== null" @click="confirmDisable(tenant)">
-                  确认停用
+                <button class="secondary-btn compact-btn" :disabled="state.updatingId !== null" @click="confirmRestore(tenant)">
+                  确认恢复
                 </button>
-                <button class="ghost-btn" @click="confirmingDisableId = null">取消</button>
+                <button class="ghost-btn" @click="confirmingRestoreId = null">取消</button>
               </template>
+              <button
+                class="danger-btn compact-btn"
+                :disabled="state.updatingId !== null"
+                @click="openDelete(tenant)"
+              >
+                删除
+              </button>
             </template>
-            <button
-              v-if="!tenant.active"
-              class="ghost-btn"
-              :disabled="state.updatingId !== null"
-              @click="enableTenant(tenant)"
-            >
-              启用
-            </button>
-            <button
-              v-if="isDefaultTenant(tenant)"
-              class="ghost-btn"
-              disabled
-              title="内置租户不可停用"
-            >
-              停用
-            </button>
+            <template v-else>
+              <template v-if="!isDefaultTenant(tenant)">
+                <button
+                  v-if="confirmingArchiveId !== tenant.id"
+                  class="ghost-btn"
+                  :disabled="state.updatingId !== null"
+                  @click="requestArchive(tenant)"
+                >
+                  归档
+                </button>
+                <template v-else>
+                  <button class="danger-btn compact-btn" :disabled="state.updatingId !== null" @click="confirmArchive(tenant)">
+                    确认归档
+                  </button>
+                  <button class="ghost-btn" @click="confirmingArchiveId = null">取消</button>
+                </template>
+              </template>
+              <template v-if="tenant.active && !isDefaultTenant(tenant)">
+                <button
+                  v-if="confirmingDisableId !== tenant.id"
+                  class="ghost-btn"
+                  :disabled="state.updatingId !== null"
+                  @click="requestDisable(tenant)"
+                >
+                  停用
+                </button>
+                <template v-else>
+                  <button class="danger-btn compact-btn" :disabled="state.updatingId !== null" @click="confirmDisable(tenant)">
+                    确认停用
+                  </button>
+                  <button class="ghost-btn" @click="confirmingDisableId = null">取消</button>
+                </template>
+              </template>
+              <button
+                v-if="!tenant.active"
+                class="ghost-btn"
+                :disabled="state.updatingId !== null"
+                @click="enableTenant(tenant)"
+              >
+                启用
+              </button>
+              <button class="ghost-btn" disabled title="仅归档后可删除">删除</button>
+              <button
+                v-if="isDefaultTenant(tenant)"
+                class="ghost-btn"
+                disabled
+                title="内置租户不可归档/删除"
+              >
+                归档
+              </button>
+            </template>
           </div>
         </article>
       </template>
@@ -295,6 +443,75 @@ onMounted(() => {
               {{ state.updatingId !== null ? '保存中…' : '保存' }}
             </button>
             <button class="ghost-btn" @click="closeEdit">取消</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 删除租户（仅归档后） -->
+    <div v-if="deleteDialog" class="modal-backdrop" @click.self="closeDelete">
+      <section class="modal-card tenant-modal" role="dialog" aria-modal="true" aria-label="删除租户">
+        <header class="modal-head">
+          <h2>删除租户</h2>
+          <button class="ghost-btn" @click="closeDelete">关闭</button>
+        </header>
+        <div class="modal-body">
+          <p class="tenant-delete-warning">
+            将彻底删除「{{ deleteDialog.name }}」及其全部数据（相机/区域/规则/设置/事件/工单/轨迹/审计/通知/值班/巡检/会话/用户），不可恢复。
+          </p>
+          <p class="tenant-meta mono">请输入租户 ID 以确认：{{ deleteDialog.id }}</p>
+          <label class="settings-field">
+            <span>租户 ID *</span>
+            <input v-model="deleteConfirmId" type="text" class="mono" :placeholder="deleteDialog.id" />
+          </label>
+          <p v-if="deleteError" class="form-error">{{ deleteError }}</p>
+          <div class="modal-buttons">
+            <button
+              class="danger-btn"
+              :disabled="state.updatingId !== null || deleteConfirmId !== deleteDialog.id"
+              @click="confirmDelete"
+            >
+              {{ state.updatingId !== null ? '删除中…' : '确认删除租户' }}
+            </button>
+            <button class="ghost-btn" @click="closeDelete">取消</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 配额编辑 -->
+    <div v-if="quotaDialog" class="modal-backdrop" @click.self="closeQuota">
+      <section class="modal-card tenant-modal" role="dialog" aria-modal="true" aria-label="编辑租户配额">
+        <header class="modal-head">
+          <h2>编辑租户配额 · {{ quotaDialog.name }}</h2>
+          <button class="ghost-btn" @click="closeQuota">关闭</button>
+        </header>
+        <div class="modal-body">
+          <div class="tenant-quota-grid">
+            <label class="settings-field">
+              <span>相机上限（max_cameras）</span>
+              <input v-model.number="quotaForm.max_cameras" type="number" min="0" step="1" />
+            </label>
+            <label class="settings-field">
+              <span>用户上限（max_users）</span>
+              <input v-model.number="quotaForm.max_users" type="number" min="0" step="1" />
+            </label>
+            <label class="settings-field">
+              <span>事件上限（max_events）</span>
+              <input v-model.number="quotaForm.max_events" type="number" min="0" step="1" />
+            </label>
+            <label class="settings-field">
+              <span>ingest QPS（ingest_qps）</span>
+              <input v-model.number="quotaForm.ingest_qps" type="number" min="0" step="1" />
+            </label>
+          </div>
+          <p class="form-hint">0 表示不限制；PATCH 会以当前值覆盖 limits（部分字段保存时以表单值为准）。</p>
+          <p v-if="quotaError" class="form-error">{{ quotaError }}</p>
+          <div class="modal-buttons">
+            <button class="primary-btn" :disabled="state.updatingId !== null" @click="submitQuota">
+              {{ state.updatingId !== null ? '保存中…' : '保存配额' }}
+            </button>
+            <button class="ghost-btn" @click="closeQuota">取消</button>
           </div>
         </div>
       </section>

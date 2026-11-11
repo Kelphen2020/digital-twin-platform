@@ -37,6 +37,7 @@ type Store interface {
 	GetTenant(ctx context.Context, id string) (model.Tenant, bool, error)
 	ListTenants(ctx context.Context) ([]model.Tenant, error)
 	UpdateTenant(ctx context.Context, tenant model.Tenant) error
+	DeleteTenant(ctx context.Context, id string) (map[string]int, error)
 
 	ListAreas(ctx context.Context) ([]model.Area, error)
 	CreateArea(ctx context.Context, area model.Area) error
@@ -235,6 +236,48 @@ func (m *Memory) UpdateTenant(_ context.Context, tenant model.Tenant) error {
 	}
 	m.tenants[tenant.ID] = tenant
 	return nil
+}
+
+// ErrProtectedTenant is returned when an operation targets the implicit
+// default tenant (which may not be archived or deleted).
+var ErrProtectedTenant = errors.New("default tenant is protected")
+
+// DeleteTenant removes every record of one tenant and returns per-entity counts.
+func (m *Memory) DeleteTenant(_ context.Context, id string) (map[string]int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.tenants[id]; !exists {
+		return nil, model.ErrNotFound
+	}
+	if id == model.DefaultTenantID {
+		return nil, ErrProtectedTenant
+	}
+	counts := map[string]int{}
+	if state, ok := m.states[id]; ok {
+		counts["cameras"] = len(state.cameras)
+		counts["areas"] = len(state.areas)
+		counts["rules"] = len(state.rules)
+		counts["settings"] = len(state.settings)
+		counts["events"] = len(state.events)
+		counts["orders"] = len(state.orders)
+		counts["users"] = len(state.users)
+		counts["refresh_tokens"] = len(state.refresh)
+		counts["patrol_routes"] = len(state.patrols)
+		counts["patrol_schedules"] = len(state.schedules)
+		counts["patrol_executions"] = len(state.executions)
+		counts["audit"] = len(state.audit)
+		counts["notifications"] = len(state.logs)
+		counts["tracks"] = len(state.tracks)
+		counts["duty_groups"] = len(state.duty)
+		actions := 0
+		for _, list := range state.actions {
+			actions += len(list)
+		}
+		counts["actions"] = actions
+	}
+	delete(m.states, id)
+	delete(m.tenants, id)
+	return counts, nil
 }
 
 // Seed loads the demo site into the default tenant. It is idempotent per id.

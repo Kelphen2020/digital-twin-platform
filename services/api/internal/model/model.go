@@ -13,14 +13,26 @@ var (
 	ErrConflict = errors.New("conflict")
 )
 
+// TenantLimits are the optional per-tenant quotas (P30.0). A zero/absent
+// value means unlimited for that dimension.
+type TenantLimits struct {
+	MaxCameras int `json:"max_cameras"`
+	MaxUsers   int `json:"max_users"`
+	MaxEvents  int `json:"max_events"`
+	IngestQPS  int `json:"ingest_qps"`
+}
+
 // Tenant is one isolation boundary. All tenant-scoped entities carry TenantID;
 // "default" is the seeded implicit tenant and keeps legacy clients working.
 type Tenant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	Active     bool         `json:"active"`
+	Archived   bool         `json:"archived"`
+	ArchivedAt *time.Time   `json:"archived_at"`
+	Limits     TenantLimits `json:"limits"`
+	CreatedAt  time.Time    `json:"created_at"`
+	UpdatedAt  time.Time    `json:"updated_at"`
 }
 
 // DefaultTenantID is the implicit tenant used when no X-Tenant-ID is supplied.

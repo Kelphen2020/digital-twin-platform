@@ -62,6 +62,8 @@ type Server struct {
 	loginMax             int
 	loginLockout         time.Duration
 	refreshTTL           time.Duration
+	ingestRateMu         sync.Mutex
+	ingestRates          map[string]*RateLimiter
 	ingestFallbackURL    string
 	ingestClient         *http.Client
 	patrolPendingTimeout time.Duration
@@ -114,6 +116,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tenants", s.handleListTenants)
 	mux.HandleFunc("POST /api/tenants", s.handleCreateTenant)
 	mux.HandleFunc("PATCH /api/tenants/{id}", s.handleUpdateTenant)
+	mux.HandleFunc("POST /api/tenants/{id}/archive", s.handleArchiveTenant)
+	mux.HandleFunc("POST /api/tenants/{id}/restore", s.handleRestoreTenant)
+	mux.HandleFunc("DELETE /api/tenants/{id}", s.handleDeleteTenant)
 	mux.HandleFunc("GET /api/areas", s.handleAreas)
 	mux.HandleFunc("GET /api/cameras", s.handleCameras)
 	mux.HandleFunc("GET /api/cameras/{id}", s.handleCamera)
@@ -478,7 +483,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": accessToken, "expires_at": accessExpires.Format(time.RFC3339),
-		"tenant_id": account.TenantID,
+		"tenant_id":     account.TenantID,
 		"refresh_token": refreshToken, "refresh_expires_at": refreshExpires.Format(time.RFC3339),
 	})
 }
@@ -640,7 +645,6 @@ func (s *Server) LoadSettings(ctx context.Context) {
 	s.escalation = escalation
 	s.settingsMu.Unlock()
 }
-
 
 // RunEscalation periodically marks stale open alerts as escalated.
 func (s *Server) RunEscalation(ctx context.Context, interval time.Duration) {
@@ -1735,6 +1739,18 @@ func (s *Server) acceptIngest(w http.ResponseWriter, r *http.Request, body []byt
 		writeError(w, http.StatusBadRequest, "bad_request", "camera_code is required")
 		return
 	}
+	tenantID := store.TenantFrom(r.Context())
+	if limits, ok := s.tenantLimits(r.Context()); ok {
+		if !s.allowIngestQPS(tenantID, limits.IngestQPS) {
+			s.tenantQuotaExceeded(w, r, "ingest_qps")
+			return
+		}
+		if limit := limits.MaxEvents; limit > 0 {
+			if counts, err := s.store.Counts(r.Context()); err == nil && !s.checkCountQuota(w, r, "events", limit, int(counts.EventsTotal)) {
+				return
+			}
+		}
+	}
 	camera, err := s.store.GetCameraByCode(r.Context(), request.CameraCode)
 	if err != nil {
 		s.writeCameraError(w, err)
@@ -2262,6 +2278,13 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if tenant, ok, err := s.store.GetTenant(r.Context(), store.TenantFrom(r.Context())); err == nil && ok {
+		if limit := tenant.Limits.MaxUsers; limit > 0 {
+			if existing, err := s.auth.Users(r.Context()); err == nil && !s.checkCountQuota(w, r, "users", limit, len(existing)) {
+				return
+			}
+		}
+	}
 	if _, ok := s.allow(w, r, auth.PermUserAdmin); !ok {
 		return
 	}

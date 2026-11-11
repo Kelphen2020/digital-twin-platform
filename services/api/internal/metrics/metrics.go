@@ -36,6 +36,9 @@ type Metrics struct {
 
 	tenantMu       sync.Mutex
 	tenantRequests map[string]int64
+
+	quotaMu       sync.Mutex
+	quotaExceeded map[string]int64
 }
 
 // New returns an empty counter set.
@@ -52,6 +55,31 @@ func (m *Metrics) RecordTenantRequest(tenant string) {
 	}
 	m.tenantRequests[tenant]++
 	m.tenantMu.Unlock()
+}
+
+// RecordTenantQuotaExceeded counts one quota rejection for a tenant dimension
+// (P30.0), e.g. dimension "users", "events", "ingest_qps" or "cameras".
+func (m *Metrics) RecordTenantQuotaExceeded(tenant, dimension string) {
+	if tenant == "" || dimension == "" {
+		return
+	}
+	m.quotaMu.Lock()
+	if m.quotaExceeded == nil {
+		m.quotaExceeded = make(map[string]int64)
+	}
+	m.quotaExceeded[tenant+"\x00"+dimension]++
+	m.quotaMu.Unlock()
+}
+
+// TenantQuotaExceeded returns a copy of quota counters keyed tenant\x00dimension.
+func (m *Metrics) TenantQuotaExceeded() map[string]int64 {
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+	out := make(map[string]int64, len(m.quotaExceeded))
+	for key, count := range m.quotaExceeded {
+		out[key] = count
+	}
+	return out
 }
 
 // TenantRequests returns a copy of the per-tenant request counters.
@@ -177,6 +205,22 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	sort.Strings(names)
 	for _, tenant := range names {
 		fmt.Fprintf(&b, "dsh_twin_tenant_requests_total{tenant=%q} %d\n", tenant, tenants[tenant])
+	}
+	b.WriteString("# HELP dsh_twin_tenant_quota_exceeded_total Tenant quota rejections by dimension (P30.0).\n")
+	b.WriteString("# TYPE dsh_twin_tenant_quota_exceeded_total counter\n")
+	quotas := m.TenantQuotaExceeded()
+	quotaKeys := make([]string, 0, len(quotas))
+	for key := range quotas {
+		quotaKeys = append(quotaKeys, key)
+	}
+	sort.Strings(quotaKeys)
+	for _, key := range quotaKeys {
+		parts := strings.SplitN(key, "\x00", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		fmt.Fprintf(&b, "dsh_twin_tenant_quota_exceeded_total{tenant=%q,dimension=%q} %d\n",
+			parts[0], parts[1], quotas[key])
 	}
 	return b.String()
 }

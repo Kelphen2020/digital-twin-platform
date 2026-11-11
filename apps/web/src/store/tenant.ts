@@ -1,11 +1,20 @@
 import { reactive } from 'vue'
 import {
   apiErrorMessage,
+  archiveTenant as requestArchiveTenant,
   createTenant as requestCreateTenant,
+  deleteTenant as requestDeleteTenant,
   fetchTenants,
+  restoreTenant as requestRestoreTenant,
   updateTenant as requestUpdateTenant,
 } from '../api'
-import type { Tenant, TenantCreatePayload, TenantSeeded, TenantUpdatePayload } from '../types'
+import type {
+  Tenant,
+  TenantCreatePayload,
+  TenantLimits,
+  TenantSeeded,
+  TenantUpdatePayload,
+} from '../types'
 import { pushToast } from './ui'
 
 interface TenantState {
@@ -79,6 +88,96 @@ async function updateTenant(tenantId: string, payload: TenantUpdatePayload): Pro
   }
 }
 
+async function archiveTenant(tenantId: string): Promise<Tenant | null> {
+  if (state.updatingId) return null
+  state.updatingId = tenantId
+  try {
+    const tenant = await requestArchiveTenant(tenantId)
+    state.tenants = state.tenants.map((item) => (item.id === tenant.id ? tenant : item))
+    pushToast('租户已归档', 'success')
+    return tenant
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.updatingId = null
+  }
+}
+
+async function restoreTenant(tenantId: string): Promise<Tenant | null> {
+  if (state.updatingId) return null
+  state.updatingId = tenantId
+  try {
+    const tenant = await requestRestoreTenant(tenantId)
+    state.tenants = state.tenants.map((item) => (item.id === tenant.id ? tenant : item))
+    pushToast('租户已恢复', 'success')
+    return tenant
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.updatingId = null
+  }
+}
+
+const DELETE_LABELS: Record<string, string> = {
+  cameras: '相机',
+  areas: '区域',
+  rules: '规则',
+  camera_rules: '规则',
+  settings: '设置',
+  events: '事件',
+  event_actions: '处置动作',
+  orders: '工单',
+  tracks: '轨迹',
+  audit_logs: '审计日志',
+  audit: '审计日志',
+  notifications: '通知日志',
+  notification_logs: '通知日志',
+  duty_groups: '值班组',
+  patrol_routes: '巡检路线',
+  patrol_schedules: '巡检计划',
+  patrol_executions: '巡检执行',
+  refresh_tokens: '刷新令牌',
+  users: '用户',
+}
+
+async function deleteTenant(tenantId: string): Promise<boolean> {
+  if (state.updatingId) return false
+  state.updatingId = tenantId
+  try {
+    const result = await requestDeleteTenant(tenantId)
+    state.tenants = state.tenants.filter((item) => item.id !== tenantId)
+    const counts = Object.entries(result.deleted ?? {})
+      .filter(([, count]) => count > 0)
+      .map(([key, count]) => `${DELETE_LABELS[key] ?? key} ${count}`)
+      .join(' / ')
+    pushToast(counts ? `租户已删除：${counts}` : '租户已删除', 'success')
+    return true
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return false
+  } finally {
+    state.updatingId = null
+  }
+}
+
+async function updateTenantLimits(tenantId: string, limits: TenantLimits): Promise<Tenant | null> {
+  if (state.updatingId) return null
+  state.updatingId = tenantId
+  try {
+    const tenant = await requestUpdateTenant(tenantId, { limits })
+    state.tenants = state.tenants.map((item) => (item.id === tenant.id ? tenant : item))
+    pushToast('租户配额已更新', 'success')
+    return tenant
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  } finally {
+    state.updatingId = null
+  }
+}
+
 function reset(): void {
   state.tenants = []
   state.loading = false
@@ -88,5 +187,15 @@ function reset(): void {
 }
 
 export function useTenantStore() {
-  return { state, loadTenants, createTenant, updateTenant, reset }
+  return {
+    state,
+    loadTenants,
+    createTenant,
+    updateTenant,
+    archiveTenant,
+    restoreTenant,
+    deleteTenant,
+    updateTenantLimits,
+    reset,
+  }
 }

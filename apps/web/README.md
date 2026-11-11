@@ -1,6 +1,6 @@
-# 数字孪生安防平台 · Web 前端（P29.0）
+# 数字孪生安防平台 · Web 前端（P30.0）
 
-Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16）、`docs/API_P17.md`–`API_P26.md`（P17–P26 后端/测试阶段，前端沿用）、`docs/API_P27.md`（P27）、`docs/API_P28.md`（P28）、`docs/API_P29.md`（P29，均为固定契约）。
+Vite + Vue 3 + TypeScript + Three.js 实现的三维安防平台客户端：登录 / RBAC、三维场景、HLS 视频、实时轨迹、告警处置、工单流转、统计看板、相机规则与单应标定。契约见 `docs/API.md`（P0）、`docs/API_P1.md`（P1）、`docs/API_P2.md`（P2）、`docs/API_P3.md`（P3）、`docs/API_P4.md`（P4）、`docs/API_P5.md`（P5）、`docs/API_P6.md`（P6）、`docs/API_P7.md`（P7）、`docs/API_P8.md`（P8）、`docs/API_P9.md`（P9）、`docs/API_P10.md`（P10）、`docs/API_P11.md`（P11）、`docs/API_P12.md`（P12）、`docs/API_P13.md`（P13）、`docs/API_P14.md`（P14）、`docs/API_P15.md`（P15）、`docs/API_P16.md`（P16）、`docs/API_P17.md`–`API_P26.md`（P17–P26 后端/测试阶段，前端沿用）、`docs/API_P27.md`（P27）、`docs/API_P28.md`（P28）、`docs/API_P29.md`（P29）、`docs/API_P30.md`（P30，均为固定契约）。
 
 ## 快速开始
 
@@ -132,6 +132,14 @@ pnpm dev          # http://127.0.0.1:5173
 - **当前值班**：`GET /api/duty/current?area_id=` 响应新增 `shift`；卡片显示当前班次与当班人员，非值班时间/无班次给出明确提示。
 - **工单去重与轮转**：自动派单对同一事件已有未关闭工单时跳过；`rotation=operator` 时 assignee 为轮转到的操作员用户名，工单 note 原样包含班组/班次信息（工单列表展示负责人与 note）。
 - **超时再升级**：升级设置新增 `second_after_seconds`（0–604800，0=关闭）；升级后超过该时长仍未关闭 → 写入 `re_escalated_at`、WS `event_updated`、通知（kind=`escalation`）、审计 `event.re_escalate` 并触发再升级自动派单（受工单去重限制）。事件流/详情显示「再升级」徽标与时间，WS 时 Toast「告警再次升级：…」。
+
+### 租户归档 / 恢复 / 删除 / 配额（P30）
+
+- **归档/恢复**（admin）：租户卡片「归档」两步确认（`POST /api/tenants/{id}/archive`）→ 卡片显示「已归档」chip、停用状态、归档时间；归档后「恢复」两步确认（`POST /api/tenants/{id}/restore`）→ 重新启用。default 租户不可归档。
+- **彻底删除**：仅归档租户显示可用「删除」；对话框展示清理范围并要求**逐字输入租户 ID**确认，按钮在 ID 完全匹配前禁用；`DELETE /api/tenants/{id}?confirm=<id>` 成功后 Toast 展示返回的删除计数（相机/区域/事件/用户/巡检等），并从列表移除。
+- **配额编辑**：每租户「配额」对话框设置 `max_cameras` / `max_users` / `max_events` / `ingest_qps`（≥0 整数，0=不限制），`PATCH /api/tenants/{id} {limits}` 保存；卡片显示配额摘要（未设置显示「未限制」）。
+- **错误映射**：`403 tenant_archived` →「租户已归档」；`429 quota_exceeded` →「超出配额：相机/用户/事件/ingest QPS（原始 message）」；超配额维度从后端 message 解析。
+- 归档租户的登录/请求由后端返回 tenant_archived（登录页中文提示）；删除范围含该租户全部业务数据与用户/会话，前端仅做二次确认保护。
 
 ### 租户模板 / 租户管理员（P29）
 
@@ -288,6 +296,8 @@ pnpm dev          # http://127.0.0.1:5173
 | GET | `/api/patrol/executions` | 登录 | 执行列表（status/event_id/limit 过滤） |
 | POST | `/api/patrol/executions/{id}/cancel` | operator/admin（running 仅认领人/admin） | 取消任务（pending/running→cancelled） |
 | GET/POST | `/api/tenants` | admin | 租户列表 / 新建租户（P29 支持 template/admin/seeded） |
+| POST | `/api/tenants/{id}/archive`、`/restore` | admin | 归档 / 恢复归档租户 |
+| DELETE | `/api/tenants/{id}?confirm=` | admin | 彻底删除归档租户（返回删除计数） |
 | PATCH | `/api/tenants/{id}` | admin | 修改租户名称 / 启用状态 |
 | POST | `/api/patrol/executions/{id}/claim` | operator/admin | 认领（pending→running） |
 | POST | `/api/patrol/executions/{id}/complete` | 认领人/admin | 完成巡检（done/issue，issue 自动建工单） |
@@ -374,6 +384,7 @@ apps/web/
 | 巡检取消 / 超时 | **实时**：`POST .../cancel`、stats.cancelled、后端 pending/running 超时自动关闭 |
 | 多租户 | **实时**：登录 `tenant_id`、`X-Tenant-ID` 头、WS `tenant_id` 查询参数、admin `/api/tenants` CRUD |
 | 租户模板 / tenant_admin | **实时（后端 P29 待重启）**：`POST /api/tenants {template,admin}`、`seeded` 结果、角色 tenant_admin 页签权限 |
+| 租户归档 / 配额 | **实时（后端 P30 待重启）**：archive/restore/delete、`limits` PATCH、tenant_archived/quota_exceeded 映射 |
 | 站点范围 / 底图配置 | **实时**：`GET /api/site`（extent/models/map） |
 | glTF 站点模型 | **静态资源**：`public/models/site.gltf`（由后端 `/api/site` 清单引用；当前为 1 号楼/2 号楼/东门门架） |
 | 2.5D 底图 / LOD / 视频融合 | **前端程序化实现**：Canvas 矢量底图、THREE.LOD、VideoTexture（视频源为相机 `stream_url`） |
@@ -421,6 +432,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # 通知可靠性字段
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/notifications
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5173/api/settings/escalation
+
+# P30：租户归档 / 恢复 / 删除 / 配额（admin）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/tenants/<id>/archive
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/tenants/<id>/restore
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/tenants/<id>?confirm=<id>"
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"limits":{"max_cameras":100,"max_users":20,"max_events":100000,"ingest_qps":50}}' \
+  http://localhost:8080/api/tenants/<id>
 
 # P29：租户模板 + 初始管理员（admin）
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -598,5 +617,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 - P29 模板/初始管理员由后端复制与创建；前端只在创建响应 `seeded` 可用时展示复制数量，兼容旧后端（无 seeded 时仅提示「租户已创建」）。
 - tenant_admin 不显示「租户」页签（`GET/POST/PATCH /api/tenants` 仅 admin）；其用户/审计接口由后端按 JWT/租户头做本租户隔离。
 - tenant_admin 不可使用设置/总线（仍 admin-only）；当前端为旧后端时后端可能拒绝 tenant_admin 创建，待 P29 API 重启后进行完整 live 验证。
+- P30 归档/删除仅 admin；删除必须已归档且输入完整租户 ID（前端二次保护，后端 confirm 再次校验）；删除计数由后端返回，前端按已知维度映射中文展示。
+- 配额 0/缺失表示不限制；超配额错误由后端在创建相机/用户/ingest 时返回，前端统一映射为中文 Toast（含维度）。
+- 归档 default 被后端禁止；前端对 default 隐藏/禁用归档与删除。
 - 超时自动关闭由后端调度器执行（pending 60 分钟 / running 120 分钟，环境变量可关）；前端通过 WS `patrol_execution` 感知，不做本地计时。
 - 历史归档默认仍清理 done/issue；`cancelled` 已纳入后端允许的归档状态，但当前 UI 默认不勾选 cancelled（保持 P14 行为）。

@@ -145,6 +145,70 @@ func (p *Postgres) UpdateTenant(ctx context.Context, tenant model.Tenant) error 
 	return nil
 }
 
+// DeleteTenant removes every record of one tenant in one transaction and
+// returns per-entity counts (P30.0). The implicit default tenant is protected.
+func (p *Postgres) DeleteTenant(ctx context.Context, id string) (map[string]int, error) {
+	if id == model.DefaultTenantID {
+		return nil, ErrProtectedTenant
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var exists int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM tenants WHERE id=$1`, id).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, model.ErrNotFound
+	}
+
+	counts := make(map[string]int, 16)
+	type cleanupStep struct {
+		key   string
+		count string
+		del   string
+	}
+	steps := []cleanupStep{
+		{"refresh_tokens", `SELECT count(*) FROM refresh_tokens WHERE tenant_id=$1`, `DELETE FROM refresh_tokens WHERE tenant_id=$1`},
+		{"patrol_executions", `SELECT count(*) FROM patrol_executions WHERE tenant_id=$1`, `DELETE FROM patrol_executions WHERE tenant_id=$1`},
+		{"patrol_schedules", `SELECT count(*) FROM patrol_schedules WHERE tenant_id=$1`, `DELETE FROM patrol_schedules WHERE tenant_id=$1`},
+		{"patrol_routes", `SELECT count(*) FROM patrol_routes WHERE tenant_id=$1`, `DELETE FROM patrol_routes WHERE tenant_id=$1`},
+		{"actions", `SELECT count(*) FROM event_actions WHERE event_id IN (SELECT id FROM events WHERE tenant_id=$1)`,
+			`DELETE FROM event_actions WHERE event_id IN (SELECT id FROM events WHERE tenant_id=$1)`},
+		{"orders", `SELECT count(*) FROM orders WHERE tenant_id=$1`, `DELETE FROM orders WHERE tenant_id=$1`},
+		{"events", `SELECT count(*) FROM events WHERE tenant_id=$1`, `DELETE FROM events WHERE tenant_id=$1`},
+		{"rules", `SELECT count(*) FROM camera_rules WHERE tenant_id=$1`, `DELETE FROM camera_rules WHERE tenant_id=$1`},
+		{"tracks", `SELECT count(*) FROM track_points WHERE tenant_id=$1`, `DELETE FROM track_points WHERE tenant_id=$1`},
+		{"cameras", `SELECT count(*) FROM cameras WHERE tenant_id=$1`, `DELETE FROM cameras WHERE tenant_id=$1`},
+		{"areas", `SELECT count(*) FROM areas WHERE tenant_id=$1`, `DELETE FROM areas WHERE tenant_id=$1`},
+		{"duty_groups", `SELECT count(*) FROM duty_groups WHERE tenant_id=$1`, `DELETE FROM duty_groups WHERE tenant_id=$1`},
+		{"audit", `SELECT count(*) FROM audit_log WHERE tenant_id=$1`, `DELETE FROM audit_log WHERE tenant_id=$1`},
+		{"notifications", `SELECT count(*) FROM notification_log WHERE tenant_id=$1`, `DELETE FROM notification_log WHERE tenant_id=$1`},
+		{"settings", `SELECT count(*) FROM settings WHERE tenant_id=$1`, `DELETE FROM settings WHERE tenant_id=$1`},
+		{"users", `SELECT count(*) FROM users WHERE tenant_id=$1`, `DELETE FROM users WHERE tenant_id=$1`},
+	}
+	for _, step := range steps {
+		var n int
+		if err := tx.QueryRow(ctx, step.count, id).Scan(&n); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, step.del, id); err != nil {
+			return nil, err
+		}
+		counts[step.key] = n
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, id); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
 func (p *Postgres) ListAreas(ctx context.Context) ([]model.Area, error) {
 	rows, err := p.pool.Query(ctx, `
         SELECT id, name, type, polygon, tenant_id FROM areas

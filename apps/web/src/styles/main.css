@@ -4266,3 +4266,27 @@ dd {
   font-size: 10.5px;
   color: #7dd3fc;
 }
+
+
+/* P30：租户归档 / 删除 / 配额 */
+.tenant-archived {
+  border-color: rgba(148, 163, 184, 0.6);
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+}
+
+.tenant-delete-warning {
+  padding: 7px 8px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.tenant-quota-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}

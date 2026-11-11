@@ -321,8 +321,8 @@ func TestBusReplayTenantIsolation(t *testing.T) {
 	}
 	status, replayBody := replay(admin, "", false)
 	var replayed struct {
-		OK       bool  `json:"ok"`
-		Replayed int   `json:"replayed"`
+		OK       bool `json:"ok"`
+		Replayed int  `json:"replayed"`
 		Items    []struct {
 			TenantID string `json:"tenant_id"`
 			EventID  string `json:"event_id"`

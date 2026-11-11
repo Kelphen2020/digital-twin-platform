@@ -44,7 +44,6 @@ func tenantRequest(t *testing.T, method, url, token, tenant string, body any) (i
 	return status, payload
 }
 
-
 // createTenantViaAPI creates a tenant as the default admin and returns its id.
 func createTenantViaAPI(t *testing.T, tsURL, adminToken, name string) string {
 	t.Helper()
