@@ -64,6 +64,7 @@ type Server struct {
 	refreshTTL           time.Duration
 	ingestRateMu         sync.Mutex
 	ingestRates          map[string]*RateLimiter
+	rateStore            store.RateStore
 	ingestFallbackURL    string
 	ingestClient         *http.Client
 	patrolPendingTimeout time.Duration
@@ -119,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tenants/{id}/archive", s.handleArchiveTenant)
 	mux.HandleFunc("POST /api/tenants/{id}/restore", s.handleRestoreTenant)
 	mux.HandleFunc("DELETE /api/tenants/{id}", s.handleDeleteTenant)
+	mux.HandleFunc("GET /api/tenants/{id}/export", s.handleExportTenant)
 	mux.HandleFunc("GET /api/areas", s.handleAreas)
 	mux.HandleFunc("GET /api/cameras", s.handleCameras)
 	mux.HandleFunc("GET /api/cameras/{id}", s.handleCamera)
@@ -1687,6 +1689,10 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	s.acceptIngest(w, r, body)
 }
+
+// SetRateStore enables cross-replica quota buckets (P31.0). A nil store keeps
+// the in-process limiter.
+func (s *Server) SetRateStore(rateStore store.RateStore) { s.rateStore = rateStore }
 
 // SetIngestFallback forwards ingest to another API when this replica lacks the
 // camera (multi-replica deployments share state through PostgreSQL).

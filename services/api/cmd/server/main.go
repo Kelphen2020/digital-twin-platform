@@ -72,6 +72,14 @@ func run() error {
 	authService.SetAccessTTL(time.Duration(cfg.AccessTokenTTLSeconds) * time.Second)
 	server.SetSessionTTL(time.Duration(cfg.RefreshTokenTTLSeconds) * time.Second)
 	server.SetIngestFallback(cfg.IngestFallbackURL)
+	if cfg.RateStore == "postgres" {
+		if pg, ok := database.(*store.Postgres); ok {
+			server.SetRateStore(store.NewPostgresRateStore(pg))
+			log.Printf("api: shared tenant rate store=postgres")
+		} else {
+			log.Printf("api: RATE_STORE=postgres requested but the store is in-memory; using the in-process limiter")
+		}
+	}
 	server.SetPatrolTimeouts(
 		time.Duration(cfg.PatrolPendingTimeoutMinutes)*time.Minute,
 		time.Duration(cfg.PatrolRunningTimeoutMinutes)*time.Minute,

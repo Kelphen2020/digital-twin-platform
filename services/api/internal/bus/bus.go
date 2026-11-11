@@ -41,15 +41,15 @@ type Envelope struct {
 
 // Status is the admin-visible bus snapshot.
 type Status struct {
-	Driver        string     `json:"driver"`
-	Path          string     `json:"path"`
-	Published     int64      `json:"published"`
-	Replayed      int64      `json:"replayed"`
-	OldestOffset  int64      `json:"oldest_offset"`
-	NextOffset    int64      `json:"next_offset"`
-	LastPublishAt *time.Time        `json:"last_publish_at,omitempty"`
-	Subscribers   int               `json:"subscribers"`
-	Tenants       map[string]int64  `json:"tenants,omitempty"`
+	Driver        string           `json:"driver"`
+	Path          string           `json:"path"`
+	Published     int64            `json:"published"`
+	Replayed      int64            `json:"replayed"`
+	OldestOffset  int64            `json:"oldest_offset"`
+	NextOffset    int64            `json:"next_offset"`
+	LastPublishAt *time.Time       `json:"last_publish_at,omitempty"`
+	Subscribers   int              `json:"subscribers"`
+	Tenants       map[string]int64 `json:"tenants,omitempty"`
 }
 
 // Driver persists and reads envelopes.
