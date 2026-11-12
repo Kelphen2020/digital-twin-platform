@@ -13,7 +13,7 @@ QPS ?= 100
 DURATION ?= 5
 ARGS ?=
 
-.PHONY: help dev-api build-api test-api vet-api dev-web install-web build-web hls model db-up db-down up down obs-up sim sim-status smoke load test fmt status stop
+.PHONY: help dev-guard dev-guard-status dev-guard-stop dev-api build-api test-api vet-api dev-web install-web build-web hls model db-up db-down up down obs-up sim sim-status smoke load test fmt status stop
 
 help:
 	@echo "P0 targets:"
@@ -32,6 +32,15 @@ help:
 	@echo "  make smoke        end-to-end smoke test against $(API_URL)"
 	@echo "  make load         load test (QPS=$(QPS) DURATION=$(DURATION))"
 	@echo "  make test         backend tests + web build"
+
+dev-guard:
+	./scripts/dev-guard.sh start
+
+dev-guard-status:
+	./scripts/dev-guard.sh status
+
+dev-guard-stop:
+	./scripts/dev-guard.sh stop
 
 dev-api:
 	cd $(API_DIR) && PORT=8080 $(GO) run ./cmd/server

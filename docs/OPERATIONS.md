@@ -15,6 +15,21 @@
 健康检查：`curl -s http://127.0.0.1:8080/api/health`，期望 `{"status":"ok"}`。
 WS 健康：浏览器 DevTools Network → `ws://…/ws`（101）。
 
+
+### 1.1 本地开发守护（脚本 `scripts/dev-guard.sh`）
+
+重启电脑或进程崩溃后 `http://127.0.0.1:5173` / `:8080` 会消失，用守护脚本一键拉起并持续看护：
+
+```bash
+make dev-guard          # 启动 API + Web 并后台守护（每 15s 检查，挂了自动重启）
+make dev-guard-status   # 查看三态：API / Web / Guard
+make dev-guard-stop     # 停止守护与两个服务
+```
+
+- 日志：`$TMPDIR/dtp-guard/{api,web,guard}.log`
+- 守护进程本身被系统杀掉后不会自动复活（macOS 后台访问 `~/Documents` 会被 TCC 拦截，
+  故未注册 launchd 自启）；重开机后手动执行一次 `make dev-guard` 即可。
+
 ## 2. 关键环境变量
 
 | 变量 | 默认 | 说明 |
