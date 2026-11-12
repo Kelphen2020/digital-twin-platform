@@ -72,3 +72,36 @@ func TestEmptyMetricsAreZero(t *testing.T) {
 		}
 	}
 }
+
+// P35: per-tenant ingest and camera gauges are labelled and sorted.
+func TestTenantMetricsExposition(t *testing.T) {
+	m := metrics.New()
+	m.RecordTenantIngest("tnt_b", 0)
+	m.RecordTenantIngest("default", 0)
+	m.RecordTenantIngest("", 3) // ignored
+	m.SetTenantCamerasOnline("tnt_b", 2)
+	m.SetTenantCamerasOnline("default", 6)
+	m.SetTenantCamerasOnline("", 1) // ignored
+	m.RecordTenantQuotaExceeded("tnt_b", "ingest_qps")
+	m.ExportJobsPurged(4)
+
+	text := m.Text(0, 6)
+	for _, want := range []string{
+		`dsh_twin_tenant_ingest_total{tenant="default"} 1`,
+		`dsh_twin_tenant_ingest_total{tenant="tnt_b"} 1`,
+		`dsh_twin_tenant_cameras_online{tenant="default"} 6`,
+		`dsh_twin_tenant_cameras_online{tenant="tnt_b"} 2`,
+		`dsh_twin_tenant_quota_exceeded_total{tenant="tnt_b",dimension="ingest_qps"} 1`,
+		`dsh_twin_export_jobs_purged_total 4`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics text missing %q\n%s", want, text)
+		}
+	}
+	if got := m.TenantIngest()["default"]; got != 1 {
+		t.Fatalf("tenant ingest map: %v", m.TenantIngest())
+	}
+	if got := m.TenantCameras()["tnt_b"]; got != 2 {
+		t.Fatalf("tenant cameras map: %v", m.TenantCameras())
+	}
+}

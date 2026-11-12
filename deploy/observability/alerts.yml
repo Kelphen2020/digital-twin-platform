@@ -57,3 +57,42 @@ groups:
         annotations:
           summary: "升级告警激增"
           description: "10 分钟内升级事件超过 50，检查现场或阈值配置。"
+
+  # ---- P35: multi-tenant thresholds --------------------------------------
+  - name: digital-twin-tenant
+    rules:
+      - alert: TenantQuotaExceeded
+        expr: sum by (tenant) (increase(dsh_twin_tenant_quota_exceeded_total[10m])) > 10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "租户 {{ $labels.tenant }} 频繁触发配额"
+          description: "10 分钟内配额拒绝超过 10 次（维度 {{ $labels.dimension }}），评估扩配额或限流。"
+          runbook: "docs/OPERATIONS.md#tenant-quota"
+
+      - alert: TenantNoOnlineCameras
+        expr: dsh_twin_tenant_cameras_online == 0 and on(tenant) (dsh_twin_tenant_requests_total > 0)
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "租户 {{ $labels.tenant }} 无在线相机"
+          description: "该租户有请求但在线相机为 0，检查接入层/采集端。"
+          runbook: "docs/OPERATIONS.md#tenant-cameras"
+
+      - alert: TenantIngestSilent
+        expr: (sum by (tenant) (increase(dsh_twin_tenant_requests_total[15m])) > 100) unless on(tenant) (sum by (tenant) (increase(dsh_twin_tenant_ingest_total[15m])) > 0)
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "租户 {{ $labels.tenant }} 15 分钟无 ingest"
+          description: "有 API 请求但没有 ingest 数据，检查摄像头推流或 ingest 客户端。"
+          runbook: "docs/OPERATIONS.md#tenant-ingest"
+
+      - alert: TenantRequestSpike
+        expr: sum by (tenant) (rate(dsh_twin_tenant_requests_total[5m])) > 200
+        for: 10m
+        labels: { severity: info }
+        annotations:
+          summary: "租户 {{ $labels.tenant }} 请求突增"
+          description: "租户 5 分钟平均请求速率超过 200/s，确认是否为压测或异常客户端。"
+          runbook: "docs/OPERATIONS.md#tenant-load"

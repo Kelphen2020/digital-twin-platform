@@ -218,6 +218,7 @@ func (s *Server) RunStats(ctx context.Context, interval time.Duration) {
 }
 
 func (s *Server) broadcastStats() {
+	s.refreshTenantCameraGauges()
 	counts, err := s.store.Counts(context.Background())
 	if err != nil {
 		log.Printf("api: stats counts: %v", err)
@@ -1782,6 +1783,7 @@ func (s *Server) acceptIngest(w http.ResponseWriter, r *http.Request, body []byt
 	for i := range result.Events {
 		result.Events[i].TenantID = ingestTenant
 	}
+	s.metrics.RecordTenantIngest(store.TenantFrom(r.Context()), 0)
 	s.metrics.Detections.Add(int64(len(request.Detections)))
 	s.metrics.Dropped.Add(int64(result.Dropped))
 	for _, event := range result.Events {
@@ -1847,7 +1849,24 @@ func (s *Server) acceptIngest(w http.ResponseWriter, r *http.Request, body []byt
 	})
 }
 
+// refreshTenantCameraGauges recomputes online cameras for every tenant (P35.0).
+func (s *Server) refreshTenantCameraGauges() {
+	tenants, err := s.store.ListTenants(context.Background())
+	if err != nil {
+		return
+	}
+	for _, tenant := range tenants {
+		ctx := store.WithTenant(context.Background(), tenant.ID)
+		counts, countErr := s.store.Counts(ctx)
+		if countErr != nil {
+			continue
+		}
+		s.metrics.SetTenantCamerasOnline(tenant.ID, int(counts.OnlineCameras))
+	}
+}
+
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	s.refreshTenantCameraGauges()
 	counts, err := s.store.Counts(context.Background())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())

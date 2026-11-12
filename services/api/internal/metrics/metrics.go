@@ -42,6 +42,11 @@ type Metrics struct {
 
 	exportPurgedMu sync.Mutex
 	exportPurged   int64
+
+	// P35: per-tenant ingest volume and camera gauges.
+	ingestMu      sync.Mutex
+	tenantIngest  map[string]int64
+	cameraTenants map[string]int64
 }
 
 // New returns an empty counter set.
@@ -58,6 +63,57 @@ func (m *Metrics) RecordTenantRequest(tenant string) {
 	}
 	m.tenantRequests[tenant]++
 	m.tenantMu.Unlock()
+}
+
+// RecordTenantIngest counts accepted ingest requests per tenant (P35.0).
+func (m *Metrics) RecordTenantIngest(tenant string, detections int) {
+	if tenant == "" {
+		return
+	}
+	m.ingestMu.Lock()
+	if m.tenantIngest == nil {
+		m.tenantIngest = make(map[string]int64)
+	}
+	m.tenantIngest[tenant]++
+	m.ingestMu.Unlock()
+	if detections > 0 {
+		m.Detections.Add(int64(detections))
+	}
+}
+
+// SetTenantCamerasOnline publishes the online camera gauge per tenant (P35.0).
+func (m *Metrics) SetTenantCamerasOnline(tenant string, online int) {
+	if tenant == "" {
+		return
+	}
+	m.ingestMu.Lock()
+	if m.cameraTenants == nil {
+		m.cameraTenants = make(map[string]int64)
+	}
+	m.cameraTenants[tenant] = int64(online)
+	m.ingestMu.Unlock()
+}
+
+// TenantIngest returns per-tenant accepted ingest counts.
+func (m *Metrics) TenantIngest() map[string]int64 {
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
+	out := make(map[string]int64, len(m.tenantIngest))
+	for key, value := range m.tenantIngest {
+		out[key] = value
+	}
+	return out
+}
+
+// TenantCameras returns per-tenant online camera gauges.
+func (m *Metrics) TenantCameras() map[string]int64 {
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
+	out := make(map[string]int64, len(m.cameraTenants))
+	for key, value := range m.cameraTenants {
+		out[key] = value
+	}
+	return out
 }
 
 // ExportJobsPurged adds to the export-retention purge counter (P33.0).
@@ -225,6 +281,28 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	sort.Strings(names)
 	for _, tenant := range names {
 		fmt.Fprintf(&b, "dsh_twin_tenant_requests_total{tenant=%q} %d\n", tenant, tenants[tenant])
+	}
+	ingests := m.TenantIngest()
+	ingestKeys := make([]string, 0, len(ingests))
+	for key := range ingests {
+		ingestKeys = append(ingestKeys, key)
+	}
+	sort.Strings(ingestKeys)
+	b.WriteString("# HELP dsh_twin_tenant_ingest_total Accepted ingest requests per tenant (P35.0).\n")
+	b.WriteString("# TYPE dsh_twin_tenant_ingest_total counter\n")
+	for _, tenant := range ingestKeys {
+		fmt.Fprintf(&b, "dsh_twin_tenant_ingest_total{tenant=%q} %d\n", tenant, ingests[tenant])
+	}
+	cameras := m.TenantCameras()
+	cameraKeys := make([]string, 0, len(cameras))
+	for key := range cameras {
+		cameraKeys = append(cameraKeys, key)
+	}
+	sort.Strings(cameraKeys)
+	b.WriteString("# HELP dsh_twin_tenant_cameras_online Online cameras per tenant (P35.0).\n")
+	b.WriteString("# TYPE dsh_twin_tenant_cameras_online gauge\n")
+	for _, tenant := range cameraKeys {
+		fmt.Fprintf(&b, "dsh_twin_tenant_cameras_online{tenant=%q} %d\n", tenant, cameras[tenant])
 	}
 	fmt.Fprintf(&b, "# HELP dsh_twin_export_jobs_purged_total Finished export jobs pruned by retention (P33.0).\n")
 	fmt.Fprintf(&b, "# TYPE dsh_twin_export_jobs_purged_total counter\n")

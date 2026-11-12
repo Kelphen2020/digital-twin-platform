@@ -1,8 +1,8 @@
 {
-  "title": "数字孪生安防平台 · 运行概览",
+  "title": "数字孪生安防平台 · 运行概览（含多租户）",
   "uid": "dtp-overview",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "panels": [
     {
@@ -255,6 +255,186 @@
           "legendFormat": "rejected/s"
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "多租户（P35）",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "租户总数",
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(count by (tenant) (dsh_twin_tenant_requests_total))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "租户请求速率（Top）",
+      "gridPos": {
+        "x": 6,
+        "y": 37,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "topk(5, sum by (tenant) (rate(dsh_twin_tenant_requests_total{tenant=~\"$tenant\"}[1m])))",
+          "refId": "A",
+          "legendFormat": "{{tenant}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "租户在线相机",
+      "gridPos": {
+        "x": 12,
+        "y": 37,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant) (dsh_twin_tenant_cameras_online{tenant=~\"$tenant\"})",
+          "refId": "A",
+          "legendFormat": "{{tenant}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "配额拒绝（5m）",
+      "gridPos": {
+        "x": 18,
+        "y": 37,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant) (increase(dsh_twin_tenant_quota_exceeded_total{tenant=~\"$tenant\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{tenant}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "租户 ingest 速率",
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant) (rate(dsh_twin_tenant_ingest_total{tenant=~\"$tenant\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "{{tenant}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "租户配额拒绝明细",
+      "gridPos": {
+        "x": 12,
+        "y": 41,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant, dimension) (increase(dsh_twin_tenant_quota_exceeded_total{tenant=~\"$tenant\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{tenant}} / {{dimension}}"
+        },
+        {
+          "expr": "sum by (tenant) (increase(dsh_twin_export_jobs_purged_total[10m]))",
+          "refId": "B",
+          "legendFormat": "{{tenant}} purged"
+        }
+      ]
     }
-  ]
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "租户",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(dsh_twin_tenant_requests_total, tenant)",
+          "refId": "A"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "refresh": 2
+      }
+    ]
+  }
 }

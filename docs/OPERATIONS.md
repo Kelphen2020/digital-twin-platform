@@ -39,8 +39,21 @@ WS 健康：浏览器 DevTools Network → `ws://…/ws`（101）。
   - 链路：`dsh_twin_ws_frames_total`、`dsh_twin_ws_dropped_total`、`dsh_twin_track_points_written_total`
   - 限流/通知：`dsh_twin_ingest_rejected_total`、`dsh_twin_notifications_total{result}`
   - 总线：`dsh_twin_bus_published_total`、`dsh_twin_bus_lag`
-- 告警：`deploy/observability/alerts.yml`（API down、无在线相机、WS 丢帧、总线积压、通知失败、限流、升级激增）。
-- 看板：`make obs-up` → http://127.0.0.1:3000（admin/admin 首次登录改密）。
+- 多租户指标（P35）：`dsh_twin_tenant_requests_total{tenant}`、`dsh_twin_tenant_ingest_total{tenant}`、
+  `dsh_twin_tenant_cameras_online{tenant}`、`dsh_twin_tenant_quota_exceeded_total{tenant,dimension}`、
+  `dsh_twin_export_jobs_purged_total`。
+- 告警：`deploy/observability/alerts.yml`（API down、无在线相机、WS 丢帧、总线积压、通知失败、限流、升级激增；
+  P35 新增租户配额频繁触发、租户无在线相机、租户 ingest 静默、租户请求突增）。
+- 看板：`make obs-up` → http://127.0.0.1:3000（admin/admin 首次登录改密）；看板含「多租户」分组的租户筛选变量。
+
+### 3.1 租户告警处置（P35）
+
+| 告警 | 处置 |
+|---|---|
+| `TenantQuotaExceeded` | 查看 `PATCH /api/tenants/{id}` 的 `limits` 是否过小；确认是正常业务增长还是客户端重试风暴（`dsh_twin_tenant_requests_total` 曲线）。 |
+| `TenantNoOnlineCameras` | 该租户有请求但在线相机为 0：检查采集端推流、`dsh_twin_tenant_ingest_total` 是否同时归零。 |
+| `TenantIngestSilent` | 有 API 流量却 15 分钟无 ingest：检查 ingest 客户端 token/网络，或摄像头 RTSP 断流。 |
+| `TenantRequestSpike` | 确认是否压测；如是生产异常客户端，用 `INGEST_RATE_LIMIT` 或租户 `ingest_qps` 限额止血。 |
 
 ## 4. 备份与恢复（PostgreSQL）
 
