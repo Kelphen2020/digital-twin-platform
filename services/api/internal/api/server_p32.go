@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
@@ -31,6 +32,7 @@ type exportStore struct {
 	retention time.Duration
 	maxJobs   int
 	slots     chan struct{}
+	wg        sync.WaitGroup
 }
 
 // newExportStore builds the export runtime with defaults applied.
@@ -99,7 +101,6 @@ func (s *Server) handleCreateExportJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.exportState()
 	now := time.Now().UTC()
 	job := model.ExportJob{
 		ID: newID("exp"), TenantID: tenant.ID, Status: model.ExportPending,
@@ -117,7 +118,13 @@ func (s *Server) handleCreateExportJob(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "tenant.export.start", job.ID, map[string]any{
 		"tenant_id": tenant.ID, "include_tracks": job.IncludeTracks, "include_audit": job.IncludeAudit,
 	})
-	go s.runExportJob(r.Context(), job, tenant)
+	state := s.exportState()
+	jobCtx := r.Context()
+	state.wg.Add(1)
+	go func() {
+		defer state.wg.Done()
+		s.runExportJob(jobCtx, job, tenant)
+	}()
 	writeJSON(w, http.StatusAccepted, job)
 }
 
@@ -284,6 +291,14 @@ func (s *Server) handleDeleteExportJob(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "tenant.export.delete", job.ID, map[string]any{"tenant_id": job.TenantID})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// WaitForExports blocks until every queued export worker has finished. Tests and
+// graceful shutdown use it so background writers cannot outlive their data dir.
+func (s *Server) WaitForExports() {
+	if s.exports != nil {
+		s.exports.wg.Wait()
+	}
 }
 
 // handlePurgeExportJobs is POST /api/tenants/{id}/exports/purge (admin, P33.0).

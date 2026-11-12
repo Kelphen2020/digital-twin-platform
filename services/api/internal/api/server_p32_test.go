@@ -19,6 +19,12 @@ import (
 	"digital-twin-platform/api/internal/store"
 )
 
+// p32Server is the most recently constructed export-enabled server so tests can
+// wait for background workers before their temp directory is removed.
+var p32Server *api.Server
+
+func lastExportServer() *api.Server { return p32Server }
+
 // newP32Server builds an auth-on API with an isolated export directory.
 func newP32Server(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
@@ -31,8 +37,12 @@ func newP32Server(t *testing.T) (*httptest.Server, string) {
 	}
 	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", authService, "")
 	server.SetExportStore(dir, 2, 0, 0)
+	p32Server = server
 	ts := httptest.NewServer(server.Handler())
+	// Close the listener first, then wait for background export workers: a worker
+	// still writing into `dir` would race t.TempDir()'s RemoveAll cleanup.
 	t.Cleanup(ts.Close)
+	t.Cleanup(func() { server.WaitForExports() })
 	return ts, dir
 }
 
@@ -148,6 +158,8 @@ func TestExportJobGuards(t *testing.T) {
 	if !rejected {
 		t.Fatal("expected a 429 from the export concurrency guard")
 	}
+	// Drain the accepted jobs so no worker touches the temp dir after the test.
+	lastExportServer().WaitForExports()
 }
 
 // P33: export jobs survive an API restart because they are persisted in the store.
