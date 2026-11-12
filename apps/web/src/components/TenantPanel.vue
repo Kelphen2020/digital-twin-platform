@@ -12,7 +12,10 @@ const {
   restoreTenant,
   deleteTenant,
   updateTenantLimits,
-  exportTenant,
+  startExport,
+  loadExportJobs,
+  downloadExport,
+  removeExport,
 } = useTenantStore()
 
 // ---- 新建租户（P29：模板复制 + 初始管理员） ----
@@ -29,12 +32,44 @@ const templateName = computed(
   () => state.tenants.find((tenant) => tenant.id === createTemplate.value)?.name ?? '',
 )
 
-// ---- 导出（P31） ----
+// ---- 异步导出任务（P32） ----
 const includeTracks = ref(false)
 const includeAudit = ref(false)
+const expandedExportId = ref<string | null>(null)
 
 function requestExport(tenant: Tenant) {
-  void exportTenant(tenant.id, { includeTracks: includeTracks.value, includeAudit: includeAudit.value })
+  void startExport(tenant.id, { includeTracks: includeTracks.value, includeAudit: includeAudit.value })
+}
+
+function toggleExports(tenant: Tenant) {
+  if (expandedExportId.value === tenant.id) {
+    expandedExportId.value = null
+    return
+  }
+  expandedExportId.value = tenant.id
+  void loadExportJobs(tenant.id)
+}
+
+function exportJobsOf(tenant: Tenant) {
+  return state.exportJobs[tenant.id] ?? []
+}
+
+const EXPORT_STATUS_LABELS: Record<string, string> = {
+  pending: '排队中',
+  running: '生成中',
+  done: '已完成',
+  failed: '失败',
+}
+
+function exportStatusLabel(job: { status: string }) {
+  return EXPORT_STATUS_LABELS[job.status] ?? job.status
+}
+
+function exportSize(size: number) {
+  if (!size) return '—'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 // ---- 归档 / 恢复 / 删除 / 配额（P30） ----
@@ -297,6 +332,9 @@ onMounted(() => {
           <p v-if="tenant.archived && tenant.archived_at" class="tenant-meta">归档时间：{{ tenant.archived_at }}</p>
           <div class="tenant-actions">
             <button class="ghost-btn" @click="requestExport(tenant)">导出</button>
+            <button class="ghost-btn" @click="toggleExports(tenant)">
+              导出记录{{ exportJobsOf(tenant).length ? `（${exportJobsOf(tenant).length}）` : '' }}
+            </button>
             <button class="ghost-btn" @click="openEdit(tenant)">编辑</button>
             <button class="ghost-btn" @click="openQuota(tenant)">配额</button>
             <template v-if="tenant.archived">
@@ -373,6 +411,32 @@ onMounted(() => {
                 归档
               </button>
             </template>
+          </div>
+          <div v-if="expandedExportId === tenant.id" class="tenant-export-jobs">
+            <p v-if="exportJobsOf(tenant).length === 0" class="tenant-meta">暂无导出记录</p>
+            <ul v-else class="export-job-list">
+              <li v-for="job in exportJobsOf(tenant)" :key="job.id" class="export-job-row">
+                <span class="export-job-status" :class="`export-${job.status}`">{{ exportStatusLabel(job) }}</span>
+                <span class="mono export-job-id">{{ job.id }}</span>
+                <span class="tenant-meta">{{ exportSize(job.size_bytes) }}</span>
+                <span class="tenant-meta">{{ job.include_tracks ? '含轨迹' : '' }}{{ job.include_tracks && job.include_audit ? ' · ' : '' }}{{ job.include_audit ? '含审计' : '' }}</span>
+                <button
+                  v-if="job.status === 'done'"
+                  class="ghost-btn compact-btn"
+                  @click="downloadExport(tenant.id, job)"
+                >
+                  下载
+                </button>
+                <button
+                  v-if="job.status !== 'running'"
+                  class="ghost-btn compact-btn"
+                  @click="removeExport(tenant.id, job)"
+                >
+                  删除
+                </button>
+                <span v-if="job.status === 'failed'" class="form-error">{{ job.error }}</span>
+              </li>
+            </ul>
           </div>
         </article>
       </template>

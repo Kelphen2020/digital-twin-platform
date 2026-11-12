@@ -4,7 +4,10 @@ import {
   archiveTenant as requestArchiveTenant,
   createTenant as requestCreateTenant,
   deleteTenant as requestDeleteTenant,
-  exportTenant as requestExportTenant,
+  createExportJob as requestCreateExportJob,
+  deleteExportJob as requestDeleteExportJob,
+  downloadExportJob as requestDownloadExportJob,
+  fetchExportJobs as requestFetchExportJobs,
   fetchTenants,
   restoreTenant as requestRestoreTenant,
   updateTenant as requestUpdateTenant,
@@ -12,6 +15,7 @@ import {
 import type {
   Tenant,
   TenantCreatePayload,
+  ExportJob,
   TenantLimits,
   TenantSeeded,
   TenantUpdatePayload,
@@ -20,6 +24,7 @@ import { pushToast } from './ui'
 
 interface TenantState {
   tenants: Tenant[]
+  exportJobs: Record<string, ExportJob[]>
   loading: boolean
   error: string | null
   saving: boolean
@@ -28,6 +33,7 @@ interface TenantState {
 
 const state = reactive<TenantState>({
   tenants: [],
+  exportJobs: {},
   loading: false,
   error: null,
   saving: false,
@@ -89,47 +95,73 @@ async function updateTenant(tenantId: string, payload: TenantUpdatePayload): Pro
   }
 }
 
-const EXPORT_LABELS: Record<string, string> = {
-  cameras: '相机',
-  areas: '区域',
-  camera_rules: '规则',
-  settings: '设置',
-  users: '用户',
-  events: '事件',
-  orders: '工单',
-  notification_log: '通知',
-  patrol_routes: '巡检路线',
-  patrol_schedules: '巡检计划',
-  patrol_executions: '巡检执行',
-  tracks: '轨迹点',
-  audit: '审计',
-}
-
-// exportTenant downloads the tenant data package and summarises its counts.
-async function exportTenant(
+// startExport creates an asynchronous export job (P32) and tracks it locally.
+async function startExport(
   tenantId: string,
   options: { includeTracks?: boolean; includeAudit?: boolean } = {},
-): Promise<boolean> {
+): Promise<ExportJob | null> {
   try {
-    const { blob, counts } = await requestExportTenant(tenantId, options)
+    const job = await requestCreateExportJob(tenantId, options)
+    state.exportJobs[tenantId] = [job, ...(state.exportJobs[tenantId] ?? [])]
+    pushToast('导出任务已创建，正在后台生成…', 'info')
+    return job
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+    return null
+  }
+}
+
+// loadExportJobs refreshes one tenant's job list (newest first).
+async function loadExportJobs(tenantId: string): Promise<void> {
+  try {
+    state.exportJobs[tenantId] = await requestFetchExportJobs(tenantId)
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+  }
+}
+
+// applyExportJob merges a job frame pushed over WS.
+function applyExportJob(job: ExportJob): void {
+  const list = state.exportJobs[job.tenant_id] ?? []
+  const index = list.findIndex((item) => item.id === job.id)
+  if (index >= 0) list[index] = { ...list[index], ...job }
+  else list.unshift(job)
+  state.exportJobs[job.tenant_id] = list
+  if (job.status === 'done') pushToast(`数据集已生成，可下载（${formatBytes(job.size_bytes)}）`, 'success')
+  if (job.status === 'failed') pushToast(`导出失败：${job.error}`, 'error')
+}
+
+async function downloadExport(tenantId: string, job: ExportJob): Promise<void> {
+  try {
+    const blob = await requestDownloadExportJob(tenantId, job.id)
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `tenant-${tenantId}.json`
+    anchor.download = `tenant-${tenantId}-${job.id}.json`
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
     URL.revokeObjectURL(url)
-    const summary = Object.entries(counts)
-      .filter(([key, value]) => value > 0 && key in EXPORT_LABELS)
-      .map(([key, value]) => `${EXPORT_LABELS[key]} ${value}`)
-      .join(' / ')
-    pushToast(`租户数据已导出${summary ? `：${summary}` : '（空数据包）'}`, 'success')
-    return true
   } catch (error) {
     pushToast(apiErrorMessage(error), 'error')
-    return false
   }
+}
+
+async function removeExport(tenantId: string, job: ExportJob): Promise<void> {
+  try {
+    await requestDeleteExportJob(tenantId, job.id)
+    state.exportJobs[tenantId] = (state.exportJobs[tenantId] ?? []).filter((item) => item.id !== job.id)
+    pushToast('导出任务已删除', 'success')
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+  }
+}
+
+function formatBytes(size: number): string {
+  if (size <= 0) return '0 B'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 async function archiveTenant(tenantId: string): Promise<Tenant | null> {
@@ -237,7 +269,11 @@ export function useTenantStore() {
     createTenant,
     updateTenant,
     archiveTenant,
-    exportTenant,
+    startExport,
+    loadExportJobs,
+    applyExportJob,
+    downloadExport,
+    removeExport,
     restoreTenant,
     deleteTenant,
     updateTenantLimits,

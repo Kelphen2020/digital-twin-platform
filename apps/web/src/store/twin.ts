@@ -25,6 +25,7 @@ import { TwinSocket } from '../ws'
 import { EVENT_TYPE_LABELS } from '../labels'
 import { pushToast } from './ui'
 import { usePatrolStore } from './patrol'
+import { useTenantStore } from './tenant'
 import type {
   Area,
   CalibrationSavePayload,
@@ -660,6 +661,7 @@ async function saveCameraCalibration(cameraId: string, payload: CalibrationSaveP
 }
 
 const patrolStore = usePatrolStore()
+const tenantStore = useTenantStore()
 
 async function removeCameraCalibration(cameraId: string): Promise<Camera> {
   const camera = await requestDeleteCalibration(cameraId)
@@ -727,6 +729,11 @@ function handleWsMessage(message: WsMessage): void {
         receivedAt: Date.now(),
       }
       state.replayEvents = [item, ...state.replayEvents].slice(0, REPLAY_FEED_LIMIT)
+      break
+    }
+    case 'export_status': {
+      // P32：异步导出任务状态（创建/完成/失败）
+      tenantStore.applyExportJob(message.data)
       break
     }
     case 'patrol_execution': {

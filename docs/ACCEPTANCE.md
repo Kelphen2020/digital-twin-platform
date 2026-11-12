@@ -1345,3 +1345,35 @@ SKIP  smoke (postgres)  (--quick)
 - 导出内容不含处置动作明细（actions）与轨迹默认关闭，仅按需包含轨迹/审计。
 - 共享限流仅在 `RATE_STORE=postgres` 且使用 PostgreSQL 存储时生效；内存模式仍是进程内桶。
 - 本轮两名队友再次连续中断，P31 后端与前端导出 UI 均由我完成并验证。
+
+---
+
+# P32.0 验收记录（2026-11-12 上午）
+
+## 131. 异步导出任务
+
+| 能力 | 说明 | 证据 |
+|---|---|---|
+| 任务模型 | `exportJob{id,tenant_id,status,include_tracks,include_audit,created_by,created_at,started_at,finished_at,size_bytes,counts,error}`，进程内存储 + 产物落盘 `data/exports/<exportId>.json` | 实测任务 `pending → done`，size_bytes=3829，counts 含 areas/cameras/users |
+| 接口 | `POST /api/tenants/{id}/exports`（202）、`GET .../exports`（列表 ≤50）、`GET .../exports/{id}`、`GET .../{id}/download`（`attachment; filename="tenant-<id>-<exportId>.json"`；未完成 409）、`DELETE .../{id}`（204） | 实测创建/查询/下载/列表全部正常，下载响应头正确 |
+| 并发保护 | 同一租户最多 2 个 pending/running，超出 `429 too_many_exports` | 单测 `TestExportJobGuards` 第 3 次提交被拒 |
+| 审计与 WS | `tenant.export.start/done/failed`；完成/失败推送 WS `export_status` | 单测覆盖；前端 WS 分支已接入 |
+| 配置 | `EXPORT_DIR`（默认 `data/exports`）、`EXPORT_WORKERS`（默认 2） | 已接入 config/main |
+| 前端 | 每行「导出」创建任务 + 「导出记录（N）」展开列表（状态徽标/大小/含轨迹含审计/下载/删除），WS 完成后自动刷新并 Toast | typecheck/lint/build 绿，dev server :5173 标题 P32.0 |
+
+## 132. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（新增 `TestExportJobsLifecycle`、`TestExportJobGuards`） |
+| 覆盖率 | **63.9%**（门禁 62%） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke` | ✅ **PASS 263/263** |
+| 前端 | ✅ `pnpm typecheck` + `pnpm lint` + `pnpm build` |
+
+## 133. 已知限制（P32.0）
+
+- 导出任务保存在进程内，API 重启后任务列表丢失（产物文件仍在 `data/exports`）；多副本下任务不共享。
+- 产物无自动过期清理（仅手动删除），长期运行需加保留策略。
+- 任务 50 条列表上限；历史任务不持久化到数据库。
+- 本轮队友仍不稳定，P32 前后端均我独立完成。

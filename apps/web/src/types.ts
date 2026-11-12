@@ -320,8 +320,14 @@ export interface WsStatsMessage {
   data: { events_total: number; online_cameras: number; ws_clients: number }
 }
 
+export interface WsExportStatusMessage {
+  type: 'export_status'
+  data: ExportJob
+}
+
 export type WsMessage =
   | WsHelloMessage
+  | WsExportStatusMessage
   | WsEventMessage
   | WsEventUpdatedMessage
   | WsCameraStatusMessage
@@ -584,6 +590,21 @@ export interface TenantExportCounts {
   patrol_executions: number
   tracks: number
   audit: number
+}
+
+export interface ExportJob {
+  id: string
+  tenant_id: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  include_tracks: boolean
+  include_audit: boolean
+  created_by: string
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+  size_bytes: number
+  counts: Record<string, number>
+  error: string
 }
 
 export interface TenantLimits {

@@ -727,6 +727,50 @@ export async function exportTenant(
   return { blob, counts }
 }
 
+// ---------------- P32 异步导出任务（admin） ----------------
+
+export async function createExportJob(
+  tenantId: string,
+  options: { includeTracks?: boolean; includeAudit?: boolean } = {},
+): Promise<import('./types').ExportJob> {
+  return postJson<import('./types').ExportJob>(`/api/tenants/${encodeURIComponent(tenantId)}/exports`, {
+    include_tracks: Boolean(options.includeTracks),
+    include_audit: Boolean(options.includeAudit),
+  })
+}
+
+export async function fetchExportJobs(tenantId: string): Promise<import('./types').ExportJob[]> {
+  const payload = await requestJson<{ items: import('./types').ExportJob[] }>(
+    `/api/tenants/${encodeURIComponent(tenantId)}/exports`,
+  )
+  return payload.items ?? []
+}
+
+export async function downloadExportJob(tenantId: string, exportId: string): Promise<Blob> {
+  const response = await fetchWithAuth(
+    `/api/tenants/${encodeURIComponent(tenantId)}/exports/${encodeURIComponent(exportId)}/download`,
+    { method: 'GET', headers: { Accept: 'application/json', ...authHeaders() } },
+  )
+  if (!response.ok) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized(`/api/tenants/${tenantId}/exports/${exportId}/download`)
+    throw error
+  }
+  return response.blob()
+}
+
+export async function deleteExportJob(tenantId: string, exportId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/tenants/${encodeURIComponent(tenantId)}/exports/${encodeURIComponent(exportId)}`,
+    { method: 'DELETE', headers: { ...authHeaders() } },
+  )
+  if (!response.ok && response.status !== 204) {
+    const error = await parseError(response)
+    if (response.status === 401) notifyUnauthorized(`/api/tenants/${tenantId}/exports/${exportId}`)
+    throw error
+  }
+}
+
 // ---------------- P12 巡检路线 ----------------
 
 /** GET /api/patrol/routes（登录用户）→ 巡检路线列表。 */
