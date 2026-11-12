@@ -35,6 +35,30 @@ type Tenant struct {
 	UpdatedAt  time.Time    `json:"updated_at"`
 }
 
+// ExportJob statuses (P33.0).
+const (
+	ExportPending = "pending"
+	ExportRunning = "running"
+	ExportDone    = "done"
+	ExportFailed  = "failed"
+)
+
+// ExportJob is a persisted asynchronous tenant export task (P33.0).
+type ExportJob struct {
+	ID            string         `json:"id"`
+	TenantID      string         `json:"tenant_id"`
+	Status        string         `json:"status"`
+	IncludeTracks bool           `json:"include_tracks"`
+	IncludeAudit  bool           `json:"include_audit"`
+	CreatedBy     string         `json:"created_by"`
+	CreatedAt     time.Time      `json:"created_at"`
+	StartedAt     *time.Time     `json:"started_at,omitempty"`
+	FinishedAt    *time.Time     `json:"finished_at,omitempty"`
+	SizeBytes     int64          `json:"size_bytes"`
+	Counts        map[string]int `json:"counts"`
+	Error         string         `json:"error"`
+}
+
 // DefaultTenantID is the implicit tenant used when no X-Tenant-ID is supplied.
 const DefaultTenantID = "default"
 

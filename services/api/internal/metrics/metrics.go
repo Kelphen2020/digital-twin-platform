@@ -39,6 +39,9 @@ type Metrics struct {
 
 	quotaMu       sync.Mutex
 	quotaExceeded map[string]int64
+
+	exportPurgedMu sync.Mutex
+	exportPurged   int64
 }
 
 // New returns an empty counter set.
@@ -55,6 +58,23 @@ func (m *Metrics) RecordTenantRequest(tenant string) {
 	}
 	m.tenantRequests[tenant]++
 	m.tenantMu.Unlock()
+}
+
+// ExportJobsPurged adds to the export-retention purge counter (P33.0).
+func (m *Metrics) ExportJobsPurged(count int64) {
+	if count <= 0 {
+		return
+	}
+	m.exportPurgedMu.Lock()
+	m.exportPurged += count
+	m.exportPurgedMu.Unlock()
+}
+
+// ExportJobsPurgedTotal returns how many export jobs were pruned.
+func (m *Metrics) ExportJobsPurgedTotal() int64 {
+	m.exportPurgedMu.Lock()
+	defer m.exportPurgedMu.Unlock()
+	return m.exportPurged
 }
 
 // RecordTenantQuotaExceeded counts one quota rejection for a tenant dimension
@@ -206,6 +226,9 @@ func (m *Metrics) Text(wsClients, onlineCameras int) string {
 	for _, tenant := range names {
 		fmt.Fprintf(&b, "dsh_twin_tenant_requests_total{tenant=%q} %d\n", tenant, tenants[tenant])
 	}
+	fmt.Fprintf(&b, "# HELP dsh_twin_export_jobs_purged_total Finished export jobs pruned by retention (P33.0).\n")
+	fmt.Fprintf(&b, "# TYPE dsh_twin_export_jobs_purged_total counter\n")
+	fmt.Fprintf(&b, "dsh_twin_export_jobs_purged_total %d\n", m.ExportJobsPurgedTotal())
 	b.WriteString("# HELP dsh_twin_tenant_quota_exceeded_total Tenant quota rejections by dimension (P30.0).\n")
 	b.WriteString("# TYPE dsh_twin_tenant_quota_exceeded_total counter\n")
 	quotas := m.TenantQuotaExceeded()

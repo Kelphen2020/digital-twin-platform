@@ -30,7 +30,7 @@ func newP32Server(t *testing.T) (*httptest.Server, string) {
 		t.Fatalf("seed users: %v", err)
 	}
 	server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", authService, "")
-	server.SetExportStore(dir, 2)
+	server.SetExportStore(dir, 2, 0, 0)
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
 	return ts, dir
@@ -145,5 +145,99 @@ func TestExportJobGuards(t *testing.T) {
 	}
 	if !rejected {
 		t.Fatalf("expected a 429 among %v", codes)
+	}
+}
+
+// P33: export jobs survive an API restart because they are persisted in the store.
+func TestExportJobsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	memory := store.NewMemory(2000)
+	memory.Seed(store.SeedCameras(), store.SeedAreas())
+	authService := auth.NewWithRepo("on", "test-secret", memory)
+	if err := authService.EnsureSeed(context.Background()); err != nil {
+		t.Fatalf("seed users: %v", err)
+	}
+	build := func() *httptest.Server {
+		server := api.New(memory, rules.New(5*time.Second), realtime.NewHub(), metrics.New(), "test", authService, "")
+		server.SetExportStore(dir, 2, 0, 0)
+		return httptest.NewServer(server.Handler())
+	}
+
+	first := build()
+	admin := login(t, first, "admin", "Admin@123456")
+	status, body := authorized(t, http.MethodPost, first.URL+"/api/tenants/default/exports", admin, map[string]any{})
+	if status != http.StatusAccepted {
+		t.Fatalf("create job: %d %s", status, body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(body, &created)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		status, body = authorized(t, http.MethodGet, first.URL+"/api/tenants/default/exports/"+created.ID, admin, nil)
+		if status == http.StatusOK && strings.Contains(string(body), `"done"`) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	first.Close()
+
+	// "Restart": a fresh server sharing only the store must still list the job.
+	second := build()
+	defer second.Close()
+	admin2 := login(t, second, "admin", "Admin@123456")
+	status, body = authorized(t, http.MethodGet, second.URL+"/api/tenants/default/exports", admin2, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), created.ID) {
+		t.Fatalf("job did not survive restart: %d %s", status, body)
+	}
+	status, body = authorized(t, http.MethodGet, second.URL+"/api/tenants/default/exports/"+created.ID+"/download", admin2, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), `"counts"`) {
+		t.Fatalf("download after restart: %d", status)
+	}
+}
+
+// P33: purge removes finished jobs older than the cutoff.
+func TestExportJobPurgeEndpoint(t *testing.T) {
+	ts, dir := newP32Server(t)
+	admin := login(t, ts, "admin", "Admin@123456")
+
+	status, body := authorized(t, http.MethodPost, ts.URL+"/api/tenants/default/exports", admin, map[string]any{})
+	if status != http.StatusAccepted {
+		t.Fatalf("create job: %d %s", status, body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(body, &created)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		status, body = authorized(t, http.MethodGet, ts.URL+"/api/tenants/default/exports/"+created.ID, admin, nil)
+		if status == http.StatusOK && strings.Contains(string(body), `"done"`) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(dir, created.ID+".json")); err != nil {
+		t.Fatalf("artifact missing before purge: %v", err)
+	}
+
+	// A future cutoff purges everything finished.
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	status, body = authorized(t, http.MethodPost, ts.URL+"/api/tenants/default/exports/purge?before="+future, admin, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), `"purged":1`) {
+		t.Fatalf("purge: %d %s", status, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, created.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("artifact should be removed by purge: %v", err)
+	}
+	status, _ = authorized(t, http.MethodPost, ts.URL+"/api/tenants/default/exports/purge?before=nope", admin, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("bad before should be 400, got %d", status)
+	}
+	viewer := login(t, ts, "viewer", "Viewer@123")
+	status, _ = authorized(t, http.MethodPost, ts.URL+"/api/tenants/default/exports/purge", viewer, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("viewer purge should be 403, got %d", status)
 	}
 }

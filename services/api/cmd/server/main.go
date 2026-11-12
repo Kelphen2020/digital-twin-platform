@@ -72,7 +72,9 @@ func run() error {
 	authService.SetAccessTTL(time.Duration(cfg.AccessTokenTTLSeconds) * time.Second)
 	server.SetSessionTTL(time.Duration(cfg.RefreshTokenTTLSeconds) * time.Second)
 	server.SetIngestFallback(cfg.IngestFallbackURL)
-	server.SetExportStore(cfg.ExportDir, cfg.ExportWorkers)
+	server.SetExportStore(cfg.ExportDir, cfg.ExportWorkers, cfg.ExportRetention, cfg.ExportMaxJobs)
+	server.RecoverInterruptedExportJobs(ctx)
+	server.StartExportRetention(ctx, 10*time.Minute)
 	if cfg.RateStore == "postgres" {
 		if pg, ok := database.(*store.Postgres); ok {
 			server.SetRateStore(store.NewPostgresRateStore(pg))

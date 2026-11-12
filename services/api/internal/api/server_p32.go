@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
@@ -17,48 +18,43 @@ import (
 	"digital-twin-platform/api/internal/store"
 )
 
-// exportJob is one asynchronous tenant export (P32.0).
-type exportJob struct {
-	ID            string         `json:"id"`
-	TenantID      string         `json:"tenant_id"`
-	Status        string         `json:"status"`
-	IncludeTracks bool           `json:"include_tracks"`
-	IncludeAudit  bool           `json:"include_audit"`
-	CreatedBy     string         `json:"created_by"`
-	CreatedAt     time.Time      `json:"created_at"`
-	StartedAt     *time.Time     `json:"started_at,omitempty"`
-	FinishedAt    *time.Time     `json:"finished_at,omitempty"`
-	SizeBytes     int64          `json:"size_bytes"`
-	Counts        map[string]int `json:"counts"`
-	Error         string         `json:"error"`
-}
+// exportJobAlias keeps the P32 field names readable inside this file.
+type exportJob = model.ExportJob
 
 const maxActiveExportJobs = 2
 
+// exportStore keeps the on-disk location and worker budget for export jobs;
+// job rows themselves live in the Store so they survive restarts (P33.0).
 type exportStore struct {
-	mu      sync.Mutex
-	jobs    map[string]exportJob
-	dir     string
-	workers int
-	slots   chan struct{}
+	dir       string
+	workers   int
+	retention time.Duration
+	maxJobs   int
+	slots     chan struct{}
 }
 
+// newExportStore builds the export runtime with defaults applied.
 func newExportStore(dir string, workers int) *exportStore {
+	return newExportStoreWithPolicy(dir, workers, 0, 0)
+}
+
+// newExportStoreWithPolicy applies defaults and stores the retention policy.
+func newExportStoreWithPolicy(dir string, workers int, retention time.Duration, maxJobs int) *exportStore {
+	if strings.TrimSpace(dir) == "" {
+		dir = "data/exports"
+	}
 	if workers < 1 {
 		workers = 1
 	}
 	return &exportStore{
-		jobs: make(map[string]exportJob), dir: dir, workers: workers,
+		dir: dir, workers: workers, retention: retention, maxJobs: maxJobs,
 		slots: make(chan struct{}, workers),
 	}
 }
 
-// SetExportStore configures the asynchronous export directory and workers.
-func (s *Server) SetExportStore(dir string, workers int) {
-	if strings.TrimSpace(dir) == "" {
-		dir = "data/exports"
-	}
-	s.exports = newExportStore(dir, workers)
+// SetExportStore configures the asynchronous export directory, workers and policy.
+func (s *Server) SetExportStore(dir string, workers int, retention time.Duration, maxJobs int) {
+	s.exports = newExportStoreWithPolicy(dir, workers, retention, maxJobs)
 }
 
 func (s *Server) exportState() *exportStore {
@@ -69,10 +65,14 @@ func (s *Server) exportState() *exportStore {
 }
 
 // activeExports counts jobs still pending or running for a tenant.
-func (e *exportStore) activeExports(tenantID string) int {
+func (s *Server) activeExports(ctx context.Context, tenantID string) int {
+	jobs, err := s.store.ListExportJobs(ctx, tenantID, 200)
+	if err != nil {
+		return 0
+	}
 	count := 0
-	for _, job := range e.jobs {
-		if job.TenantID == tenantID && (job.Status == "pending" || job.Status == "running") {
+	for _, job := range jobs {
+		if job.Status == model.ExportPending || job.Status == model.ExportRunning {
 			count++
 		}
 	}
@@ -99,46 +99,41 @@ func (s *Server) handleCreateExportJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	state := s.exportState()
+	s.exportState()
 	now := time.Now().UTC()
-	job := exportJob{
-		ID: newID("exp"), TenantID: tenant.ID, Status: "pending",
+	job := model.ExportJob{
+		ID: newID("exp"), TenantID: tenant.ID, Status: model.ExportPending,
 		IncludeTracks: body.IncludeTracks, IncludeAudit: body.IncludeAudit,
 		CreatedBy: user.Username, CreatedAt: now, Counts: map[string]int{},
 	}
-	state.mu.Lock()
-	if state.activeExports(tenant.ID) >= maxActiveExportJobs {
-		state.mu.Unlock()
+	if s.activeExports(r.Context(), tenant.ID) >= maxActiveExportJobs {
 		writeError(w, http.StatusTooManyRequests, "too_many_exports", "two exports are already running for this tenant")
 		return
 	}
-	state.jobs[job.ID] = job
-	state.mu.Unlock()
-
+	if err := s.store.CreateExportJob(r.Context(), job); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	s.audit(r, "tenant.export.start", job.ID, map[string]any{
 		"tenant_id": tenant.ID, "include_tracks": job.IncludeTracks, "include_audit": job.IncludeAudit,
 	})
-	go s.runExportJob(r.Context(), job.ID, tenant)
+	go s.runExportJob(r.Context(), job, tenant)
 	writeJSON(w, http.StatusAccepted, job)
 }
 
 // runExportJob renders the tenant package to disk in the background.
-func (s *Server) runExportJob(ctx context.Context, jobID string, tenant model.Tenant) {
+func (s *Server) runExportJob(ctx context.Context, job model.ExportJob, tenant model.Tenant) {
 	state := s.exportState()
 	state.slots <- struct{}{}
 	defer func() { <-state.slots }()
+	jobID := job.ID
 
 	started := time.Now().UTC()
-	state.mu.Lock()
-	job, ok := state.jobs[jobID]
-	if !ok {
-		state.mu.Unlock()
+	job.Status = model.ExportRunning
+	job.StartedAt = &started
+	if err := s.store.UpdateExportJob(ctx, job); err != nil {
 		return
 	}
-	job.Status = "running"
-	job.StartedAt = &started
-	state.jobs[jobID] = job
-	state.mu.Unlock()
 	s.broadcastExport(job)
 
 	payload, err := s.buildTenantExport(ctx, tenant, job.IncludeTracks, job.IncludeAudit)
@@ -160,19 +155,16 @@ func (s *Server) runExportJob(ctx context.Context, jobID string, tenant model.Te
 	}
 
 	finished := time.Now().UTC()
-	state.mu.Lock()
-	job = state.jobs[jobID]
 	job.FinishedAt = &finished
 	if err != nil {
-		job.Status = "failed"
+		job.Status = model.ExportFailed
 		job.Error = err.Error()
 	} else {
-		job.Status = "done"
+		job.Status = model.ExportDone
 		job.SizeBytes = size
 		job.Counts = payload.Counts
 	}
-	state.jobs[jobID] = job
-	state.mu.Unlock()
+	_ = s.store.UpdateExportJob(ctx, job)
 	s.broadcastExport(job)
 
 	action := "tenant.export.done"
@@ -199,18 +191,19 @@ func (s *Server) handleListExportJobs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	state := s.exportState()
-	state.mu.Lock()
-	items := make([]exportJob, 0, len(state.jobs))
-	for _, job := range state.jobs {
-		if job.TenantID == tenant.ID {
-			items = append(items, job)
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, convErr := strconv.Atoi(raw); convErr == nil && parsed > 0 {
+			limit = min(parsed, 200)
 		}
 	}
-	state.mu.Unlock()
-	sortExportJobs(items)
-	if len(items) > 50 {
-		items = items[:50]
+	items, err := s.store.ListExportJobs(r.Context(), tenant.ID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if items == nil {
+		items = []model.ExportJob{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -220,10 +213,11 @@ func (s *Server) exportJob(w http.ResponseWriter, r *http.Request) (exportJob, b
 	if !ok {
 		return exportJob{}, false
 	}
-	state := s.exportState()
-	state.mu.Lock()
-	job, found := state.jobs[r.PathValue("exportId")]
-	state.mu.Unlock()
+	job, found, err := s.store.GetExportJob(r.Context(), r.PathValue("exportId"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return model.ExportJob{}, false
+	}
 	if !found || job.TenantID != tenant.ID {
 		writeError(w, http.StatusNotFound, "export_not_found", "export job not found")
 		return exportJob{}, false
@@ -252,7 +246,7 @@ func (s *Server) handleDownloadExportJob(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if job.Status != "done" {
+	if job.Status != model.ExportDone {
 		writeError(w, http.StatusConflict, "invalid_state", "export job is not finished")
 		return
 	}
@@ -284,17 +278,113 @@ func (s *Server) handleDeleteExportJob(w http.ResponseWriter, r *http.Request) {
 	}
 	state := s.exportState()
 	_ = os.Remove(filepath.Join(state.dir, job.ID+".json"))
-	state.mu.Lock()
-	delete(state.jobs, job.ID)
-	state.mu.Unlock()
+	if err := s.store.DeleteExportJob(r.Context(), job.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 	s.audit(r, "tenant.export.delete", job.ID, map[string]any{"tenant_id": job.TenantID})
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func sortExportJobs(items []exportJob) {
-	for i := 1; i < len(items); i++ {
-		for j := i; j > 0 && items[j].CreatedAt.After(items[j-1].CreatedAt); j-- {
-			items[j], items[j-1] = items[j-1], items[j]
+// handlePurgeExportJobs is POST /api/tenants/{id}/exports/purge (admin, P33.0).
+func (s *Server) handlePurgeExportJobs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.allow(w, r, auth.PermTenantAdmin); !ok {
+		return
+	}
+	tenant, ok := s.loadTenant(w, r)
+	if !ok {
+		return
+	}
+	before := time.Now().Add(-7 * 24 * time.Hour)
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "before must be RFC3339")
+			return
 		}
+		before = parsed
+	}
+	state := s.exportState()
+	removed, err := s.store.PurgeExportJobs(r.Context(), tenant.ID, before, state.maxJobs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	for _, id := range removed {
+		_ = os.Remove(filepath.Join(state.dir, id+".json"))
+	}
+	s.metrics.ExportJobsPurged(int64(len(removed)))
+	s.audit(r, "tenant.export.purge", tenant.ID, map[string]any{"purged": len(removed), "before": before})
+	writeJSON(w, http.StatusOK, map[string]any{"purged": len(removed)})
+}
+
+// StartExportRetention runs the periodic retention sweep until ctx ends.
+func (s *Server) StartExportRetention(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.sweepExportJobs(ctx)
+			}
+		}
+	}()
+}
+
+// sweepExportJobs prunes finished jobs older than the retention window.
+func (s *Server) sweepExportJobs(ctx context.Context) {
+	state := s.exportState()
+	if state.retention <= 0 && state.maxJobs <= 0 {
+		return
+	}
+	tenants, err := s.store.ListTenants(ctx)
+	if err != nil {
+		log.Printf("api: export retention: list tenants: %v", err)
+		return
+	}
+	before := time.Now().UTC()
+	if state.retention > 0 {
+		before = before.Add(-state.retention)
+	}
+	purged := 0
+	for _, tenant := range tenants {
+		removed, purgeErr := s.store.PurgeExportJobs(ctx, tenant.ID, before, state.maxJobs)
+		if purgeErr != nil {
+			log.Printf("api: export retention: purge %s: %v", tenant.ID, purgeErr)
+			continue
+		}
+		for _, id := range removed {
+			_ = os.Remove(filepath.Join(state.dir, id+".json"))
+		}
+		purged += len(removed)
+	}
+	if purged > 0 {
+		s.metrics.ExportJobsPurged(int64(purged))
+		log.Printf("api: export retention purged %d jobs", purged)
+	}
+}
+
+// RecoverInterruptedExportJobs marks jobs left running by a previous process.
+func (s *Server) RecoverInterruptedExportJobs(ctx context.Context) {
+	type failedMover interface {
+		FailPendingExportJobs(context.Context, string) (int, error)
+	}
+	mover, ok := s.store.(failedMover)
+	if !ok {
+		return
+	}
+	count, err := mover.FailPendingExportJobs(ctx, "interrupted by restart")
+	if err != nil {
+		log.Printf("api: export recovery: %v", err)
+		return
+	}
+	if count > 0 {
+		log.Printf("api: export recovery marked %d interrupted jobs as failed", count)
 	}
 }

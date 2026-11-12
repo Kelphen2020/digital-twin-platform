@@ -39,6 +39,13 @@ type Store interface {
 	UpdateTenant(ctx context.Context, tenant model.Tenant) error
 	DeleteTenant(ctx context.Context, id string) (map[string]int, error)
 
+	CreateExportJob(ctx context.Context, job model.ExportJob) error
+	UpdateExportJob(ctx context.Context, job model.ExportJob) error
+	GetExportJob(ctx context.Context, id string) (model.ExportJob, bool, error)
+	ListExportJobs(ctx context.Context, tenantID string, limit int) ([]model.ExportJob, error)
+	DeleteExportJob(ctx context.Context, id string) error
+	PurgeExportJobs(ctx context.Context, tenantID string, before time.Time, keep int) ([]string, error)
+
 	ListAreas(ctx context.Context) ([]model.Area, error)
 	CreateArea(ctx context.Context, area model.Area) error
 	ListCameras(ctx context.Context) ([]model.Camera, error)
@@ -140,6 +147,8 @@ type Memory struct {
 	maxEvents int
 	maxTracks int
 	maxAudit  int
+	// export jobs are stored per tenant and survive only in this process (P33)
+	exportJobs map[string]model.ExportJob
 }
 
 // NewMemory creates an empty in-memory store with the seeded default tenant.
@@ -148,11 +157,12 @@ func NewMemory(maxEvents int) *Memory {
 		maxEvents = 100
 	}
 	m := &Memory{
-		states:    make(map[string]*memoryState),
-		tenants:   make(map[string]model.Tenant),
-		maxEvents: maxEvents,
-		maxTracks: 50000,
-		maxAudit:  5000,
+		states:     make(map[string]*memoryState),
+		tenants:    make(map[string]model.Tenant),
+		maxEvents:  maxEvents,
+		maxTracks:  50000,
+		maxAudit:   5000,
+		exportJobs: make(map[string]model.ExportJob),
 	}
 	m.states[model.DefaultTenantID] = newMemoryState()
 	now := time.Now().UTC()

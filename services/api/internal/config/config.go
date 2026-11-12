@@ -39,6 +39,8 @@ type Config struct {
 	RateStore                   string
 	ExportDir                   string
 	ExportWorkers               int
+	ExportRetention             time.Duration
+	ExportMaxJobs               int
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -73,6 +75,8 @@ func Load() Config {
 		RateStore:                   env("RATE_STORE", "memory"),
 		ExportDir:                   env("EXPORT_DIR", "data/exports"),
 		ExportWorkers:               envInt("EXPORT_WORKERS", 2),
+		ExportRetention:             envDuration("EXPORT_RETENTION", 168*time.Hour),
+		ExportMaxJobs:               envInt("EXPORT_MAX_JOBS", 200),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100
@@ -85,6 +89,19 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// envDuration parses a Go duration ("168h", "0"); empty or invalid uses the fallback.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func envInt(key string, fallback int) int {
