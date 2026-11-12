@@ -14,6 +14,11 @@ export PATH="$(dirname "$GO"):$PATH"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-off}"
 
+# Unit-only coverage gate (the PostgreSQL contract tests add ~11 points but need
+# Docker; the PG stage enforces its own thresholds).
+COVERAGE_GATE="${COVERAGE_GATE:-65}"
+# The PG stage runs every test against a live database, so it holds a higher bar.
+PG_COVERAGE_GATE="${PG_COVERAGE_GATE:-72}"
 QUICK=0
 [ "${1:-}" = "--quick" ] && QUICK=1
 
@@ -47,9 +52,9 @@ stage_api_test() {
   local total
   total="$(cd services/api && "$GO" tool cover -func="$profile" | tail -1 | awk '{print $3}' | tr -d '%')"
   rm -f "$profile"
-  echo "coverage: ${total:-unknown}% (gate 62%)"
+  echo "coverage: ${total:-unknown}% (gate ${COVERAGE_GATE}%)"
   [ -n "$total" ] || return 1
-  awk -v t="$total" 'BEGIN { if (t+0 < 62) { printf "coverage %s%% < 62%% gate\n", t; exit 1 } }'
+  awk -v t="$total" -v g="$COVERAGE_GATE" 'BEGIN { if (t+0 < g) { printf "coverage %s%% < %s%% gate\n", t, g; exit 1 } }'
 }
 stage_lint() {
   export PATH="$(dirname "$GO"):$HOME/go/bin:$PATH"
@@ -162,8 +167,20 @@ stage_pg_smoke() {
   sleep 3
   local dburl="postgres://twin:twin@127.0.0.1:$port/twin?sslmode=disable" code=0 log
   log="$(mktemp)"
-  echo "--- store contract test (PG_TEST_URL) ---"
-  (cd services/api && PG_TEST_URL="$dburl" "$GO" test ./internal/store/ -run TestPostgresContract -v) || { echo "store contract test FAILED" >&2; code=1; }
+  echo "--- store contract tests (PG_TEST_URL) ---"
+  (cd services/api && PG_TEST_URL="$dburl" "$GO" test ./internal/store/ -run TestPostgres -v) || { echo "store contract test FAILED" >&2; code=1; }
+  echo "--- PostgreSQL-inclusive coverage ---"
+  local pg_profile pg_total
+  pg_profile="$(mktemp)"
+  (cd services/api && PG_TEST_URL="$dburl" "$GO" test ./... -count=1 -coverprofile="$pg_profile") || code=1
+  pg_total="$(cd services/api && "$GO" tool cover -func="$pg_profile" | tail -1 | awk '{print $3}' | tr -d '%')"
+  rm -f "$pg_profile"
+  echo "coverage with PostgreSQL: ${pg_total:-unknown}% (gate ${PG_COVERAGE_GATE}%)"
+  if [ -n "$pg_total" ]; then
+    awk -v t="$pg_total" -v g="$PG_COVERAGE_GATE" 'BEGIN { if (t+0 < g) { printf "PG coverage %s%% < %s%% gate\n", t, g; exit 1 } }' || code=1
+  else
+    code=1
+  fi
   echo "--- pg api health probe ---"
   for _ in $(seq 1 10); do
     printf '%s ' "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/api/health" 2>/dev/null || echo 000)"

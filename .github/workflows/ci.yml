@@ -31,11 +31,13 @@ jobs:
       - run: go vet ./...
       - name: Test with coverage gate
         run: go test ./... -count=1 -coverprofile=cover.out
-      - name: Enforce coverage >= 62%
+      - name: Enforce coverage >= 65%
+        env:
+          COVERAGE_GATE: '65'
         run: |
           total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
-          echo "coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { if (t+0 < 62) { printf "coverage %s%% < 62%% gate\n", t; exit 1 } }'
+          echo "coverage: ${total}% (gate ${COVERAGE_GATE}%)"
+          awk -v t="$total" -v g="$COVERAGE_GATE" 'BEGIN { if (t+0 < g) { printf "coverage %s%% < %s%% gate\n", t, g; exit 1 } }'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -84,9 +84,12 @@ func (p *Postgres) migrate(ctx context.Context) error {
 
 func (p *Postgres) CreateTenant(ctx context.Context, tenant model.Tenant) error {
 	_, err := p.pool.Exec(ctx, `
-        INSERT INTO tenants (id, name, active, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5)`,
-		tenant.ID, tenant.Name, tenant.Active, tenant.CreatedAt, tenant.UpdatedAt)
+        INSERT INTO tenants (id, name, active, archived, archived_at,
+            max_cameras, max_users, max_events, ingest_qps, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		tenant.ID, tenant.Name, tenant.Active, tenant.Archived, tenant.ArchivedAt,
+		tenant.Limits.MaxCameras, tenant.Limits.MaxUsers, tenant.Limits.MaxEvents, tenant.Limits.IngestQPS,
+		tenant.CreatedAt, tenant.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -96,37 +99,44 @@ func (p *Postgres) CreateTenant(ctx context.Context, tenant model.Tenant) error 
 	return err
 }
 
-func (p *Postgres) GetTenant(ctx context.Context, id string) (model.Tenant, bool, error) {
+const tenantColumns = `id, name, active, archived, archived_at, max_cameras, max_users, max_events, ingest_qps, created_at, updated_at`
+
+func scanTenant(row interface{ Scan(dest ...any) error }) (model.Tenant, error) {
 	var tenant model.Tenant
-	err := p.pool.QueryRow(ctx, `
-        SELECT id, name, active, created_at, updated_at FROM tenants WHERE id=$1`, id).
-		Scan(&tenant.ID, &tenant.Name, &tenant.Active, &tenant.CreatedAt, &tenant.UpdatedAt)
+	err := row.Scan(&tenant.ID, &tenant.Name, &tenant.Active, &tenant.Archived, &tenant.ArchivedAt,
+		&tenant.Limits.MaxCameras, &tenant.Limits.MaxUsers, &tenant.Limits.MaxEvents, &tenant.Limits.IngestQPS,
+		&tenant.CreatedAt, &tenant.UpdatedAt)
+	if err != nil {
+		return model.Tenant{}, err
+	}
+	tenant.CreatedAt = tenant.CreatedAt.UTC()
+	tenant.UpdatedAt = tenant.UpdatedAt.UTC()
+	return tenant, nil
+}
+
+func (p *Postgres) GetTenant(ctx context.Context, id string) (model.Tenant, bool, error) {
+	tenant, err := scanTenant(p.pool.QueryRow(ctx, `SELECT `+tenantColumns+` FROM tenants WHERE id=$1`, id))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Tenant{}, false, nil
 		}
 		return model.Tenant{}, false, err
 	}
-	tenant.CreatedAt = tenant.CreatedAt.UTC()
-	tenant.UpdatedAt = tenant.UpdatedAt.UTC()
 	return tenant, true, nil
 }
 
 func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
-	rows, err := p.pool.Query(ctx, `
-        SELECT id, name, active, created_at, updated_at FROM tenants ORDER BY id`)
+	rows, err := p.pool.Query(ctx, `SELECT `+tenantColumns+` FROM tenants ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	tenants := make([]model.Tenant, 0, 4)
 	for rows.Next() {
-		var tenant model.Tenant
-		if scanErr := rows.Scan(&tenant.ID, &tenant.Name, &tenant.Active, &tenant.CreatedAt, &tenant.UpdatedAt); scanErr != nil {
+		tenant, scanErr := scanTenant(rows)
+		if scanErr != nil {
 			return nil, scanErr
 		}
-		tenant.CreatedAt = tenant.CreatedAt.UTC()
-		tenant.UpdatedAt = tenant.UpdatedAt.UTC()
 		tenants = append(tenants, tenant)
 	}
 	return tenants, rows.Err()
@@ -134,8 +144,10 @@ func (p *Postgres) ListTenants(ctx context.Context) ([]model.Tenant, error) {
 
 func (p *Postgres) UpdateTenant(ctx context.Context, tenant model.Tenant) error {
 	tag, err := p.pool.Exec(ctx, `
-        UPDATE tenants SET name=$2, active=$3, updated_at=now() WHERE id=$1`,
-		tenant.ID, tenant.Name, tenant.Active)
+        UPDATE tenants SET name=$2, active=$3, archived=$4, archived_at=$5,
+            max_cameras=$6, max_users=$7, max_events=$8, ingest_qps=$9, updated_at=now() WHERE id=$1`,
+		tenant.ID, tenant.Name, tenant.Active, tenant.Archived, tenant.ArchivedAt,
+		tenant.Limits.MaxCameras, tenant.Limits.MaxUsers, tenant.Limits.MaxEvents, tenant.Limits.IngestQPS)
 	if err != nil {
 		return err
 	}

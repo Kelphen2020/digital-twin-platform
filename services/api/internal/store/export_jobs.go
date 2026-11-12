@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"digital-twin-platform/api/internal/model"
 )
@@ -129,6 +130,12 @@ func (p *Postgres) CreateExportJob(ctx context.Context, job model.ExportJob) err
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		job.ID, job.TenantID, job.Status, job.IncludeTracks, job.IncludeAudit, job.CreatedBy,
 		job.CreatedAt, job.StartedAt, job.FinishedAt, job.SizeBytes, counts, job.Error)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return model.ErrConflict
+		}
+	}
 	return err
 }
 
