@@ -1191,6 +1191,9 @@ func (s *Server) handleBusReplay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.bus.MarkReplayed(int64(len(envelopes)))
+	if len(envelopes) > 0 {
+		s.bus.SetReplayCursor(envelopes[len(envelopes)-1].Offset)
+	}
 	items := make([]map[string]any, 0, len(envelopes))
 	for _, envelope := range envelopes {
 		items = append(items, map[string]any{
@@ -1881,13 +1884,11 @@ dsh_twin_ws_frames_total %d
 dsh_twin_ws_dropped_total %d
 `, s.hub.Frames(), s.hub.Dropped())
 	if s.bus != nil {
-		status := s.bus.Status()
-		lag := status.NextOffset
-		envelopes, err := s.bus.ReadRange(status.OldestOffset, -1, 1)
-		if err == nil && len(envelopes) > 0 {
-			lag = status.NextOffset - envelopes[len(envelopes)-1].Offset - 1
+		if lag, ok := s.bus.Lag(); ok {
+			body += s.bus.MetricsText(lag)
+		} else {
+			body += s.bus.MetricsText(0)
 		}
-		body += s.bus.MetricsText(lag)
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

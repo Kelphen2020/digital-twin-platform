@@ -72,11 +72,21 @@ type Bus struct {
 	errors       atomic.Int64
 	lastAt       atomic.Value // time.Time
 	tenantCounts map[string]int64
+	// lastReplayed is the highest offset delivered to a replay consumer; -1
+	// means no replay yet (P36).
+	lastReplayed atomic.Int64
+}
+
+// NewBus allocates a bus whose replay cursor starts empty.
+func newBus(driver Driver) *Bus {
+	bus := &Bus{driver: driver}
+	bus.lastReplayed.Store(-1)
+	return bus
 }
 
 // NewMemory builds a bus over an in-memory ring buffer.
 func NewMemory(max int) *Bus {
-	return &Bus{driver: &memoryDriver{max: max}}
+	return newBus(&memoryDriver{max: max})
 }
 
 // NewJSONL builds a bus over an append-only JSONL log under dir.
@@ -85,7 +95,7 @@ func NewJSONL(dir string) (*Bus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Bus{driver: driver}, nil
+	return newBus(driver), nil
 }
 
 // Subscribe registers a handler invoked synchronously on publish.
@@ -163,9 +173,30 @@ func (b *Bus) ReadRangeForTenant(from, to int64, limit int, tenantID string, all
 	return out, nil
 }
 
-// MarkReplayed records one replayed envelope for metrics.
+// MarkReplayed records one replayed envelope for metrics and advances the
+// replay cursor so /api/bus/status can report consumer lag.
 func (b *Bus) MarkReplayed(count int64) {
 	b.replayed.Add(count)
+}
+
+// SetReplayCursor records the highest offset handed to a replay consumer (P36).
+func (b *Bus) SetReplayCursor(offset int64) {
+	b.lastReplayed.Store(offset)
+}
+
+// Lag returns how many envelopes are after the replay cursor, and false when
+// no replay has happened yet (whole history pending).
+func (b *Bus) Lag() (int64, bool) {
+	cursor := b.lastReplayed.Load()
+	if cursor < 0 {
+		return 0, false
+	}
+	next := b.published.Load()
+	lag := next - cursor - 1
+	if lag < 0 {
+		lag = 0
+	}
+	return lag, true
 }
 
 // AddError records one replay/subscriber error.

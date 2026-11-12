@@ -1,0 +1,13 @@
+# Load every dashboard JSON mounted under /var/lib/grafana/dashboards (P36).
+apiVersion: 1
+providers:
+  - name: digital-twin
+    orgId: 1
+    folder: 数字孪生
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

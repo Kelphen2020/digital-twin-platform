@@ -107,7 +107,7 @@ services:
     container_name: dtp-prometheus
     profiles: ["obs", "full"]
     ports:
-      - "9090:9090"
+      - "${PROM_PORT:-9090}:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -119,13 +119,14 @@ services:
     container_name: dtp-grafana
     profiles: ["obs", "full"]
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./observability/grafana-dashboard.json:/var/lib/grafana/dashboards/dtp-overview.json:ro
+      - ./observability/grafana-provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
 

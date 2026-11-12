@@ -1,4 +1,4 @@
-# Prometheus scrape config for the P0-P4 API.
+# Prometheus scrape config for the digital-twin API (P0-P36).
 global:
   scrape_interval: 5s
   evaluation_interval: 5s
@@ -10,7 +10,8 @@ scrape_configs:
   - job_name: digital-twin-api
     metrics_path: /metrics
     static_configs:
-      # docker-compose service name
+      # docker-compose service name (only resolvable when the API runs in compose)
       - targets: ["api:8080"]
-      # host-run API (make dev-api) when Prometheus runs in Docker
+      # host-run API (make dev-api) when Prometheus runs in Docker and no `api`
+      # service is up. Both targets live in the same job::
       - targets: ["host.docker.internal:8080"]

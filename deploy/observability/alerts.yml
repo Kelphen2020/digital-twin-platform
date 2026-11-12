@@ -3,7 +3,9 @@ groups:
   - name: digital-twin
     rules:
       - alert: ApiDown
-        expr: up{job="digital-twin-api"} == 0
+        # Only fire when no API instance in the job is reachable: in dev the
+        # `api:8080` target is expected to be down (host-run API only).
+        expr: (sum(up{job="digital-twin-api"}) == 0) or (count(up{job="digital-twin-api"}) == 0)
         for: 1m
         labels: { severity: critical }
         annotations:

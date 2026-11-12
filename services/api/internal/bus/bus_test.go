@@ -162,3 +162,25 @@ func TestJSONLBusTenantBackwardCompatibility(t *testing.T) {
 		t.Fatalf("tenant_b after reopen: %v %+v", err, tenantB)
 	}
 }
+
+// P36: replay cursor drives consumer lag reporting.
+func TestBusLagTracking(t *testing.T) {
+	bus := NewMemory(100)
+	if lag, ok := bus.Lag(); ok || lag != 0 {
+		t.Fatalf("fresh bus should have no cursor: lag=%d ok=%v", lag, ok)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := bus.Publish("event", model.Event{ID: "evt_lag_" + string(rune('a'+i))}, nil, "test"); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	bus.SetReplayCursor(1)
+	lag, ok := bus.Lag()
+	if !ok || lag != 1 {
+		t.Fatalf("lag after cursor=1 of 3: %d %v", lag, ok)
+	}
+	bus.SetReplayCursor(2)
+	if lag, _ := bus.Lag(); lag != 0 {
+		t.Fatalf("lag should be 0 at the tail, got %d", lag)
+	}
+}

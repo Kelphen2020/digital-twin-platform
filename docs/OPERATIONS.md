@@ -45,6 +45,11 @@ WS 健康：浏览器 DevTools Network → `ws://…/ws`（101）。
 - 告警：`deploy/observability/alerts.yml`（API down、无在线相机、WS 丢帧、总线积压、通知失败、限流、升级激增；
   P35 新增租户配额频繁触发、租户无在线相机、租户 ingest 静默、租户请求突增）。
 - 看板：`make obs-up` → http://127.0.0.1:3000（admin/admin 首次登录改密）；看板含「多租户」分组的租户筛选变量。
+  - Grafana 由 `deploy/observability/grafana-provisioning/` 自动配置数据源与看板（无需手工导入）。
+  - 端口被占用时可用 `PROM_PORT=19090 GRAFANA_PORT=13000 make obs-up` 覆盖；国内网络可用
+    `PROM_IMAGE=docker.m.daocloud.io/prom/prometheus:latest GRAFANA_IMAGE=docker.m.daocloud.io/grafana/grafana:latest`。
+  - 开发环境（API 跑在宿主机）时 Prometheus 的 `api:8080` 目标会显示 down，属预期；`ApiDown` 告警改按
+    「整个 job 无存活实例」判定，不会误报。
 
 ### 3.1 租户告警处置（P35）
 
