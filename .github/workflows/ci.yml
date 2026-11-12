@@ -22,8 +22,8 @@ jobs:
       run:
         working-directory: services/api
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: services/api/go.mod
           cache-dependency-path: services/api/go.sum
@@ -38,7 +38,7 @@ jobs:
           total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "coverage: ${total}% (gate ${COVERAGE_GATE}%)"
           awk -v t="$total" -v g="$COVERAGE_GATE" 'BEGIN { if (t+0 < g) { printf "coverage %s%% < %s%% gate\n", t, g; exit 1 } }'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: api-coverage
@@ -49,19 +49,19 @@ jobs:
     name: lint (golangci-lint + eslint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: services/api/go.mod
           cache-dependency-path: services/api/go.sum
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
           version: v1.62.2
           working-directory: services/api
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
@@ -78,11 +78,11 @@ jobs:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
@@ -95,7 +95,7 @@ jobs:
     name: simulator + scripts lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -106,8 +106,8 @@ jobs:
     name: smoke (in-memory store)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: services/api/go.mod
           cache-dependency-path: services/api/go.sum
@@ -143,8 +143,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: services/api/go.mod
           cache-dependency-path: services/api/go.sum
