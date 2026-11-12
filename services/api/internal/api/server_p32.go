@@ -331,14 +331,14 @@ func (s *Server) StartExportRetention(ctx context.Context, interval time.Duratio
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.sweepExportJobs(ctx)
+				s.SweepExportJobs(ctx)
 			}
 		}
 	}()
 }
 
-// sweepExportJobs prunes finished jobs older than the retention window.
-func (s *Server) sweepExportJobs(ctx context.Context) {
+// SweepExportJobs prunes finished jobs older than the retention window.
+func (s *Server) SweepExportJobs(ctx context.Context) {
 	state := s.exportState()
 	if state.retention <= 0 && state.maxJobs <= 0 {
 		return

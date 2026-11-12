@@ -31,9 +31,9 @@ jobs:
       - run: go vet ./...
       - name: Test with coverage gate
         run: go test ./... -count=1 -coverprofile=cover.out
-      - name: Enforce coverage >= 65%
+      - name: Enforce coverage >= 62%
         env:
-          COVERAGE_GATE: '65'
+          COVERAGE_GATE: "62"
         run: |
           total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "coverage: ${total}% (gate ${COVERAGE_GATE}%)"

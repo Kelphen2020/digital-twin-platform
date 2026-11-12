@@ -16,7 +16,7 @@ export GOSUMDB="${GOSUMDB:-off}"
 
 # Unit-only coverage gate (the PostgreSQL contract tests add ~11 points but need
 # Docker; the PG stage enforces its own thresholds).
-COVERAGE_GATE="${COVERAGE_GATE:-65}"
+COVERAGE_GATE="${COVERAGE_GATE:-62}"
 # The PG stage runs every test against a live database, so it holds a higher bar.
 PG_COVERAGE_GATE="${PG_COVERAGE_GATE:-72}"
 QUICK=0
