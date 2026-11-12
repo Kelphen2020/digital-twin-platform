@@ -1412,3 +1412,35 @@ SKIP  smoke (postgres)  (--quick)
 - 内存模式重启后任务仍丢失（属预期，内存存储不持久）；保留策略在内存模式同样生效。
 - 产物文件与任务行可能短暂不一致（删除失败仅记录日志）。
 - 本轮 CI 首次出现导出并发守卫用例偶发失败（任务过快完成导致活跃数归零），已改为按截止时间轮询直到触发 429。
+
+---
+
+# P34.0 验收记录（2026-11-12 傍晚）
+
+## 137. 覆盖率攻坚 + PG 契约测试 + 租户生命周期列
+
+| 项 | 说明 | 结果 |
+|---|---|---|
+| PostgreSQL 契约测试 | 新增 `TestPostgresStoreContract`（租户/区域/相机/标定/事件/动作/轨迹/规则/工单/设置/审计/通知/值班/用户/刷新令牌/巡检/统计/租户删除清理）、`TestPostgresTenantAndPatrolLifecycle`、`TestPostgresExportJobsContract` | store 包覆盖率 **50.6% → 70.7%**；含 PG 全量覆盖率 **73.8%** |
+| 迁移 017 | `tenants` 表补齐 `archived/archived_at/max_cameras/max_users/max_events/ingest_qps`，PG 读写与 API 模型一致（此前 PG 下归档/配额未落库） | 实测 PG 更新后读回 `archived=true, max_users=5` |
+| 导出任务唯一冲突 | PG `export_jobs` 插入冲突改为返回 `ErrConflict`（与其它表一致） | 契约测试断言通过 |
+| 单元测试补口 | `cmd/server` 启动辅助（storeMode/loadSite/openBus/openStore）、后台循环优雅退出（RunStats/RunPatrolScheduler/导出保留）、bus 指标/回放/状态、导出任务 keep 清理与空表分支、租户恢复 handler、配置 setter | 单元覆盖率 **63.4% → 64.2%**（cmd/server 从 0% 到有覆盖） |
+| 覆盖率门禁 | 单元 62%（`COVERAGE_GATE`）；PG 阶段新增 **72%** 门槛（`PG_COVERAGE_GATE`，含 PG 契约） | 本地 CI 通过 |
+
+## 138. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| 单元覆盖率 | **64.2%**（门禁 62%） |
+| PG 全量覆盖率 | **~74%**（PG 门禁 72%） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke` | ✅ **PASS 263/263** |
+| 本地 CI（含 PostgreSQL） | ✅ **8 阶段全 PASS** |
+
+## 139. 已知限制（P34.0）
+
+- 单元模式（无 Docker）覆盖率仍只有 64.2%：store 的 PostgreSQL 实现需 Docker 才能计入，CI 中通过 PG 阶段独立把关。
+- PG 契约测试会向默认租户插入数据后清理，需在一次性数据库上运行（CI 使用临时容器）。
+- 首次本地 CI 发现「PG 租户列缺失」为真实缺陷（P30 归档/配额只在内存生效），已由迁移 017 修复；生产库升级需执行 017。
+- 覆盖率门禁维持 62% 而非直接提到 PG 水平，避免无 Docker 的开发者本地失败。
