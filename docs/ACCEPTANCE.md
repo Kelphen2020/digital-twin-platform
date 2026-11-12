@@ -1474,3 +1474,34 @@ SKIP  smoke (postgres)  (--quick)
 - 在线相机 gauge 按需刷新（`/metrics` 抓取与 stats 广播时），非实时推送；租户数量大时需改为缓存刷新。
 - 资源不存在的租户维度不会出现在指标中（无租户即无序列），Prometheus 侧需注意 absent() 用法。
 - 未在本机启动 Prometheus/Grafana 做端到端截图（面板 JSON 与告警规则已做结构校验）。
+
+---
+
+# P36.0 验收记录（2026-11-12 傍晚）
+
+## 143. 可观测性端到端打通
+
+| 项 | 说明 | 证据 |
+|---|---|---|
+| Grafana 自动配置 | 新增 `deploy/observability/grafana-provisioning/`（Prometheus 数据源 + 看板 provider），compose 挂载 `/etc/grafana/provisioning` | `/api/datasources` 返回 `Prometheus(uid=prometheus)`；`/api/search` 出现看板 |
+| 看板真实渲染 | 「数字孪生安防平台 · 运行概览（含多租户）」在 Grafana 13.1.3 中加载，租户变量 + 多租户面板显示真实数据 | `docs/screenshots/p36-grafana-overview.png`、`p36-grafana-tenant.png`（租户总数 2、请求速率 Top、在线相机 5/5、配额拒绝维度 `ingest_qps`） |
+| 端口/镜像可配置 | compose 支持 `PROM_PORT`/`GRAFANA_PORT`；国内镜像 `PROM_IMAGE`/`GRAFANA_IMAGE`（本机 3000/9090 被其它服务占用，用 13000/19090 起栈） | `make obs-up` 等价命令起栈成功 |
+| 告警规则加载 | Prometheus 载入 11 条规则（7 + 4 租户），`health=ok`，无误报 | `/api/v1/rules` 全部 ok、firing 为空 |
+| **发现的真实缺陷 1** | `ApiDown` 在「API 跑宿主机 + 容器 Prometheus」场景因 `api:8080` 目标不可达而**持续误报** | 改为 job 级判定 `sum(up)==0`，重启后不再误报 |
+| **发现的真实缺陷 2** | `dsh_twin_bus_lag` 计算错误（jsonl 读取为 oldest-first，误取最后一条导致 lag≈历史总量且不随消费变化），导致 `BusLagHigh` 误报 | 新增 `Bus.SetReplayCursor`/`Bus.Lag`（无回放时整段历史计为待消费，回放后按游标递减）；新增 `TestBusLagTracking`；值班恢复后 lag 由 5824 降为 0 |
+
+## 144. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（新增 `TestBusLagTracking`） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke` | ✅ **PASS 263/263** |
+| Prometheus 规则 | 11/11 `health=ok`，`firing=[]` |
+
+## 145. 已知限制（P36.0）
+
+- 本机 Docker Desktop 仍在长时间运行后自动退出，obs 栈需重启用 `docker compose --profile obs up -d`。
+- `docker.io` 在本机不可达，必须经 `PROM_IMAGE`/`GRAFANA_IMAGE` 指定国内镜像。
+- Grafana 截图通过 CDP 注入登录态获得（headless 模式无法保留会话）；生产环境应配置匿名只读或统一 SSO。
+- 告警仍为「规则 + firing 状态」验证，未接入 Alertmanager 通知通道。
