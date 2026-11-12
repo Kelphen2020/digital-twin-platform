@@ -8,6 +8,7 @@ import {
   deleteExportJob as requestDeleteExportJob,
   downloadExportJob as requestDownloadExportJob,
   fetchExportJobs as requestFetchExportJobs,
+  purgeExportJobs as requestPurgeExportJobs,
   fetchTenants,
   restoreTenant as requestRestoreTenant,
   updateTenant as requestUpdateTenant,
@@ -147,6 +148,17 @@ async function downloadExport(tenantId: string, job: ExportJob): Promise<void> {
   }
 }
 
+// purgeExportHistory prunes finished jobs older than the retention window.
+async function purgeExportHistory(tenantId: string): Promise<void> {
+  try {
+    const purged = await requestPurgeExportJobs(tenantId)
+    await loadExportJobs(tenantId)
+    pushToast(purged > 0 ? `已清理 ${purged} 个历史导出` : '没有可清理的历史导出', 'success')
+  } catch (error) {
+    pushToast(apiErrorMessage(error), 'error')
+  }
+}
+
 async function removeExport(tenantId: string, job: ExportJob): Promise<void> {
   try {
     await requestDeleteExportJob(tenantId, job.id)
@@ -274,6 +286,7 @@ export function useTenantStore() {
     applyExportJob,
     downloadExport,
     removeExport,
+    purgeExportHistory,
     restoreTenant,
     deleteTenant,
     updateTenantLimits,

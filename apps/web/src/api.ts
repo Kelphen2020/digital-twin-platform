@@ -759,6 +759,14 @@ export async function downloadExportJob(tenantId: string, exportId: string): Pro
   return response.blob()
 }
 
+export async function purgeExportJobs(tenantId: string, before?: string): Promise<number> {
+  const query = before ? `?before=${encodeURIComponent(before)}` : ''
+  const payload = await postJson<{ purged: number }>(
+    `/api/tenants/${encodeURIComponent(tenantId)}/exports/purge${query}`,
+  )
+  return payload.purged ?? 0
+}
+
 export async function deleteExportJob(tenantId: string, exportId: string): Promise<void> {
   const response = await fetchWithAuth(
     `/api/tenants/${encodeURIComponent(tenantId)}/exports/${encodeURIComponent(exportId)}`,

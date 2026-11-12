@@ -4338,3 +4338,12 @@ dd {
 .export-job-status.export-running,
 .export-job-status.export-pending { background: rgba(59, 130, 246, 0.18); color: #60a5fa; }
 .export-job-id { opacity: 0.7; }
+
+/* P33: export history header */
+.export-jobs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}

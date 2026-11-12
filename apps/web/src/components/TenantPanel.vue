@@ -16,6 +16,7 @@ const {
   loadExportJobs,
   downloadExport,
   removeExport,
+  purgeExportHistory,
 } = useTenantStore()
 
 // ---- 新建租户（P29：模板复制 + 初始管理员） ----
@@ -38,6 +39,10 @@ const includeAudit = ref(false)
 const expandedExportId = ref<string | null>(null)
 
 function requestExport(tenant: Tenant) {
+  void startExport(tenant.id, { includeTracks: includeTracks.value, includeAudit: includeAudit.value })
+}
+
+function retryExport(tenant: Tenant) {
   void startExport(tenant.id, { includeTracks: includeTracks.value, includeAudit: includeAudit.value })
 }
 
@@ -413,6 +418,10 @@ onMounted(() => {
             </template>
           </div>
           <div v-if="expandedExportId === tenant.id" class="tenant-export-jobs">
+            <div class="export-jobs-head">
+              <span class="tenant-meta">导出历史（保留 7 天，重启后仍可查看）</span>
+              <button class="link-btn" @click="purgeExportHistory(tenant.id)">清理历史</button>
+            </div>
             <p v-if="exportJobsOf(tenant).length === 0" class="tenant-meta">暂无导出记录</p>
             <ul v-else class="export-job-list">
               <li v-for="job in exportJobsOf(tenant)" :key="job.id" class="export-job-row">
@@ -426,6 +435,13 @@ onMounted(() => {
                   @click="downloadExport(tenant.id, job)"
                 >
                   下载
+                </button>
+                <button
+                  v-if="job.status === 'failed'"
+                  class="ghost-btn compact-btn"
+                  @click="retryExport(tenant)"
+                >
+                  重试
                 </button>
                 <button
                   v-if="job.status !== 'running'"

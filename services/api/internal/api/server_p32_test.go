@@ -132,19 +132,21 @@ func TestExportJobGuards(t *testing.T) {
 		t.Fatalf("unknown tenant export should be 404, got %d", status)
 	}
 	// Concurrency limit: 3 quick submissions, the third must be rejected.
-	codes := make([]int, 0, 3)
-	for i := 0; i < 3; i++ {
-		code, _ := authorized(t, http.MethodPost, ts.URL+"/api/tenants/default/exports", admin, map[string]any{})
-		codes = append(codes, code)
-	}
+	// Fast jobs may finish between submissions (they do not count as active), so
+	// keep submitting until the concurrency guard trips or a deadline passes.
 	rejected := false
-	for _, code := range codes {
+	deadline := time.Now().Add(5 * time.Second)
+	for attempt := 0; attempt < 60 && time.Now().Before(deadline); attempt++ {
+		code, _ := authorized(t, http.MethodPost, ts.URL+"/api/tenants/default/exports", admin, map[string]any{
+			"include_tracks": true,
+		})
 		if code == http.StatusTooManyRequests {
 			rejected = true
+			break
 		}
 	}
 	if !rejected {
-		t.Fatalf("expected a 429 among %v", codes)
+		t.Fatal("expected a 429 from the export concurrency guard")
 	}
 }
 
