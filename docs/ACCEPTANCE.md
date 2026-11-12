@@ -1378,3 +1378,37 @@ SKIP  smoke (postgres)  (--quick)
 - 产物无自动过期清理（仅手动删除），长期运行需加保留策略。
 - 任务 50 条列表上限；历史任务不持久化到数据库。
 - 本轮队友仍不稳定，P32 前后端均我独立完成。
+
+---
+
+# P33.0 验收记录（2026-11-12 下午）
+
+## 134. 导出任务持久化与保留策略
+
+| 能力 | 说明 | 证据 |
+|---|---|---|
+| 持久化 | 迁移 016 `export_jobs`（含 jsonb counts + 索引）；Store 新增 `CreateExportJob/UpdateExportJob/GetExportJob/ListExportJobs/DeleteExportJob/PurgeExportJobs`，内存与 PostgreSQL 双实现 | PG 实测：任务行写入 `export_jobs`，API 重启后列表仍在 |
+| 重启恢复 | 启动时把 `pending/running` 标记为 `failed`（reason `interrupted by restart`） | PG 实测：重启前 `pending`，重启后列表显示 `failed`，下载 409 |
+| 多副本安全 | worker 直接以行状态流转（`pending → running`），列表/详情从存储读取；并发上限仍按租户生效 | 单测 `TestExportJobsSurviveRestart`（共享 store 重启后任务可见、下载可用） |
+| 保留策略 | `EXPORT_RETENTION`（默认 168h）、`EXPORT_MAX_JOBS`（默认 200）；每 10 分钟清理已完成/失败任务与产物；指标 `dsh_twin_export_jobs_purged_total` | 单测 `TestExportJobPersistenceContract`（按时间清理 + 保留运行中任务） |
+| 手动清理 | `POST /api/tenants/{id}/exports/purge?before=<RFC3339>` → `{"purged":n}`，同时删除产物文件；非法 before → 400；非 admin → 403 | PG 实测 `{"purged":1}`；单测 `TestExportJobPurgeEndpoint` |
+| 列表上限 | `GET .../exports?limit=`（默认 50，最大 200） | 接口实现 + 测试 |
+| 前端 | 导出记录头部「保留 7 天，重启后仍可查看」+「清理历史」；失败任务「重试」；版本 P33.0 | typecheck/lint/build 绿，dev server 标题 P33.0 |
+
+## 135. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（新增 `TestExportJobPersistenceContract`、`TestExportJobsSurviveRestart`、`TestExportJobPurgeEndpoint`） |
+| 覆盖率 | **62.7%**（门禁 62%，贴近门禁，下一轮需补测） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke` | ✅ **PASS 263/263** |
+| 本地 CI（含 PostgreSQL 阶段） | ✅ **8 阶段全 PASS** |
+
+## 136. 已知限制（P33.0）
+
+- 覆盖率 62.7% 贴近 62% 门禁，需要补充 store/api 用例拉开余量。
+- 任务领取未做强一致的多副本互斥（两条副本可能同时尝试同一任务），仅在任务创建端限流；后续可加 `SELECT ... FOR UPDATE SKIP LOCKED` 领取。
+- 内存模式重启后任务仍丢失（属预期，内存存储不持久）；保留策略在内存模式同样生效。
+- 产物文件与任务行可能短暂不一致（删除失败仅记录日志）。
+- 本轮 CI 首次出现导出并发守卫用例偶发失败（任务过快完成导致活跃数归零），已改为按截止时间轮询直到触发 429。
