@@ -37,6 +37,8 @@ type Config struct {
 	PatrolRunningTimeoutMinutes int
 	IngestFallbackURL           string
 	RateStore                   string
+	ExportDir                   string
+	ExportWorkers               int
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -69,6 +71,8 @@ func Load() Config {
 		PatrolRunningTimeoutMinutes: envInt("PATROL_RUNNING_TIMEOUT_MINUTES", 120),
 		IngestFallbackURL:           env("INGEST_FALLBACK_URL", ""),
 		RateStore:                   env("RATE_STORE", "memory"),
+		ExportDir:                   env("EXPORT_DIR", "data/exports"),
+		ExportWorkers:               envInt("EXPORT_WORKERS", 2),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

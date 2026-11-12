@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -47,11 +48,25 @@ func (s *Server) handleExportTenant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx := store.WithTenant(r.Context(), tenant.ID)
 	query := r.URL.Query()
 	includeTracks := query.Get("include_tracks") == "1" || query.Get("include_tracks") == "true"
 	includeAudit := query.Get("include_audit") == "1" || query.Get("include_audit") == "true"
+	payload, err := s.buildTenantExport(r.Context(), tenant, includeTracks, includeAudit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	s.audit(r, "tenant.export", tenant.ID, map[string]any{
+		"include_tracks": includeTracks, "include_audit": includeAudit, "counts": payload.Counts,
+	})
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="tenant-`+tenant.ID+`.json"`)
+	writeJSON(w, http.StatusOK, payload)
+}
 
+// buildTenantExport assembles the tenant data package (reused by P32 jobs).
+func (s *Server) buildTenantExport(ctx context.Context, tenant model.Tenant, includeTracks, includeAudit bool) (tenantExport, error) {
+	ctx = store.WithTenant(ctx, tenant.ID)
 	data := tenantExportData{
 		Areas:    []model.Area{},
 		Cameras:  []model.Camera{},
@@ -66,8 +81,7 @@ func (s *Server) handleExportTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	cameras, err := s.store.ListCameras(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+		return tenantExport{}, err
 	}
 	if cameras != nil {
 		data.Cameras = cameras
@@ -141,10 +155,5 @@ func (s *Server) handleExportTenant(w http.ResponseWriter, r *http.Request) {
 	payload := tenantExport{
 		Tenant: tenant, ExportedAt: time.Now().UTC(), Counts: counts, Data: data,
 	}
-	s.audit(r, "tenant.export", tenant.ID, map[string]any{
-		"include_tracks": includeTracks, "include_audit": includeAudit, "counts": counts,
-	})
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="tenant-`+tenant.ID+`.json"`)
-	writeJSON(w, http.StatusOK, payload)
+	return payload, nil
 }

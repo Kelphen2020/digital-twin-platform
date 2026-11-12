@@ -65,6 +65,7 @@ type Server struct {
 	ingestRateMu         sync.Mutex
 	ingestRates          map[string]*RateLimiter
 	rateStore            store.RateStore
+	exports              *exportStore
 	ingestFallbackURL    string
 	ingestClient         *http.Client
 	patrolPendingTimeout time.Duration
@@ -121,6 +122,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tenants/{id}/restore", s.handleRestoreTenant)
 	mux.HandleFunc("DELETE /api/tenants/{id}", s.handleDeleteTenant)
 	mux.HandleFunc("GET /api/tenants/{id}/export", s.handleExportTenant)
+	mux.HandleFunc("POST /api/tenants/{id}/exports", s.handleCreateExportJob)
+	mux.HandleFunc("GET /api/tenants/{id}/exports", s.handleListExportJobs)
+	mux.HandleFunc("GET /api/tenants/{id}/exports/{exportId}", s.handleGetExportJob)
+	mux.HandleFunc("GET /api/tenants/{id}/exports/{exportId}/download", s.handleDownloadExportJob)
+	mux.HandleFunc("DELETE /api/tenants/{id}/exports/{exportId}", s.handleDeleteExportJob)
 	mux.HandleFunc("GET /api/areas", s.handleAreas)
 	mux.HandleFunc("GET /api/cameras", s.handleCameras)
 	mux.HandleFunc("GET /api/cameras/{id}", s.handleCamera)
