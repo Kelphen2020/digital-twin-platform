@@ -1444,3 +1444,33 @@ SKIP  smoke (postgres)  (--quick)
 - PG 契约测试会向默认租户插入数据后清理，需在一次性数据库上运行（CI 使用临时容器）。
 - 首次本地 CI 发现「PG 租户列缺失」为真实缺陷（P30 归档/配额只在内存生效），已由迁移 017 修复；生产库升级需执行 017。
 - 覆盖率门禁维持 62% 而非直接提到 PG 水平，避免无 Docker 的开发者本地失败。
+
+---
+
+# P35.0 验收记录（2026-11-12 傍晚）
+
+## 140. 多租户可观测性
+
+| 项 | 说明 | 证据 |
+|---|---|---|
+| 租户 ingest 指标 | `dsh_twin_tenant_ingest_total{tenant}`，acceptIngest 成功后计数 | 实测：默认租户 ingest 1 次后序列出现 |
+| 租户相机 gauge | `dsh_twin_tenant_cameras_online{tenant}`，`/metrics` 与 stats 广播刷新 | 实测：default 5、模板租户 5 |
+| 配额/导出指标纳入看板 | `dsh_twin_tenant_quota_exceeded_total{tenant,dimension}`、`dsh_twin_export_jobs_purged_total` | 单测断言序列文本 |
+| Grafana 看板 | 新增「多租户（P35）」分组 6 个面板 + `tenant` 多选变量（默认 All），共 18 面板 | `python json.load` 校验通过 |
+| 告警 | 新增 `digital-twin-tenant` 分组 4 条告警（配额频繁/无在线相机/ingest 静默/请求突增），带 runbook | `grep alert:` 共 11 条规则 |
+| 运维文档 | `docs/OPERATIONS.md` 增补租户指标清单与「3.1 租户告警处置」表 | 文档已更新 |
+
+## 141. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿（新增 `TestTenantMetricsExposition`） |
+| `golangci-lint` | ✅ 0 issues |
+| `make smoke` | ✅ **PASS 263/263** |
+
+## 142. 已知限制（P35.0）
+
+- 租户 ingest 指标只统计「被接受」的请求，限流/配额拒绝走单独的 rejected/quota 序列。
+- 在线相机 gauge 按需刷新（`/metrics` 抓取与 stats 广播时），非实时推送；租户数量大时需改为缓存刷新。
+- 资源不存在的租户维度不会出现在指标中（无租户即无序列），Prometheus 侧需注意 absent() 用法。
+- 未在本机启动 Prometheus/Grafana 做端到端截图（面板 JSON 与告警规则已做结构校验）。

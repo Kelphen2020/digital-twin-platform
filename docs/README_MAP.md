@@ -14,7 +14,7 @@
 | 阶段 | 文档 |
 |---|---|
 | P0 | [`API.md`](API.md) |
-| P1+ | 见 `docs/API_P1.md` … `docs/API_P16.md`、`docs/API_P27.md`（多租户）、`docs/API_P29.md`（租户模板/角色/总线）、`docs/API_P30.md`（租户归档/配额）、`docs/API_P31.md`（租户导出/共享限流）、`docs/API_P32.md`（异步导出）、`docs/API_P33.md`（导出持久化/保留）与 `docs/P19.md`（部署与扩展） |
+| P1+ | 见 `docs/API_P1.md` … `docs/API_P16.md`、`docs/API_P27.md`（多租户）、`docs/API_P29.md`（租户模板/角色/总线）、`docs/API_P30.md`（租户归档/配额）、`docs/API_P31.md`（租户导出/共享限流）、`docs/API_P32.md`（异步导出）、`docs/API_P33.md`（导出持久化/保留）、`docs/API_P35.md`（多租户可观测性）与 `docs/P19.md`（部署与扩展） |
 
 ## 3. 验收与质量
 
