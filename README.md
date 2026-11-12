@@ -3,7 +3,7 @@
 > 一个**可直接运行**的视频监控数字孪生平台开源实现：检测数据接入 → 规则引擎 → 三维态势一张图 →
 > 告警处置/工单/值班/巡检 → 多租户隔离 → 可观测性，全链路端到端验证。
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/Kelphen2020/digital-twin-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Kelphen2020/digital-twin-platform/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](services/api/go.mod)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js)](apps/web/package.json)
@@ -32,7 +32,7 @@
 ## 快速开始（3 条命令）
 
 ```bash
-git clone https://github.com/OWNER/REPO.git && cd REPO
+git clone https://github.com/Kelphen2020/digital-twin-platform.git && cd REPO
 
 make dev-api    # ① 终端 1：启动 API（内存存储，:8080，自动种子 6 台相机/3 个账号）
 make dev-web    # ② 终端 2：启动前端（:5173）
