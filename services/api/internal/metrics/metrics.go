@@ -105,6 +105,13 @@ func (m *Metrics) TenantIngest() map[string]int64 {
 	return out
 }
 
+// TenantIngestCount returns the accepted ingest count for one tenant.
+func (m *Metrics) TenantIngestCount(tenant string) int64 {
+	m.ingestMu.Lock()
+	defer m.ingestMu.Unlock()
+	return m.tenantIngest[tenant]
+}
+
 // TenantCameras returns per-tenant online camera gauges.
 func (m *Metrics) TenantCameras() map[string]int64 {
 	m.ingestMu.Lock()

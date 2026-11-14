@@ -1505,3 +1505,43 @@ SKIP  smoke (postgres)  (--quick)
 - `docker.io` 在本机不可达，必须经 `PROM_IMAGE`/`GRAFANA_IMAGE` 指定国内镜像。
 - Grafana 截图通过 CDP 注入登录态获得（headless 模式无法保留会话）；生产环境应配置匿名只读或统一 SSO。
 - 告警仍为「规则 + firing 状态」验证，未接入 Alertmanager 通知通道。
+
+---
+
+# P37.0 验收记录（2026-11-14 上午）
+
+## 146. 租户运维概览面板 + 前端版本同步
+
+| 项 | 说明 | 证据 |
+|---|---|---|
+| 后端聚合接口 | `GET /api/tenants/{id}/overview`（admin）：事件总量/近 24h/分级、相机在线离线、待处理工单、巡检、导出任务、ingest、总线与存储状态、近 24h 小时分布 | 实测 200，返回 6 台相机 / 5 在线、事件 1、`bus_driver=jsonl` |
+| 权限 | 非 admin → 403；未知租户 → 404 | `TestTenantOverviewGuards` |
+| 前端页签 | 新增「概览」页签（admin，位于「统计」后）：6 个 KPI + 近 12 小时柱图 + 严重级别 + 运行状态，30 秒自动刷新 | 真实应用截图 `docs/screenshots/p37-overview-panel.png` |
+| 版本同步 | 前端由 P33.0 → **P37.0**（`index.html` / `package.json` / TopBar / 登录页） | 页面标题「数字孪生安防平台 · P37.0」 |
+| 测试 | 新增 `TestTenantOverview`、`TestTenantOverviewGuards` | 全绿 |
+
+## 147. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint` | ✅ 0 issues |
+| `pnpm typecheck` / `lint` / `build` | ✅ 全绿 |
+| 真实浏览器验收 | ✅ 三维场景 60 FPS、10 个页签、概览面板真实数据、console 无异常 |
+
+## 148. 排障记录（值得留存）
+
+本轮定位「概览面板不渲染」时踩了三个坑，均已排除且**不是产品缺陷**：
+
+1. **headless Chrome 无法创建 WebGL 上下文** → 三维场景初始化抛异常，整个应用白屏。
+   这是无头环境限制；改用真实渲染参数后场景正常（60 FPS）。
+2. **测试页放在 `public/` 目录** → 被 Vite 8 当作依赖预构建入口，导致
+   `Failed to run dependency scan`，此前所有测试结果失效。已删除并改用「真实页面 + API 预登录」的方式验证。
+3. **令牌模块的内存态**：`token.ts` 把令牌放在模块级变量里，必须先 `loadStoredTokens()`
+   再调用 API，否则 401。真实应用启动时本就按此顺序执行，属测试方式问题。
+
+## 149. 已知限制（P37.0）
+
+- 概览接口每次调用会遍历租户相机与最近 500 条巡检执行，租户量大时建议加缓存（5 秒粒度）。
+- `recent_hourly` 依赖 Store 的 Stats 实现，内存模式与 PostgreSQL 口径一致但时区均为 UTC。
+- 面板仅对 admin 开放；operator/viewer 看不到运维指标（按最小权限原则）。

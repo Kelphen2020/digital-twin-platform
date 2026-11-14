@@ -940,6 +940,13 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
   return (await response.json()) as TenantDeleteResult
 }
 
+/** GET /api/tenants/{id}/overview —— 租户运维概览（P37）。 */
+export async function fetchTenantOverview(tenantId: string): Promise<import('./types').TenantOverview> {
+  return requestJson<import('./types').TenantOverview>(
+    `/api/tenants/${encodeURIComponent(tenantId)}/overview`,
+  )
+}
+
 /** 供界面展示的 API 地址说明（离线横幅/README 使用）。 */
 export function describeApiBase(): string {
   return API_BASE || `${window.location.origin}（Vite 代理 → 127.0.0.1:8080）`

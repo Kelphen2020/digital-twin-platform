@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AuditPanel from './components/AuditPanel.vue'
 import BusPanel from './components/BusPanel.vue'
 import TenantPanel from './components/TenantPanel.vue'
+import OverviewPanel from './components/OverviewPanel.vue'
 import UserPanel from './components/UserPanel.vue'
 import CameraDetail from './components/CameraDetail.vue'
 import DutyPanel from './components/DutyPanel.vue'
@@ -168,6 +169,16 @@ watch(isAuthenticated, (authenticated) => {
             统计
           </button>
           <button
+            v-if="isAdmin"
+            class="sidebar-tab"
+            :class="{ active: state.sidebarTab === 'overview' }"
+            role="tab"
+            :aria-selected="state.sidebarTab === 'overview'"
+            @click="setSidebarTab('overview')"
+          >
+            概览
+          </button>
+          <button
             class="sidebar-tab"
             :class="{ active: state.sidebarTab === 'orders' }"
             role="tab"
@@ -239,6 +250,7 @@ watch(isAuthenticated, (authenticated) => {
         </div>
         <EventFeed v-if="state.sidebarTab === 'events'" />
         <StatsPanel v-else-if="state.sidebarTab === 'stats'" />
+        <OverviewPanel v-else-if="state.sidebarTab === 'overview' && isAdmin" />
         <OrdersPanel v-else-if="state.sidebarTab === 'orders'" />
         <DutyPanel v-else-if="state.sidebarTab === 'duty'" />
         <SettingsPanel v-else-if="state.sidebarTab === 'settings' && isAdmin" />

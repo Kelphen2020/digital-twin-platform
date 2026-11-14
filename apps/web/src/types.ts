@@ -812,7 +812,47 @@ export interface ReplayFeedItem {
   receivedAt: number
 }
 
-export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus' | 'users' | 'tenant'
+export type SidebarTab = 'events' | 'stats' | 'orders' | 'duty' | 'settings' | 'audit' | 'bus' | 'users' | 'tenant' | 'overview'
+
+/** GET /api/tenants/{id}/overview 的响应（P37.0 内嵌运维面板）。 */
+export interface TenantOverview {
+  tenant: string
+  generated_at: string
+  events: {
+    total: number
+    last_24h: number
+    by_severity: Record<string, number>
+  }
+  cameras: {
+    total: number
+    online: number
+    offline: number
+  }
+  open_orders: number
+  patrol: {
+    routes: number
+    schedules: number
+    pending: number
+    in_progress: number
+  }
+  exports: {
+    jobs: number
+    done: number
+    failed: number
+    active: number
+  }
+  ingest: {
+    accepted: number
+    rejected: number
+  }
+  health: {
+    bus_driver: string
+    bus_next_offset: number
+    ws_clients: number
+    store_mode: string
+  }
+  recent_hourly: Array<{ hour: string; count: number }>
+}
 
 /** 场景视角聚焦请求（由事件流/详情面板触发，场景消费后播放运镜动画）。 */
 export interface FocusRequest {

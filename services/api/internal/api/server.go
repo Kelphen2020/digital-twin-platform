@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tenants/{id}/restore", s.handleRestoreTenant)
 	mux.HandleFunc("DELETE /api/tenants/{id}", s.handleDeleteTenant)
 	mux.HandleFunc("GET /api/tenants/{id}/export", s.handleExportTenant)
+	mux.HandleFunc("GET /api/tenants/{id}/overview", s.handleTenantOverview)
 	mux.HandleFunc("POST /api/tenants/{id}/exports", s.handleCreateExportJob)
 	mux.HandleFunc("GET /api/tenants/{id}/exports", s.handleListExportJobs)
 	mux.HandleFunc("GET /api/tenants/{id}/exports/{exportId}", s.handleGetExportJob)
