@@ -41,6 +41,8 @@ type Config struct {
 	ExportWorkers               int
 	ExportRetention             time.Duration
 	ExportMaxJobs               int
+	ReplicaID                   string
+	ExportHeartbeatSeconds      int
 }
 
 // Load reads the environment, falling back to P0 defaults.
@@ -77,6 +79,8 @@ func Load() Config {
 		ExportWorkers:               envInt("EXPORT_WORKERS", 2),
 		ExportRetention:             envDuration("EXPORT_RETENTION", 168*time.Hour),
 		ExportMaxJobs:               envInt("EXPORT_MAX_JOBS", 200),
+		ReplicaID:                   env("REPLICA_ID", ""),
+		ExportHeartbeatSeconds:      envInt("EXPORT_HEARTBEAT_SECONDS", 10),
 	}
 	if cfg.MaxEvents < 100 {
 		cfg.MaxEvents = 100

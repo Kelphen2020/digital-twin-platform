@@ -388,3 +388,84 @@ func TestPostgresTenantAndPatrolLifecycle(t *testing.T) {
 		t.Fatalf("revoke user tokens: %v", err)
 	}
 }
+
+// P38: two replicas racing for the same job — exactly one wins, and only the
+// owner can heartbeat it.
+func TestPostgresExportJobClaimRace(t *testing.T) {
+	url := os.Getenv("PG_TEST_URL")
+	if url == "" {
+		t.Skip("PG_TEST_URL not set; skipping PostgreSQL claim race test")
+	}
+	ctx := context.Background()
+	pg, err := store.NewPostgres(ctx, url)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer pg.Close()
+
+	now := time.Now().UTC()
+	id := "exp_race_" + now.Format("150405.000000000")
+	if err := pg.CreateExportJob(ctx, model.ExportJob{
+		ID: id, TenantID: "default", Status: model.ExportPending, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	t.Cleanup(func() { _ = pg.DeleteExportJob(ctx, id) })
+
+	// Fire both claims concurrently and count winners.
+	type result struct {
+		owner string
+		won   bool
+		err   error
+	}
+	results := make(chan result, 2)
+	for _, owner := range []string{"replica-a", "replica-b"} {
+		go func(owner string) {
+			won, claimErr := pg.ClaimExportJob(ctx, id, owner)
+			results <- result{owner: owner, won: won, err: claimErr}
+		}(owner)
+	}
+	winners := 0
+	var winner string
+	for i := 0; i < 2; i++ {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("claim error: %v", res.err)
+		}
+		if res.won {
+			winners++
+			winner = res.owner
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly one winner, got %d", winners)
+	}
+
+	// The loser cannot heartbeat; the winner can.
+	loser := "replica-a"
+	if winner == "replica-a" {
+		loser = "replica-b"
+	}
+	if ok, err := pg.HeartbeatExportJob(ctx, id, loser); err != nil || ok {
+		t.Fatalf("loser heartbeat should fail: ok=%v err=%v", ok, err)
+	}
+	if ok, err := pg.HeartbeatExportJob(ctx, id, winner); err != nil || !ok {
+		t.Fatalf("winner heartbeat should succeed: ok=%v err=%v", ok, err)
+	}
+
+	// A stale owner (no heartbeat for 3 minutes) is reclaimed back to pending.
+	if _, err := pg.Pool().Exec(ctx, `UPDATE export_jobs SET heartbeat_at = now() - interval '3 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatalf("age heartbeat: %v", err)
+	}
+	reclaimed, err := pg.ReclaimStaleExportJobs(ctx, time.Minute)
+	if err != nil || reclaimed < 1 {
+		t.Fatalf("reclaim: %d %v", reclaimed, err)
+	}
+	job, ok, err := pg.GetExportJob(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("load reclaimed job: %v %v", ok, err)
+	}
+	if job.Status != model.ExportPending || job.Owner != "" {
+		t.Fatalf("reclaimed job state: %+v", job)
+	}
+}

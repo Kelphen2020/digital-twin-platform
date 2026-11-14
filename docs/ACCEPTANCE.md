@@ -1545,3 +1545,41 @@ SKIP  smoke (postgres)  (--quick)
 - 概览接口每次调用会遍历租户相机与最近 500 条巡检执行，租户量大时建议加缓存（5 秒粒度）。
 - `recent_hourly` 依赖 Store 的 Stats 实现，内存模式与 PostgreSQL 口径一致但时区均为 UTC。
 - 面板仅对 admin 开放；operator/viewer 看不到运维指标（按最小权限原则）。
+
+---
+
+# P38.0 验收记录（2026-11-14 晚）
+
+## 150. 多副本导出任务领取
+
+| 项 | 说明 | 证据 |
+|---|---|---|
+| 迁移 018 | `export_jobs` 增加 `owner` / `heartbeat_at` 与状态索引 | PG 实测两列存在 |
+| 原子领取 | `UPDATE ... WHERE status='pending'`，两副本并发只有一个赢家 | `TestPostgresExportJobClaimRace`（真实 PG，并发 2 副本） |
+| 心跳与回收 | worker 每 10s 心跳；每副本每分钟回收无心跳的 `running` 任务 | 实测孤儿任务 35s 内从 `running` 回收为 `pending` |
+| 副本标识 | `REPLICA_ID`（缺省 `hostname-pid`）、`EXPORT_HEARTBEAT_SECONDS` | 两副本日志分别打印 `replica-a` / `replica-b` |
+| **修复的真实缺陷** | 后台导出任务继承 HTTP 请求上下文，请求返回后上下文取消 → PG 模式下任务永远停在 `pending` | 改用 `context.WithoutCancel` + 租户上下文；修复后两副本任务均正常完成 |
+
+## 151. 多副本真库验证
+
+| 场景 | 结果 |
+|---|---|
+| 两副本连接同一 PostgreSQL，各建一个导出任务 | ✅ 分别由 `replica-a` / `replica-b` 执行，产物各写各的 `EXPORT_DIR`（4365 / 4839 字节） |
+| 模拟副本宕机（`owner=replica-dead`，心跳 5 分钟前） | ✅ 存活副本约 35s 内回收为 `pending` |
+| 并发抢占 | ✅ 恰好一个赢家 |
+
+## 152. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint` | ✅ 0 issues |
+| 覆盖率 | **64.3%**（门禁 62%） |
+| `make smoke` | ✅ **263/263** |
+| PG 契约测试（含新竞争用例） | ✅ 全 PASS |
+
+## 153. 已知限制（P38.0）
+
+- 回收粒度为「心跳超时」，最坏情况下任务会延迟 `heartbeat × 6 + 回收周期` 才重新执行。
+- 产物文件写在领取副本的本地 `EXPORT_DIR`；跨副本下载需要共享存储（NFS/S3）或下载时回退到 owner 副本。
+- 内存存储为单进程模型，`ClaimExportJob` 恒成功（多副本场景请使用 PostgreSQL + `RATE_STORE`）。

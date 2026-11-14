@@ -44,6 +44,9 @@ type Store interface {
 	GetExportJob(ctx context.Context, id string) (model.ExportJob, bool, error)
 	ListExportJobs(ctx context.Context, tenantID string, limit int) ([]model.ExportJob, error)
 	DeleteExportJob(ctx context.Context, id string) error
+	// ClaimExportJob atomically moves a pending job to running for this owner.
+	// It returns false when another replica already owns the job (P38.0).
+	ClaimExportJob(ctx context.Context, id, owner string) (bool, error)
 	PurgeExportJobs(ctx context.Context, tenantID string, before time.Time, keep int) ([]string, error)
 
 	ListAreas(ctx context.Context) ([]model.Area, error)

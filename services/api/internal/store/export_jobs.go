@@ -62,6 +62,31 @@ func (m *Memory) ListExportJobs(_ context.Context, tenantID string, limit int) (
 	return items, nil
 }
 
+// ClaimExportJob marks a pending job as running for owner (in-process: always wins).
+func (m *Memory) ClaimExportJob(_ context.Context, id, owner string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.exportJobs[id]
+	if !ok {
+		return false, model.ErrNotFound
+	}
+	if job.Status != model.ExportPending {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	job.Status = model.ExportRunning
+	job.StartedAt = &now
+	job.Owner = owner
+	m.exportJobs[id] = job
+	return true, nil
+}
+
+// ReclaimStaleExportJobs resets running jobs whose owner stopped heartbeating
+// (in-process store: never needed, returns 0).
+func (m *Memory) ReclaimStaleExportJobs(_ context.Context, _ time.Duration) (int, error) {
+	return 0, nil
+}
+
 // DeleteExportJob removes one job.
 func (m *Memory) DeleteExportJob(_ context.Context, id string) error {
 	m.mu.Lock()
@@ -126,10 +151,10 @@ func (p *Postgres) CreateExportJob(ctx context.Context, job model.ExportJob) err
 	}
 	_, err = p.pool.Exec(ctx, `
         INSERT INTO export_jobs (id, tenant_id, status, include_tracks, include_audit, created_by,
-            created_at, started_at, finished_at, size_bytes, counts, error)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+            created_at, started_at, finished_at, size_bytes, counts, error, owner, heartbeat_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		job.ID, job.TenantID, job.Status, job.IncludeTracks, job.IncludeAudit, job.CreatedBy,
-		job.CreatedAt, job.StartedAt, job.FinishedAt, job.SizeBytes, counts, job.Error)
+		job.CreatedAt, job.StartedAt, job.FinishedAt, job.SizeBytes, counts, job.Error, job.Owner, job.HeartbeatAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -146,8 +171,10 @@ func (p *Postgres) UpdateExportJob(ctx context.Context, job model.ExportJob) err
 		return err
 	}
 	tag, err := p.pool.Exec(ctx, `
-        UPDATE export_jobs SET status=$2, started_at=$3, finished_at=$4, size_bytes=$5, counts=$6, error=$7
-        WHERE id=$1`, job.ID, job.Status, job.StartedAt, job.FinishedAt, job.SizeBytes, counts, job.Error)
+        UPDATE export_jobs SET status=$2, started_at=$3, finished_at=$4, size_bytes=$5, counts=$6, error=$7,
+            owner=$8, heartbeat_at=$9
+        WHERE id=$1`, job.ID, job.Status, job.StartedAt, job.FinishedAt, job.SizeBytes, counts, job.Error,
+		job.Owner, job.HeartbeatAt)
 	if err != nil {
 		return err
 	}
@@ -236,6 +263,60 @@ func (p *Postgres) PurgeExportJobs(ctx context.Context, tenantID string, before 
 	return removed, rows.Err()
 }
 
+// ClaimExportJob atomically transitions pending -> running for this replica.
+// A conditional UPDATE is the row-level lock: two replicas racing on the same id
+// produce exactly one winner (the loser sees zero rows affected).
+func (p *Postgres) ClaimExportJob(ctx context.Context, id, owner string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE export_jobs
+           SET status='running', started_at=now(), owner=$2, heartbeat_at=now()
+         WHERE id=$1 AND status='pending'`, id, owner)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() > 0 {
+		return true, nil
+	}
+	// Either the job is gone or somebody else owns it.
+	var exists bool
+	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM export_jobs WHERE id=$1)`, id).Scan(&exists); err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, model.ErrNotFound
+	}
+	return false, nil
+}
+
+// ReclaimStaleExportJobs returns abandoned running jobs to the pending pool.
+func (p *Postgres) ReclaimStaleExportJobs(ctx context.Context, staleAfter time.Duration) (int, error) {
+	if staleAfter <= 0 {
+		staleAfter = 2 * time.Minute
+	}
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE export_jobs
+           SET status='pending', owner='', started_at=NULL, heartbeat_at=NULL
+         WHERE status='running'
+           AND (heartbeat_at IS NULL OR heartbeat_at < now() - $1::interval)`,
+		staleAfter.String())
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// HeartbeatExportJob refreshes the lease for a running job and reports whether
+// this replica still owns it (P38.0).
+func (p *Postgres) HeartbeatExportJob(ctx context.Context, id, owner string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+        UPDATE export_jobs SET heartbeat_at=now()
+         WHERE id=$1 AND owner=$2 AND status='running'`, id, owner)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // FailPendingExportJobs marks interrupted jobs as failed on startup.
 func (p *Postgres) FailPendingExportJobs(ctx context.Context, reason string) (int, error) {
 	tag, err := p.pool.Exec(ctx, `
@@ -248,13 +329,14 @@ func (p *Postgres) FailPendingExportJobs(ctx context.Context, reason string) (in
 }
 
 const exportJobColumns = `id, tenant_id, status, include_tracks, include_audit, created_by,
-    created_at, started_at, finished_at, size_bytes, counts, error`
+    created_at, started_at, finished_at, size_bytes, counts, error, owner, heartbeat_at`
 
 func scanExportJob(row interface{ Scan(dest ...any) error }) (model.ExportJob, error) {
 	var job model.ExportJob
 	var counts []byte
 	err := row.Scan(&job.ID, &job.TenantID, &job.Status, &job.IncludeTracks, &job.IncludeAudit,
-		&job.CreatedBy, &job.CreatedAt, &job.StartedAt, &job.FinishedAt, &job.SizeBytes, &counts, &job.Error)
+		&job.CreatedBy, &job.CreatedAt, &job.StartedAt, &job.FinishedAt, &job.SizeBytes, &counts, &job.Error,
+		&job.Owner, &job.HeartbeatAt)
 	if err != nil {
 		if isNoRows(err) {
 			return model.ExportJob{}, model.ErrNotFound

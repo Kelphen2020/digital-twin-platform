@@ -88,3 +88,32 @@ func TestExportJobPersistenceContract(t *testing.T) {
 		t.Fatalf("second delete must be not found, got %v", err)
 	}
 }
+
+// P38: a job can only be claimed once, so a second replica must lose the race.
+func TestExportJobClaimIsExclusive(t *testing.T) {
+	memory := store.NewMemory(2000)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := model.ExportJob{ID: "exp_claim", TenantID: "default", Status: model.ExportPending, CreatedAt: now}
+	if err := memory.CreateExportJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	claimed, err := memory.ClaimExportJob(ctx, "exp_claim", "replica-a")
+	if err != nil || !claimed {
+		t.Fatalf("first claim should win: %v %v", claimed, err)
+	}
+	// Second replica loses.
+	claimed, err = memory.ClaimExportJob(ctx, "exp_claim", "replica-b")
+	if err != nil || claimed {
+		t.Fatalf("second claim must lose: %v %v", claimed, err)
+	}
+	stored, _, _ := memory.GetExportJob(ctx, "exp_claim")
+	if stored.Status != model.ExportRunning || stored.Owner != "replica-a" || stored.StartedAt == nil {
+		t.Fatalf("claimed job state: %+v", stored)
+	}
+	// Unknown job surfaces not-found.
+	if _, err := memory.ClaimExportJob(ctx, "exp_missing", "x"); !store.IsNotFound(err) {
+		t.Fatalf("claim missing job: %v", err)
+	}
+}

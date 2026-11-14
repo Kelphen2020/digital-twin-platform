@@ -119,7 +119,10 @@ func (s *Server) handleCreateExportJob(w http.ResponseWriter, r *http.Request) {
 		"tenant_id": tenant.ID, "include_tracks": job.IncludeTracks, "include_audit": job.IncludeAudit,
 	})
 	state := s.exportState()
-	jobCtx := r.Context()
+	// Detach from the request: the handler returns immediately, and a cancelled
+	// request context would abort the claim/write of every export (P38 fix).
+	jobCtx := context.WithoutCancel(r.Context())
+	jobCtx = store.WithTenant(jobCtx, tenant.ID)
 	state.wg.Add(1)
 	go func() {
 		defer state.wg.Done()
@@ -135,12 +138,18 @@ func (s *Server) runExportJob(ctx context.Context, job model.ExportJob, tenant m
 	defer func() { <-state.slots }()
 	jobID := job.ID
 
+	// P38: claim the job so two replicas never render the same export twice.
+	claimed, claimErr := s.store.ClaimExportJob(ctx, jobID, s.replicaID)
+	if claimErr != nil || !claimed {
+		return
+	}
+	stopHeartbeat := s.startExportHeartbeat(ctx, jobID)
+	defer stopHeartbeat()
+
 	started := time.Now().UTC()
 	job.Status = model.ExportRunning
 	job.StartedAt = &started
-	if err := s.store.UpdateExportJob(ctx, job); err != nil {
-		return
-	}
+	job.Owner = s.replicaID
 	s.broadcastExport(job)
 
 	payload, err := s.buildTenantExport(ctx, tenant, job.IncludeTracks, job.IncludeAudit)
@@ -163,6 +172,7 @@ func (s *Server) runExportJob(ctx context.Context, job model.ExportJob, tenant m
 
 	finished := time.Now().UTC()
 	job.FinishedAt = &finished
+	job.Owner = s.replicaID
 	if err != nil {
 		job.Status = model.ExportFailed
 		job.Error = err.Error()
@@ -402,4 +412,86 @@ func (s *Server) RecoverInterruptedExportJobs(ctx context.Context) {
 	if count > 0 {
 		log.Printf("api: export recovery marked %d interrupted jobs as failed", count)
 	}
+}
+
+// startExportHeartbeat refreshes the job lease while the worker renders, and
+// returns a stop function. A replica whose row was stolen (or whose lease
+// expired) stops heartbeating and abandons the work (P38.0).
+func (s *Server) startExportHeartbeat(ctx context.Context, jobID string) func() {
+	if s.replicaID == "" {
+		return func() {}
+	}
+	beater, ok := s.store.(interface {
+		HeartbeatExportJob(context.Context, string, string) (bool, error)
+	})
+	if !ok {
+		return func() {}
+	}
+	beatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Duration(s.exportHeartbeat) * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-beatCtx.Done():
+				return
+			case <-ticker.C:
+				if still, err := beater.HeartbeatExportJob(beatCtx, jobID, s.replicaID); err == nil && !still {
+					log.Printf("api: export %s lost its lease; abandoning", jobID)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+// SetReplicaIdentity configures the replica id and heartbeat interval used for
+// cross-replica job ownership (P38.0).
+func (s *Server) SetReplicaIdentity(replicaID string, heartbeatSeconds int) {
+	if heartbeatSeconds < 1 {
+		heartbeatSeconds = 10
+	}
+	s.replicaID = replicaID
+	s.exportHeartbeat = heartbeatSeconds
+}
+
+// ReclaimStaleExportJobs resets jobs whose owner stopped heartbeating so another
+// replica can pick them up (P38.0).
+func (s *Server) ReclaimStaleExportJobs(ctx context.Context, staleAfter time.Duration) (int, error) {
+	reclaimer, ok := s.store.(interface {
+		ReclaimStaleExportJobs(context.Context, time.Duration) (int, error)
+	})
+	if !ok {
+		return 0, nil
+	}
+	count, err := reclaimer.ReclaimStaleExportJobs(ctx, staleAfter)
+	if err == nil && count > 0 {
+		log.Printf("api: reclaimed %d stale export jobs", count)
+	}
+	return count, err
+}
+
+// StartExportReclaimer periodically returns abandoned exports to the queue so a
+// surviving replica can finish them (P38.0).
+func (s *Server) StartExportReclaimer(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	staleAfter := time.Duration(s.exportHeartbeat) * 6 * time.Second
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _ = s.ReclaimStaleExportJobs(ctx, staleAfter)
+			}
+		}
+	}()
 }

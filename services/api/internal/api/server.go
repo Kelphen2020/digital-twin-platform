@@ -66,6 +66,8 @@ type Server struct {
 	ingestRates          map[string]*RateLimiter
 	rateStore            store.RateStore
 	exports              *exportStore
+	replicaID            string
+	exportHeartbeat      int
 	ingestFallbackURL    string
 	ingestClient         *http.Client
 	patrolPendingTimeout time.Duration

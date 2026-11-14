@@ -73,8 +73,16 @@ func run() error {
 	server.SetSessionTTL(time.Duration(cfg.RefreshTokenTTLSeconds) * time.Second)
 	server.SetIngestFallback(cfg.IngestFallbackURL)
 	server.SetExportStore(cfg.ExportDir, cfg.ExportWorkers, cfg.ExportRetention, cfg.ExportMaxJobs)
+	replicaID := cfg.ReplicaID
+	if replicaID == "" {
+		host, _ := os.Hostname()
+		replicaID = fmt.Sprintf("%s-%d", host, os.Getpid())
+	}
+	server.SetReplicaIdentity(replicaID, cfg.ExportHeartbeatSeconds)
+	log.Printf("api: replica id=%s export heartbeat=%ds", replicaID, cfg.ExportHeartbeatSeconds)
 	server.RecoverInterruptedExportJobs(ctx)
 	server.StartExportRetention(ctx, 10*time.Minute)
+	server.StartExportReclaimer(ctx, 1*time.Minute)
 	if cfg.RateStore == "postgres" {
 		if pg, ok := database.(*store.Postgres); ok {
 			server.SetRateStore(store.NewPostgresRateStore(pg))

@@ -57,6 +57,10 @@ type ExportJob struct {
 	SizeBytes     int64          `json:"size_bytes"`
 	Counts        map[string]int `json:"counts"`
 	Error         string         `json:"error"`
+	// Owner is the API replica that claimed the job (P38.0); heartbeat_at lets
+	// other replicas detect a crashed owner and reclaim the work.
+	Owner       string     `json:"owner,omitempty"`
+	HeartbeatAt *time.Time `json:"heartbeat_at,omitempty"`
 }
 
 // DefaultTenantID is the implicit tenant used when no X-Tenant-ID is supplied.
