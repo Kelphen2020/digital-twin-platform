@@ -823,6 +823,14 @@ export interface TenantOverview {
     last_24h: number
     by_severity: Record<string, number>
   }
+  /** P40：当前窗口与上一等长窗口的事件数（用于趋势对比）。 */
+  window: {
+    duration: string
+    from: string
+    to: string
+    current: number
+    previous: number
+  }
   cameras: {
     total: number
     online: number

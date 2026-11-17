@@ -108,7 +108,7 @@ const tenantName = computed(() => {
       <span class="brand-mark">DT</span>
       <div class="brand-text">
         <h1>{{ state.siteName }}</h1>
-        <p>园区三维安防 · P37.0 运维概览 / 租户治理</p>
+        <p>园区三维安防 · P40.0 运维概览 / 租户治理</p>
       </div>
     </div>
 

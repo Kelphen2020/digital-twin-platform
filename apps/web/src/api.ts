@@ -941,9 +941,13 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
 }
 
 /** GET /api/tenants/{id}/overview —— 租户运维概览（P37）。 */
-export async function fetchTenantOverview(tenantId: string): Promise<import('./types').TenantOverview> {
+export async function fetchTenantOverview(
+  tenantId: string,
+  window = '24h',
+): Promise<import('./types').TenantOverview> {
+  const query = window ? `?window=${encodeURIComponent(window)}` : ''
   return requestJson<import('./types').TenantOverview>(
-    `/api/tenants/${encodeURIComponent(tenantId)}/overview`,
+    `/api/tenants/${encodeURIComponent(tenantId)}/overview${query}`,
   )
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
@@ -21,6 +22,7 @@ type tenantOverview struct {
 	Exports      exportOverview   `json:"exports"`
 	Ingest       ingestOverview   `json:"ingest"`
 	Health       healthOverview   `json:"health"`
+	Window       overviewWindow   `json:"window"`
 	RecentHourly []model.HourStat `json:"recent_hourly"`
 }
 
@@ -28,6 +30,33 @@ type modelStatsTotals struct {
 	Total      int64            `json:"total"`
 	Last24h    int64            `json:"last_24h"`
 	BySeverity map[string]int64 `json:"by_severity"`
+}
+
+// overviewWindow describes the comparison window requested by the caller (P40.0):
+// "window" is the current bucket, "previous" the equally long period before it.
+type overviewWindow struct {
+	Duration string `json:"duration"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Current  int64  `json:"current"`
+	Previous int64  `json:"previous"`
+}
+
+// overviewWindows are the windows accepted by ?window=.
+var overviewWindows = map[string]time.Duration{
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+}
+
+// parseOverviewWindow resolves ?window= (default 24h).
+func parseOverviewWindow(r *http.Request) (string, time.Duration) {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("window")))
+	if d, ok := overviewWindows[raw]; ok {
+		return raw, d
+	}
+	return "24h", 24 * time.Hour
 }
 
 type cameraOverview struct {
@@ -74,6 +103,7 @@ func (s *Server) handleTenantOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := store.WithTenant(r.Context(), tenant.ID)
 	now := time.Now().UTC()
+	windowName, windowLen := parseOverviewWindow(r)
 
 	overview := tenantOverview{Tenant: tenant.ID, GeneratedAt: now}
 	overview.Events.BySeverity = map[string]int64{}
@@ -93,6 +123,19 @@ func (s *Server) handleTenantOverview(w http.ResponseWriter, r *http.Request) {
 		if overview.Cameras.Offline < 0 {
 			overview.Cameras.Offline = 0
 		}
+	}
+
+	windowStart := now.Add(-windowLen)
+	overview.Window = overviewWindow{
+		Duration: windowName,
+		From:     windowStart.Format(time.RFC3339),
+		To:       now.Format(time.RFC3339),
+	}
+	if summary, statsErr := s.store.Stats(ctx, windowStart, now, nil); statsErr == nil {
+		overview.Window.Current = summary.Totals.Events
+	}
+	if prev, statsErr := s.store.Stats(ctx, now.Add(-2*windowLen), windowStart, nil); statsErr == nil {
+		overview.Window.Previous = prev.Totals.Events
 	}
 
 	dayAgo := now.Add(-24 * time.Hour)

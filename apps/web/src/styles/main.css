@@ -4477,3 +4477,28 @@ dd {
   color: #64748b;
   line-height: 1.6;
 }
+
+/* P40: overview window switcher + trends + clickable KPIs */
+.overview-windows {
+  display: inline-flex;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.overview-window-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.overview-window-btn + .overview-window-btn { border-left: 1px solid rgba(148, 163, 184, 0.18); }
+.overview-window-btn:hover { color: #e2e8f0; background: rgba(148, 163, 184, 0.1); }
+.overview-window-btn.active { color: #38bdf8; background: rgba(56, 189, 248, 0.14); font-weight: 600; }
+.trend-up { color: #f87171 !important; }
+.trend-down { color: #4ade80 !important; }
+.trend-ref { color: #64748b; margin-left: 4px; }
+.overview-kpi-link { cursor: pointer; transition: border-color 120ms ease, transform 120ms ease; }
+.overview-kpi-link:hover { border-color: rgba(56, 189, 248, 0.5); transform: translateY(-1px); }
+.overview-kpi-link:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }

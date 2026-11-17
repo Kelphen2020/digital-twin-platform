@@ -106,3 +106,49 @@ func TestTenantOverviewGuards(t *testing.T) {
 		t.Fatalf("empty tenant should report zero cameras: %s", body)
 	}
 }
+
+// P40: the overview accepts ?window= and reports current vs previous period.
+func TestTenantOverviewWindow(t *testing.T) {
+	ts, _ := newP30Server(t)
+	admin := login(t, ts, "admin", "Admin@123456")
+	ingestEvent(t, ts, "CAM-001", "intrusion")
+
+	for _, window := range []string{"1h", "6h", "24h", "7d"} {
+		status, body := authorized(t, http.MethodGet,
+			ts.URL+"/api/tenants/default/overview?window="+window, admin, nil)
+		if status != http.StatusOK {
+			t.Fatalf("window %s: %d %s", window, status, body)
+		}
+		var payload struct {
+			Window struct {
+				Duration string `json:"duration"`
+				From     string `json:"from"`
+				To       string `json:"to"`
+				Current  int64  `json:"current"`
+				Previous int64  `json:"previous"`
+			} `json:"window"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode %s: %v", window, err)
+		}
+		if payload.Window.Duration != window {
+			t.Fatalf("duration echo: got %q want %q", payload.Window.Duration, window)
+		}
+		if payload.Window.From == "" || payload.Window.To == "" {
+			t.Fatalf("window %s missing from/to", window)
+		}
+		if payload.Window.Current == 0 {
+			t.Fatalf("window %s should include the event just ingested", window)
+		}
+		if payload.Window.Previous != 0 {
+			t.Fatalf("window %s previous period should be empty, got %d", window, payload.Window.Previous)
+		}
+	}
+
+	// Unknown window falls back to 24h instead of failing.
+	status, body := authorized(t, http.MethodGet,
+		ts.URL+"/api/tenants/default/overview?window=bogus", admin, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), `"duration":"24h"`) {
+		t.Fatalf("unknown window should fall back to 24h: %d %s", status, body)
+	}
+}

@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { apiErrorMessage, fetchTenantOverview } from '../api'
 import { useAuthStore } from '../store/auth'
+import { useTwinStore } from '../store/twin'
 import type { TenantOverview } from '../types'
 
 const auth = useAuthStore()
+const twin = useTwinStore()
+
+/** 点击 KPI 跳转到对应页签（P40）。 */
+function jumpTo(tab: 'orders' | 'duty' | 'tenant') {
+  twin.setSidebarTab(tab)
+}
 const overview = ref<TenantOverview | null>(null)
 /** 显式布尔条件：避免 v-else-if 直接对 ref 求值时的解包边界问题（P37）。 */
 const hasOverview = computed(() => overview.value !== null)
@@ -14,6 +21,23 @@ const lastLoadedAt = ref<number | null>(null)
 let timer: number | null = null
 
 const tenantId = computed(() => auth.state.tenantId || 'default')
+
+// P40：时间窗口切换（1h / 6h / 24h / 7d）
+const WINDOW_OPTIONS = [
+  { value: '1h', label: '1 小时' },
+  { value: '6h', label: '6 小时' },
+  { value: '24h', label: '24 小时' },
+  { value: '7d', label: '7 天' },
+] as const
+const selectedWindow = ref<string>('24h')
+
+const trend = computed(() => {
+  const win = overview.value?.window
+  if (!win) return null
+  const delta = win.current - win.previous
+  const pct = win.previous > 0 ? Math.round((delta / win.previous) * 100) : null
+  return { delta, pct, up: delta > 0, flat: delta === 0 }
+})
 
 async function loadOverview() {
   if (loading.value) return
@@ -63,6 +87,8 @@ function formatTime(ts: number | null): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`
 }
 
+watch(selectedWindow, () => void loadOverview())
+
 onMounted(() => {
   void loadOverview()
   timer = window.setInterval(() => void loadOverview(), 30000)
@@ -78,7 +104,18 @@ onUnmounted(() => {
     <header class="panel-head">
       <h2>运维概览</h2>
       <div class="panel-head-actions">
-        <span class="panel-hint">每 30 秒自动刷新 · {{ formatTime(lastLoadedAt) }}</span>
+        <div class="overview-windows" role="group" aria-label="时间窗口">
+          <button
+            v-for="option in WINDOW_OPTIONS"
+            :key="option.value"
+            class="overview-window-btn"
+            :class="{ active: selectedWindow === option.value }"
+            @click="selectedWindow = option.value"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+        <span class="panel-hint">{{ formatTime(lastLoadedAt) }}</span>
         <button class="ghost-btn" :disabled="loading" @click="loadOverview">刷新</button>
       </div>
     </header>
@@ -98,21 +135,28 @@ onUnmounted(() => {
             <span class="overview-foot">离线 {{ overview.cameras.offline }}</span>
           </div>
           <div class="overview-kpi">
-            <span class="overview-label">事件（近 24h）</span>
-            <strong class="overview-value">{{ overview.events.last_24h }}</strong>
-            <span class="overview-foot">累计 {{ overview.events.total }}</span>
+            <span class="overview-label">事件（{{ selectedWindow }}）</span>
+            <strong class="overview-value">{{ overview.window.current }}</strong>
+            <span v-if="trend" class="overview-foot" :class="{ 'trend-up': trend.up, 'trend-down': !trend.up }">
+              <template v-if="trend.up">▲ +{{ trend.delta }}</template>
+              <template v-else-if="trend.flat">持平</template>
+              <template v-else>▼ {{ trend.delta }}</template>
+              <template v-if="trend.pct !== null">（{{ trend.pct }}%）</template>
+              <span class="trend-ref">vs 上期 {{ overview.window.previous }}</span>
+            </span>
+            <span v-else class="overview-foot">累计 {{ overview.events.total }}</span>
           </div>
-          <div class="overview-kpi">
+          <div class="overview-kpi overview-kpi-link" role="button" tabindex="0" @click="jumpTo('orders')" @keydown.enter="jumpTo('orders')">
             <span class="overview-label">待处理工单</span>
             <strong class="overview-value">{{ overview.open_orders }}</strong>
             <span class="overview-foot">值班 / 派单状态见工单页</span>
           </div>
-          <div class="overview-kpi">
+          <div class="overview-kpi overview-kpi-link" role="button" tabindex="0" @click="jumpTo('duty')" @keydown.enter="jumpTo('duty')">
             <span class="overview-label">巡检进行中</span>
             <strong class="overview-value">{{ overview.patrol.in_progress }}</strong>
             <span class="overview-foot">待执行 {{ overview.patrol.pending }}</span>
           </div>
-          <div class="overview-kpi">
+          <div class="overview-kpi overview-kpi-link" role="button" tabindex="0" @click="jumpTo('tenant')" @keydown.enter="jumpTo('tenant')">
             <span class="overview-label">导出任务</span>
             <strong class="overview-value">{{ overview.exports.active }}</strong>
             <span class="overview-foot">完成 {{ overview.exports.done }} / 失败 {{ overview.exports.failed }}</span>
