@@ -1583,3 +1583,32 @@ SKIP  smoke (postgres)  (--quick)
 - 回收粒度为「心跳超时」，最坏情况下任务会延迟 `heartbeat × 6 + 回收周期` 才重新执行。
 - 产物文件写在领取副本的本地 `EXPORT_DIR`；跨副本下载需要共享存储（NFS/S3）或下载时回退到 owner 副本。
 - 内存存储为单进程模型，`ClaimExportJob` 恒成功（多副本场景请使用 PostgreSQL + `RATE_STORE`）。
+
+---
+
+# P39.0 验收记录（2026-11-17 下午）
+
+## 154. 导出产物共享 + 并发迁移加固
+
+| 项 | 说明 | 证据 |
+|---|---|---|
+| 可插拔产物存储 | 新增 `internal/exports` 包（`Store` 接口 + `LocalDir` 实现）：原子写入（tmp + rename）、路径穿越校验、流式下载 | `TestLocalDirRoundTrip` / `TestLocalDirRejectsTraversal` / `TestLocalDirDescribe` 全 PASS |
+| 多副本共享目录 | 两副本 `EXPORT_DIR` 指向同一目录时可跨副本下载 | ✅ 副本 A 建任务（owner=replica-a），**副本 B 下载 HTTP 200**，3859 字节内容完整 |
+| 概览上报后端 | `exports.artifacts` 字段报告存储后端（`dir:/path`） | 前端「运行状态」新增「导出产物」行 |
+| **修复的真实缺陷** | 多副本同时启动时并发执行 DDL 迁移 → 第二个副本报 `duplicate key ... pg_type_typname_nsp_index` **启动失败** | 改用 `pg_advisory_lock` 串行化迁移；实测两副本同时启动均正常 |
+
+## 155. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint` | ✅ 0 issues |
+| 覆盖率 | **64.3%**（门禁 62%） |
+| `make smoke` | ✅ **263/263** |
+| `pnpm typecheck` / `lint` / `build` | ✅ 全绿 |
+
+## 156. 已知限制（P39.0）
+
+- 共享目前依赖「同一路径在两副本上可见」（NFS/SMB/绑定挂载）；原生 S3 后端尚未实现（接口已留好）。
+- 迁移锁为全局单键，跨环境共用同一数据库实例时会有短暂互斥（毫秒级，可接受）。
+- 大文件下载仍走 API 进程转发，未做重定向到对象存储预签名 URL。

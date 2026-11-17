@@ -840,6 +840,7 @@ export interface TenantOverview {
     done: number
     failed: number
     active: number
+    artifacts: string
   }
   ingest: {
     accepted: number

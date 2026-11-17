@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"digital-twin-platform/api/internal/auth"
+	"digital-twin-platform/api/internal/exports"
 	"digital-twin-platform/api/internal/model"
 	"digital-twin-platform/api/internal/realtime"
 	"digital-twin-platform/api/internal/store"
@@ -27,6 +27,7 @@ const maxActiveExportJobs = 2
 // exportStore keeps the on-disk location and worker budget for export jobs;
 // job rows themselves live in the Store so they survive restarts (P33.0).
 type exportStore struct {
+	artifacts exports.Store
 	dir       string
 	workers   int
 	retention time.Duration
@@ -49,7 +50,8 @@ func newExportStoreWithPolicy(dir string, workers int, retention time.Duration, 
 		workers = 1
 	}
 	return &exportStore{
-		dir: dir, workers: workers, retention: retention, maxJobs: maxJobs,
+		artifacts: exports.NewLocalDir(dir),
+		dir:       dir, workers: workers, retention: retention, maxJobs: maxJobs,
 		slots: make(chan struct{}, workers),
 	}
 }
@@ -153,20 +155,13 @@ func (s *Server) runExportJob(ctx context.Context, job model.ExportJob, tenant m
 	s.broadcastExport(job)
 
 	payload, err := s.buildTenantExport(ctx, tenant, job.IncludeTracks, job.IncludeAudit)
-	if err == nil {
-		if mkErr := os.MkdirAll(state.dir, 0o755); mkErr != nil {
-			err = mkErr
-		}
-	}
 	var size int64
 	if err == nil {
 		encoded, encodeErr := json.Marshal(payload)
 		if encodeErr != nil {
 			err = encodeErr
-		} else if writeErr := os.WriteFile(filepath.Join(state.dir, jobID+".json"), encoded, 0o644); writeErr != nil {
-			err = writeErr
 		} else {
-			size = int64(len(encoded))
+			size, err = state.artifacts.Write(jobID, encoded)
 		}
 	}
 
@@ -268,20 +263,23 @@ func (s *Server) handleDownloadExportJob(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	state := s.exportState()
-	path := filepath.Join(state.dir, job.ID+".json")
-	content, err := os.ReadFile(path)
+	reader, size, err := state.artifacts.Read(job.ID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, exports.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "export_not_found", "export artifact is missing")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	defer reader.Close()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="tenant-`+job.TenantID+`-`+job.ID+`.json"`)
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(content)
+	_, _ = io.Copy(w, reader)
 }
 
 // handleDeleteExportJob is DELETE /api/tenants/{id}/exports/{exportId}.
@@ -294,7 +292,7 @@ func (s *Server) handleDeleteExportJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := s.exportState()
-	_ = os.Remove(filepath.Join(state.dir, job.ID+".json"))
+	_ = state.artifacts.Remove(job.ID)
 	if err := s.store.DeleteExportJob(r.Context(), job.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -336,7 +334,7 @@ func (s *Server) handlePurgeExportJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, id := range removed {
-		_ = os.Remove(filepath.Join(state.dir, id+".json"))
+		_ = state.artifacts.Remove(id)
 	}
 	s.metrics.ExportJobsPurged(int64(len(removed)))
 	s.audit(r, "tenant.export.purge", tenant.ID, map[string]any{"purged": len(removed), "before": before})
@@ -385,7 +383,7 @@ func (s *Server) SweepExportJobs(ctx context.Context) {
 			continue
 		}
 		for _, id := range removed {
-			_ = os.Remove(filepath.Join(state.dir, id+".json"))
+			_ = state.artifacts.Remove(id)
 		}
 		purged += len(removed)
 	}

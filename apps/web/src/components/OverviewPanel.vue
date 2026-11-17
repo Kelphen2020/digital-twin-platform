@@ -154,6 +154,7 @@ onUnmounted(() => {
               <li><span>事件总线</span><strong>{{ overview.health.bus_driver }}</strong></li>
               <li><span>总线偏移</span><strong>{{ overview.health.bus_next_offset }}</strong></li>
               <li><span>ingest 接收</span><strong>{{ overview.ingest.accepted }}</strong></li>
+              <li><span>导出产物</span><strong class="mono">{{ overview.exports.artifacts }}</strong></li>
             </ul>
           </section>
         </div>

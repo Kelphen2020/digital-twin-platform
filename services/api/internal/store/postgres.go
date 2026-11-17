@@ -56,7 +56,31 @@ func NewPostgres(ctx context.Context, databaseURL string) (*Postgres, error) {
 // Close releases the connection pool.
 func (p *Postgres) Close() { p.pool.Close() }
 
+// migrationLockID is an arbitrary but stable PostgreSQL advisory lock key used to
+// serialise migrations when several replicas start at the same time (P39.0).
+const migrationLockID int64 = 4815162342
+
+// migrate applies pending migrations under an advisory lock. Without the lock a
+// second replica booting concurrently re-runs DDL and fails with errors such as
+// duplicate key on pg_type (seen in multi-replica deployments).
 func (p *Postgres) migrate(ctx context.Context) error {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, migrationLockID)
+	}()
+	return p.applyMigrations(ctx)
+}
+
+// applyMigrations runs every embedded migration in name order.
+func (p *Postgres) applyMigrations(ctx context.Context) error {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)

@@ -44,10 +44,11 @@ type patrolOverview struct {
 }
 
 type exportOverview struct {
-	Jobs   int64 `json:"jobs"`
-	Done   int64 `json:"done"`
-	Failed int64 `json:"failed"`
-	Active int64 `json:"active"`
+	Jobs      int64  `json:"jobs"`
+	Done      int64  `json:"done"`
+	Failed    int64  `json:"failed"`
+	Active    int64  `json:"active"`
+	Artifacts string `json:"artifacts"`
 }
 
 type ingestOverview struct {
@@ -146,6 +147,7 @@ func (s *Server) handleTenantOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	overview.Exports.Artifacts = s.exportState().artifacts.Describe()
 	overview.Health.WSClents = s.hub.Clients()
 	overview.Health.StoreMode = storeModeName(s.store)
 	overview.Health.BusDriver = "none"
