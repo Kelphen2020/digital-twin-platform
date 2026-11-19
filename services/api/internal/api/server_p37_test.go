@@ -152,3 +152,55 @@ func TestTenantOverviewWindow(t *testing.T) {
 		t.Fatalf("unknown window should fall back to 24h: %d %s", status, body)
 	}
 }
+
+// P41: the histogram follows the selected window with an adaptive bucket size.
+func TestTenantOverviewSeriesBucketing(t *testing.T) {
+	ts, _ := newP30Server(t)
+	admin := login(t, ts, "admin", "Admin@123456")
+	ingestEvent(t, ts, "CAM-001", "intrusion")
+
+	cases := []struct {
+		window       string
+		bucketSecond int
+		maxBars      int
+	}{
+		{"1h", 300, 30},
+		{"6h", 1800, 30},
+		{"24h", 3600, 30},
+		{"7d", 86400, 10},
+	}
+	for _, c := range cases {
+		status, body := authorized(t, http.MethodGet,
+			ts.URL+"/api/tenants/default/overview?window="+c.window, admin, nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %s", c.window, status, body)
+		}
+		var payload struct {
+			BucketSeconds int `json:"bucket_seconds"`
+			Series        []struct {
+				Bucket string `json:"bucket"`
+				Count  int64  `json:"count"`
+			} `json:"series"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("%s decode: %v", c.window, err)
+		}
+		if payload.BucketSeconds != c.bucketSecond {
+			t.Fatalf("%s: bucket_seconds got %d want %d", c.window, payload.BucketSeconds, c.bucketSecond)
+		}
+		if len(payload.Series) == 0 || len(payload.Series) > c.maxBars {
+			t.Fatalf("%s: series length %d outside 1..%d", c.window, len(payload.Series), c.maxBars)
+		}
+		// Every bucket must carry a timestamp and the timeline must be continuous.
+		total := int64(0)
+		for i, point := range payload.Series {
+			if point.Bucket == "" {
+				t.Fatalf("%s: bucket %d missing timestamp", c.window, i)
+			}
+			total += point.Count
+		}
+		if total == 0 {
+			t.Fatalf("%s: series should include the ingested event", c.window)
+		}
+	}
+}

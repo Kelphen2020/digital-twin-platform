@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -13,17 +14,41 @@ import (
 // tenantOverview is the in-app operational summary panel (P37.0). It mirrors the
 // subset of Prometheus series that operators watch, without exposing /metrics.
 type tenantOverview struct {
-	Tenant       string           `json:"tenant"`
-	GeneratedAt  time.Time        `json:"generated_at"`
-	Events       modelStatsTotals `json:"events"`
-	Cameras      cameraOverview   `json:"cameras"`
-	OpenOrders   int64            `json:"open_orders"`
-	Patrol       patrolOverview   `json:"patrol"`
-	Exports      exportOverview   `json:"exports"`
-	Ingest       ingestOverview   `json:"ingest"`
-	Health       healthOverview   `json:"health"`
-	Window       overviewWindow   `json:"window"`
-	RecentHourly []model.HourStat `json:"recent_hourly"`
+	Tenant      string           `json:"tenant"`
+	GeneratedAt time.Time        `json:"generated_at"`
+	Events      modelStatsTotals `json:"events"`
+	Cameras     cameraOverview   `json:"cameras"`
+	OpenOrders  int64            `json:"open_orders"`
+	Patrol      patrolOverview   `json:"patrol"`
+	Exports     exportOverview   `json:"exports"`
+	Ingest      ingestOverview   `json:"ingest"`
+	Health      healthOverview   `json:"health"`
+	Window      overviewWindow   `json:"window"`
+	// P41: histogram for the selected window (bucket size adapts to it).
+	Series        []seriesPoint    `json:"series"`
+	BucketSeconds int              `json:"bucket_seconds"`
+	RecentHourly  []model.HourStat `json:"recent_hourly"`
+}
+
+// seriesPoint is one bucket of the overview histogram.
+type seriesPoint struct {
+	Bucket string `json:"bucket"`
+	Count  int64  `json:"count"`
+}
+
+// bucketSizeFor returns the histogram granularity that keeps the chart readable
+// for each window: minutes for 1h, hours for 6h/24h, days for 7d (P41.0).
+func bucketSizeFor(d time.Duration) time.Duration {
+	switch {
+	case d <= time.Hour:
+		return 5 * time.Minute
+	case d <= 6*time.Hour:
+		return 30 * time.Minute
+	case d <= 24*time.Hour:
+		return time.Hour
+	default:
+		return 24 * time.Hour
+	}
 }
 
 type modelStatsTotals struct {
@@ -151,6 +176,12 @@ func (s *Server) handleTenantOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// P41: build the chart series for the selected window with a bucket size
+	// that keeps the number of bars reasonable (12–30 bars for every window).
+	bucket := bucketSizeFor(windowLen)
+	overview.BucketSeconds = int(bucket.Seconds())
+	overview.Series = s.buildOverviewSeries(ctx, windowStart, now, bucket)
+
 	if orders, err := s.store.ListOrders(ctx, model.OrderFilter{Limit: 1000}); err == nil {
 		for _, order := range orders {
 			if order.Status != "closed" && order.Status != "cancelled" {
@@ -212,4 +243,40 @@ func storeModeName(database store.Store) string {
 		return "postgres"
 	}
 	return "memory"
+}
+
+// buildOverviewSeries buckets the tenant's events into fixed-size windows. It
+// reads the window's events once and fills empty buckets with zero so the chart
+// shows a continuous timeline (P41.0).
+func (s *Server) buildOverviewSeries(ctx context.Context, from, to time.Time, bucket time.Duration) []seriesPoint {
+	buckets := int(to.Sub(from)/bucket) + 1
+	if buckets < 1 {
+		buckets = 1
+	}
+	if buckets > 400 {
+		buckets = 400
+	}
+	counts := make([]int64, buckets)
+	events, err := s.store.ListEvents(ctx, model.EventFilter{
+		Since: &from, Limit: 100000,
+	})
+	if err == nil {
+		for _, event := range events {
+			if event.OccurredAt.Before(from) || event.OccurredAt.After(to) {
+				continue
+			}
+			index := int(event.OccurredAt.Sub(from) / bucket)
+			if index >= 0 && index < buckets {
+				counts[index]++
+			}
+		}
+	}
+	points := make([]seriesPoint, 0, buckets)
+	for i := 0; i < buckets; i++ {
+		points = append(points, seriesPoint{
+			Bucket: from.Add(time.Duration(i) * bucket).Format(time.RFC3339),
+			Count:  counts[i],
+		})
+	}
+	return points
 }

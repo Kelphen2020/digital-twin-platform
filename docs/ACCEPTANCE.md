@@ -1642,3 +1642,32 @@ SKIP  smoke (postgres)  (--quick)
 - `recent_hourly` 仍固定为近 24 小时桶，未随 `window` 变化（窗口仅影响 KPI 与环比）。
 - 环比在「上期为 0」时不显示百分比，只显示绝对值差。
 - 窗口统计依赖 Store 的 `Stats` 全量扫描，租户事件量大时建议加时间范围索引或物化视图。
+
+---
+
+# P41.0 验收记录（2026-11-19 下午）
+
+## 160. 概览柱状图随窗口自适应
+
+| 项 | 说明 | 证据 |
+|---|---|---|
+| 自适应分桶 | 按窗口选择桶宽（1h→5min、6h→30min、24h→1h、7d→1d），连续填充空桶，上限 400 桶 | 实测 API：`1h bucket=300s bars=13`、`6h=1800s/13`、`24h=3600s/25`、`7d=86400s/8` |
+| 新字段 | `series[{bucket,count}]` + `bucket_seconds`；`recent_hourly` 保留兼容 | `TestTenantOverviewSeriesBucketing`（四档窗口的桶宽与柱数区间断言） |
+| 密集模式 | 柱数 > 20 自动收紧间距、标签竖排 | 真实页面：24 小时 `dense=True`（25 根），1 小时/7 天 `dense=False` |
+| 标签格式 | 分钟/小时窗口 `HH:mm`，天窗口 `MM-DD` | 截图 `docs/screenshots/p41-series-7d.png` |
+| **修复的真实缺陷** | 切换窗口后 KPI 变了但柱状图仍是最初的 24 小时数据——`loadOverview` 调用 `fetchTenantOverview` 时**没有传窗参**（P40 的替换因函数签名带默认参数而未命中） | 修复后实测：24h→25 根、1h→13 根、7d→8 根，标题同步变化 |
+
+## 161. 回归
+
+| 项 | 结果 |
+|---|---|
+| `go test ./... -count=1` | ✅ 全绿 |
+| `golangci-lint` | ✅ 0 issues |
+| `pnpm typecheck` / `lint` / `build` | ✅ 全绿 |
+| 真实浏览器验收 | ✅ 三维场景 60 FPS、三档窗口柱状图数量正确、无 console 异常 |
+
+## 162. 已知限制（P41.0）
+
+- 直方图通过 `ListEvents(limit=100000)` 在内存中聚合；超大租户建议改为 SQL `date_trunc` 聚合或物化视图。
+- `recent_hourly` 与 `series` 并存属于兼容期设计，后续大版本可移除。
+- 7 天窗口按 UTC 天切桶，本地时区查看时边界会有偏移。

@@ -4502,3 +4502,14 @@ dd {
 .overview-kpi-link { cursor: pointer; transition: border-color 120ms ease, transform 120ms ease; }
 .overview-kpi-link:hover { border-color: rgba(56, 189, 248, 0.5); transform: translateY(-1px); }
 .overview-kpi-link:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+
+/* P41: denser bars for fine-grained windows */
+.overview-bars-dense { gap: 3px; }
+.overview-bars-dense .overview-bar-count { font-size: 9px; }
+.overview-bars-dense .overview-bar-label {
+  font-size: 9px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  height: 34px;
+  overflow: hidden;
+}

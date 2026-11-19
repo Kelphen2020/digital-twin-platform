@@ -44,7 +44,7 @@ async function loadOverview() {
   loading.value = true
   error.value = null
   try {
-    const fetched = await fetchTenantOverview(tenantId.value)
+    const fetched = await fetchTenantOverview(tenantId.value, selectedWindow.value)
     overview.value = fetched
     lastLoadedAt.value = Date.now()
   } catch (err) {
@@ -69,15 +69,26 @@ const severityLabel: Record<string, string> = {
   info: '提示',
 }
 
-const hourlyBars = computed(() => {
-  const rows = overview.value?.recent_hourly ?? []
+// P41：柱状图跟随所选窗口，标签格式随桶宽变化（分钟/小时/日期）。
+const bars = computed(() => {
+  const rows = overview.value?.series ?? []
+  const bucketSeconds = overview.value?.bucket_seconds ?? 3600
   const max = Math.max(1, ...rows.map((row) => row.count))
-  return rows.slice(-12).map((row) => ({
-    label: row.hour.slice(11, 16) || row.hour,
+  return rows.map((row) => ({
+    label: formatBucketLabel(row.bucket, bucketSeconds),
     count: row.count,
-    height: Math.max(4, Math.round((row.count / max) * 100)),
+    height: Math.max(2, Math.round((row.count / max) * 100)),
   }))
 })
+
+/** formatBucketLabel 输出与桶宽匹配的短标签。 */
+function formatBucketLabel(iso: string, bucketSeconds: number): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  const pad = (value: number) => String(value).padStart(2, '0')
+  if (bucketSeconds >= 86400) return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
 
 const storeModeLabel = computed(() => (overview.value?.health.store_mode === 'postgres' ? 'PostgreSQL' : '内存'))
 
@@ -170,11 +181,11 @@ onUnmounted(() => {
 
         <div class="overview-grid">
           <section class="overview-card">
-            <h3>近 12 小时事件</h3>
-            <div v-if="hourlyBars.length === 0" class="overview-empty">暂无数据</div>
-            <div v-else class="overview-bars">
-              <div v-for="bar in hourlyBars" :key="bar.label" class="overview-bar">
-                <span class="overview-bar-count">{{ bar.count }}</span>
+            <h3>事件分布（{{ WINDOW_OPTIONS.find((o) => o.value === selectedWindow)?.label }}）</h3>
+            <div v-if="bars.length === 0" class="overview-empty">暂无数据</div>
+            <div v-else class="overview-bars" :class="{ 'overview-bars-dense': bars.length > 20 }">
+              <div v-for="(bar, index) in bars" :key="index" class="overview-bar">
+                <span class="overview-bar-count">{{ bar.count || '' }}</span>
                 <div class="overview-bar-track">
                   <div class="overview-bar-fill" :style="{ height: `${bar.height}%` }"></div>
                 </div>

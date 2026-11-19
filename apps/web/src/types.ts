@@ -823,6 +823,9 @@ export interface TenantOverview {
     last_24h: number
     by_severity: Record<string, number>
   }
+  /** P41：随窗口自适应的柱状图数据；bucket_seconds 为桶宽。 */
+  series: Array<{ bucket: string; count: number }>
+  bucket_seconds: number
   /** P40：当前窗口与上一等长窗口的事件数（用于趋势对比）。 */
   window: {
     duration: string
