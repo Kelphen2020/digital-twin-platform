@@ -113,6 +113,8 @@ type Store interface {
 	UpdateDutyGroup(ctx context.Context, id string, group model.DutyGroup) (model.DutyGroup, error)
 	DeleteDutyGroup(ctx context.Context, id string) error
 	Stats(ctx context.Context, from, to time.Time, cameraIDs []string) (model.StatsSummary, error)
+	// EventHistogram buckets the tenant's events into fixed-size windows (P42.0).
+	EventHistogram(ctx context.Context, from, to time.Time, bucket time.Duration) ([]model.HourStat, error)
 	Counts(ctx context.Context) (model.Counts, error)
 }
 
@@ -647,6 +649,44 @@ func (m *Memory) ListAudit(ctx context.Context, filter model.AuditFilter) ([]mod
 			continue
 		}
 		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// EventHistogram buckets events by bucket size, filling empty buckets with zero.
+func (m *Memory) EventHistogram(ctx context.Context, from, to time.Time, bucket time.Duration) ([]model.HourStat, error) {
+	if bucket <= 0 {
+		bucket = time.Hour
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state := m.state(ctx, false)
+	count := int(to.Sub(from)/bucket) + 1
+	if count < 1 {
+		count = 1
+	}
+	if count > 400 {
+		count = 400
+	}
+	buckets := make([]int64, count)
+	if state != nil {
+		tenant := tenantOf(ctx)
+		for _, event := range state.events {
+			if event.TenantID != tenant || event.OccurredAt.Before(from) || event.OccurredAt.After(to) {
+				continue
+			}
+			index := int(event.OccurredAt.Sub(from) / bucket)
+			if index >= 0 && index < count {
+				buckets[index]++
+			}
+		}
+	}
+	out := make([]model.HourStat, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, model.HourStat{
+			Hour:  from.Add(time.Duration(i) * bucket).UTC(),
+			Count: buckets[i],
+		})
 	}
 	return out, nil
 }

@@ -469,3 +469,70 @@ func TestPostgresExportJobClaimRace(t *testing.T) {
 		t.Fatalf("reclaimed job state: %+v", job)
 	}
 }
+
+// P42: the SQL histogram (date_bin) must match the in-memory bucketing contract.
+func TestPostgresEventHistogram(t *testing.T) {
+	url := os.Getenv("PG_TEST_URL")
+	if url == "" {
+		t.Skip("PG_TEST_URL not set; skipping PostgreSQL histogram test")
+	}
+	ctx0 := context.Background()
+	pg, err := store.NewPostgres(ctx0, url)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer pg.Close()
+
+	now := time.Now().UTC()
+	suffix := now.Format("150405.000000000")
+	tenantID := "tnt_hist_" + suffix
+	if err := pg.CreateTenant(ctx0, model.Tenant{ID: tenantID, Name: "直方图", Active: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pg.DeleteTenant(ctx0, tenantID) })
+	ctx := store.WithTenant(ctx0, tenantID)
+
+	base := now.Truncate(time.Hour).Add(-6 * time.Hour)
+	camera := model.Camera{ID: "cam_hist_" + suffix, Code: "HIST-1", Name: "直方图相机", Status: "online", UpdatedAt: now}
+	if err := pg.CreateCamera(ctx, camera); err != nil {
+		t.Fatalf("create camera: %v", err)
+	}
+	makeEvent := func(id string, at time.Time) model.Event {
+		return model.Event{ID: id, CameraID: camera.ID, CameraCode: camera.Code, CameraName: camera.Name,
+			Type: "intrusion", Severity: "warn", Confidence: 0.9, OccurredAt: at, Status: "new"}
+	}
+	events := []model.Event{
+		makeEvent("evt_hist_1_"+suffix, base.Add(10*time.Minute)),
+		makeEvent("evt_hist_2_"+suffix, base.Add(20*time.Minute)),
+		makeEvent("evt_hist_3_"+suffix, base.Add(2*time.Hour+5*time.Minute)),
+		makeEvent("evt_hist_4_"+suffix, base.Add(4*time.Hour)),
+	}
+	if err := pg.CreateEvents(ctx, events); err != nil {
+		t.Fatalf("create events: %v", err)
+	}
+
+	to := base.Add(6 * time.Hour)
+	slots, err := pg.EventHistogram(ctx, base, to, time.Hour)
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	if len(slots) != 7 {
+		t.Fatalf("expected 7 hourly slots, got %d", len(slots))
+	}
+	want := []int64{2, 0, 1, 0, 1, 0, 0}
+	for i, expected := range want {
+		if slots[i].Count != expected {
+			t.Fatalf("slot %d: got %d want %d (all=%+v)", i, slots[i].Count, expected, slots)
+		}
+	}
+	// Empty window still returns the full zero-filled timeline.
+	empty, err := pg.EventHistogram(ctx, to.Add(24*time.Hour), to.Add(27*time.Hour), time.Hour)
+	if err != nil || len(empty) != 4 {
+		t.Fatalf("empty window: %d slots err=%v", len(empty), err)
+	}
+	for _, slot := range empty {
+		if slot.Count != 0 {
+			t.Fatalf("empty window should be zero-filled: %+v", slot)
+		}
+	}
+}

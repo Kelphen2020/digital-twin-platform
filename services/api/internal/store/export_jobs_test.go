@@ -117,3 +117,53 @@ func TestExportJobClaimIsExclusive(t *testing.T) {
 		t.Fatalf("claim missing job: %v", err)
 	}
 }
+
+// P42: the histogram buckets events and fills empty slots so charts stay continuous.
+func TestEventHistogramBucketing(t *testing.T) {
+	memory := store.NewMemory(2000)
+	ctx := context.Background()
+	memory.Seed(store.SeedCameras(), store.SeedAreas())
+	ctx = store.WithTenant(ctx, model.DefaultTenantID)
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	cameras, err := memory.ListCameras(ctx)
+	if err != nil || len(cameras) == 0 {
+		t.Fatalf("seed cameras: %v", err)
+	}
+	camera := cameras[0]
+	events := []model.Event{
+		{ID: "evt_h1", CameraID: camera.ID, CameraCode: camera.Code, CameraName: camera.Name,
+			Type: "intrusion", Severity: "warn", OccurredAt: base.Add(5 * time.Minute), Status: "new"},
+		{ID: "evt_h2", CameraID: camera.ID, CameraCode: camera.Code, CameraName: camera.Name,
+			Type: "intrusion", Severity: "warn", OccurredAt: base.Add(35 * time.Minute), Status: "new"},
+		{ID: "evt_h3", CameraID: camera.ID, CameraCode: camera.Code, CameraName: camera.Name,
+			Type: "intrusion", Severity: "warn", OccurredAt: base.Add(2*time.Hour + 10*time.Minute), Status: "new"},
+	}
+	if err := memory.CreateEvents(ctx, events); err != nil {
+		t.Fatalf("create events: %v", err)
+	}
+
+	slots, err := memory.EventHistogram(ctx, base, base.Add(4*time.Hour), time.Hour)
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	if len(slots) != 5 {
+		t.Fatalf("expected 5 hourly slots, got %d", len(slots))
+	}
+	// base+5m and base+35m both fall in slot 0; base+2h10m falls in slot 2.
+	want := []int64{2, 0, 1, 0, 0}
+	for i, expected := range want {
+		if slots[i].Count != expected {
+			t.Fatalf("slot %d: got %d want %d (all=%+v)", i, slots[i].Count, expected, slots)
+		}
+	}
+	// Sub-hour buckets must also work (5 minute slots for the 1h window).
+	fine, err := memory.EventHistogram(ctx, base, base.Add(time.Hour), 5*time.Minute)
+	if err != nil || len(fine) != 13 {
+		t.Fatalf("5m histogram: %d slots err=%v", len(fine), err)
+	}
+	// base+5m is the second 5-minute slot, base+35m the eighth.
+	if fine[1].Count != 1 || fine[7].Count != 1 {
+		t.Fatalf("5m bucket counts: %+v", fine)
+	}
+}

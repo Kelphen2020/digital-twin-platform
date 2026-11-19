@@ -245,37 +245,19 @@ func storeModeName(database store.Store) string {
 	return "memory"
 }
 
-// buildOverviewSeries buckets the tenant's events into fixed-size windows. It
-// reads the window's events once and fills empty buckets with zero so the chart
-// shows a continuous timeline (P41.0).
+// buildOverviewSeries buckets the tenant's events into fixed-size windows. The
+// Store implementation pushes the aggregation down (PostgreSQL uses date_bin), so
+// the API process never holds the window's raw events (P42.0).
 func (s *Server) buildOverviewSeries(ctx context.Context, from, to time.Time, bucket time.Duration) []seriesPoint {
-	buckets := int(to.Sub(from)/bucket) + 1
-	if buckets < 1 {
-		buckets = 1
+	buckets, err := s.store.EventHistogram(ctx, from, to, bucket)
+	if err != nil || len(buckets) == 0 {
+		return []seriesPoint{}
 	}
-	if buckets > 400 {
-		buckets = 400
-	}
-	counts := make([]int64, buckets)
-	events, err := s.store.ListEvents(ctx, model.EventFilter{
-		Since: &from, Limit: 100000,
-	})
-	if err == nil {
-		for _, event := range events {
-			if event.OccurredAt.Before(from) || event.OccurredAt.After(to) {
-				continue
-			}
-			index := int(event.OccurredAt.Sub(from) / bucket)
-			if index >= 0 && index < buckets {
-				counts[index]++
-			}
-		}
-	}
-	points := make([]seriesPoint, 0, buckets)
-	for i := 0; i < buckets; i++ {
+	points := make([]seriesPoint, 0, len(buckets))
+	for _, slot := range buckets {
 		points = append(points, seriesPoint{
-			Bucket: from.Add(time.Duration(i) * bucket).Format(time.RFC3339),
-			Count:  counts[i],
+			Bucket: slot.Hour.UTC().Format(time.RFC3339),
+			Count:  slot.Count,
 		})
 	}
 	return points

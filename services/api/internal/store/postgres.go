@@ -1588,3 +1588,50 @@ func (p *Postgres) DeletePatrolExecutions(ctx context.Context, before time.Time,
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// EventHistogram aggregates events with date_bin in SQL so large windows never
+// load rows into the API process (P42.0). Missing buckets are filled with zero
+// so the caller can render a continuous timeline.
+func (p *Postgres) EventHistogram(ctx context.Context, from, to time.Time, bucket time.Duration) ([]model.HourStat, error) {
+	if bucket <= 0 {
+		bucket = time.Hour
+	}
+	tenant := tenantOf(ctx)
+	rows, err := p.pool.Query(ctx, `
+        SELECT date_bin(make_interval(secs => $4::double precision), occurred_at, $1) AS bucket,
+               count(*) AS total
+          FROM events
+         WHERE tenant_id = $3 AND occurred_at >= $1 AND occurred_at <= $2
+         GROUP BY bucket
+         ORDER BY bucket`, from, to, tenant, bucket.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[time.Time]int64, 32)
+	for rows.Next() {
+		var slot time.Time
+		var total int64
+		if scanErr := rows.Scan(&slot, &total); scanErr != nil {
+			return nil, scanErr
+		}
+		counts[slot.UTC()] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	total := int(to.Sub(from)/bucket) + 1
+	if total < 1 {
+		total = 1
+	}
+	if total > 400 {
+		total = 400
+	}
+	out := make([]model.HourStat, 0, total)
+	for i := 0; i < total; i++ {
+		slot := from.Add(time.Duration(i) * bucket).UTC()
+		out = append(out, model.HourStat{Hour: slot, Count: counts[slot]})
+	}
+	return out, nil
+}
